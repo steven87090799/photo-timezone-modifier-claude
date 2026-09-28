@@ -1,0 +1,26 @@
+name: macOS native app
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Test generated JPEG and TIFF fixtures
+        run: ./scripts/test.sh
+      - name: Build universal app
+        run: ./build.sh --universal
+      - name: Package app preserving executable modes
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-3.0.0-macOS.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: PhotoTimezone-macOS
+          path: dist/PhotoTimezone-3.0.0-macOS.zip
+          if-no-files-found: error

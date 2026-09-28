@@ -7,3 +7,9 @@ dist/
 
 # ExifTool's per-user portable cache
 .exiftool_portable/
+
+# Swift Package Manager and local build staging
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
