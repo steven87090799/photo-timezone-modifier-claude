@@ -1,0 +1,9 @@
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build output
+dist/
+
+# ExifTool's per-user portable cache
+.exiftool_portable/
