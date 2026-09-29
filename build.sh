@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 ./scripts/prepare-exiftool.sh
+bash ./scripts/prepare-icon.sh
 mkdir -p "$PROJECT_DIR/dist"
 APP_STAGE="$(mktemp -d "$PROJECT_DIR/dist/native-build.XXXXXX")"
 APP_PATH="$APP_STAGE/相片時區修改器.app"
@@ -27,6 +28,8 @@ fi
 /bin/cp app/Info.plist "$APP_PATH/Contents/Info.plist"
 /bin/cp -R "$PROJECT_DIR/.build/vendor-exiftool" "$APP_PATH/Contents/Resources/ExifTool"
 /bin/cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/"
+/bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"
+/bin/cp app/Assets/AppIcon.png "$APP_PATH/Contents/Resources/"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --strict "$APP_PATH"

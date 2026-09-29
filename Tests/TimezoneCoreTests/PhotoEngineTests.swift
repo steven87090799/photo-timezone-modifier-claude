@@ -344,6 +344,91 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
+    @Test func testCameraMetadataSurvivesWriteAndBatchRead() async throws {
+        let photo = try makeSeededPhoto("camera.jpg")
+        let setup = try tool.execute(["-overwrite_original", "-Make=SONY", "-Model=ILCE-7M4",
+            "-LensModel=FE 24-70mm F2.8 GM", "-ISO=800", "-ExposureTime=1/250", "-FNumber=2.8",
+            "-FocalLength=35", "-ExifImageWidth=3", "-ExifImageHeight=2", photo.path])
+        expectEqual(setup.status, 0)
+        let batch = try tool.inspectBatch([photo], cancellation: CancellationToken())
+        let before = try requireValue(batch[photo.path]).get().0
+        expectEqual(before.cameraModel, "ILCE-7M4")
+        expectEqual(before.make, "SONY")
+        expectEqual(before.lensModel, "FE 24-70mm F2.8 GM")
+        expectEqual(before.iso, "800")
+        expectEqual(before.exposureTime, "1/250")
+        expectEqual(before.aperture, "2.8")
+        expectEqual(before.dimensions, "3 × 2")
+        expectTrue((before.fileSize ?? 0) > 0)
+        _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), succeeded: 1)
+        let after = try tool.inspect(photo).0
+        expectEqual(after.cameraModel, before.cameraModel)
+        expectEqual(after.lensModel, before.lensModel)
+        expectEqual(after.iso, before.iso)
+        expectEqual(after.exposureTime, before.exposureTime)
+        expectEqual(after.aperture, before.aperture)
+        expectEqual(after.focalLength, before.focalLength)
+    }
+
+    @Test func testBatchedScanContinuesAcrossCorruptAndSpecialNamesWithoutMutation() async throws {
+        let seed = try makeSeededPhoto("seed.jpg")
+        let original = try Data(contentsOf: seed)
+        var inputs: [URL] = [try makeFile("bad.jpg", contents: Data("bad data".utf8))]
+        for index in 0..<110 {
+            inputs.append(try makeFile("chunk\(index)/雪\n'\"$.jpg", contents: original))
+        }
+        let job = await run(inputs, operation: .inspect)
+        let items = try assertJob(job, succeeded: 110, failed: 1)
+        expectEqual(items.map(\.url), inputs)
+        for file in inputs.dropFirst() {
+            expectEqual(try Data(contentsOf: file), original)
+            expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: file).path))
+        }
+    }
+
+    @Test func testReadOnlyPhotoFailsBeforeAnyBackupOrMutation() async throws {
+        let photo = try makeSeededPhoto("read-only.jpg")
+        let bytes = try Data(contentsOf: photo)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: photo.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: photo.path) }
+        let rows = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), failed: 1)
+        expectTrue(rows[0].detail.contains("唯讀"))
+        expectEqual(try Data(contentsOf: photo), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_STRESS"] == "1"))
+    func testThousandPhotoScanWriteAndBackupIntegrity() async throws {
+        let jpeg = try makeSeededPhoto("templates/a.jpg")
+        let tiff = try makeSeededPhoto("templates/b.tiff", format: .tiff)
+        let originals = try [Data(contentsOf: jpeg), Data(contentsOf: tiff)]
+        let root = try makeDirectory("thousand")
+        var photos: [URL] = []
+        for index in 0..<1000 {
+            let ext = index % 2 == 0 ? "jpg" : "tiff"
+            photos.append(try makeFile("thousand/day\(index / 100)/DSC\(index).\(ext)", contents: originals[index % 2]))
+        }
+        let bad = try makeFile("thousand/corrupt.jpg", contents: Data("not a photo".utf8))
+        let scanStart = Date()
+        let scanned = await run([root, photos[0]], operation: .inspect, recursive: true)
+        _ = try assertJob(scanned, succeeded: 1000, failed: 1)
+        let scanSeconds = Date().timeIntervalSince(scanStart)
+        let writeStart = Date()
+        let written = await run(photos + [bad], operation: .write(offset: UTCOffset(minutes: 345), mode: .fillMissing))
+        let rows = try assertJob(written, succeeded: 1000, failed: 1)
+        let writeSeconds = Date().timeIntervalSince(writeStart)
+        for (index, photo) in photos.enumerated() {
+            expectEqual(try Data(contentsOf: originalBackup(for: photo)), originals[index % 2])
+            let metadata = try requireValue(rows[index].metadata)
+            assertOffsets(metadata, original: "+05:45", digitized: "+05:45", time: "+05:45")
+            assertDates(metadata)
+        }
+        let restored = await run(Array(photos.prefix(10)), operation: .restore)
+        _ = try assertJob(restored, succeeded: 10)
+        for index in 0..<10 { expectEqual(try Data(contentsOf: photos[index]), originals[index % 2]) }
+        print("STRESS_RESULT photos=1000 corrupt=1 scan_seconds=\(scanSeconds) write_seconds=\(writeSeconds) verified_backups=1000 restored=10")
+    }
+
     private func makeSeededPhoto(
         _ name: String, format: ImageFormat = .jpeg,
         original: String? = nil, digitized: String? = nil, time: String? = nil

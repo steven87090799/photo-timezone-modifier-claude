@@ -1,8 +1,8 @@
 import Foundation
 import Darwin
 
-/// The entire pipeline runs off the main actor. A command receives one path
-/// at a time; cancellation is checked between files, never mid-write.
+/// The entire pipeline runs off the main actor. Reads use bounded batches;
+/// writes receive one path at a time and are never interrupted mid-write.
 public struct PhotoEngine: Sendable {
     public let exiftoolURL: URL
     private let logDirectory: URL?
@@ -48,6 +48,7 @@ public struct PhotoEngine: Sendable {
             items = FileDiscovery.collect(inputs: inputs, recursive: recursive, cancellation: cancellation,
                                           allowDirectories: !inspectedFilesOnly) { onEvent(.phase($0)) }
             onEvent(.discovered(items))
+            var inspectionCache: [String: Result<(PhotoMetadata, String), Error>] = [:]
             for index in items.indices {
                 var item = items[index]
                 let canRecoverMissing: Bool
@@ -66,7 +67,25 @@ public struct PhotoEngine: Sendable {
                             if !canRecoverMissing { try FileSafety.ensureRegular(item.url) }
                             switch operation {
                             case .inspect:
-                                let (metadata, warning) = try tool.inspect(item.url, cancellation: cancellation)
+                                if inspectionCache[item.url.path] == nil {
+                                    let batch = items[index..<min(index + ExifTool.inspectionBatchSize, items.count)]
+                                        .filter { $0.status == .pending }.map(\.url)
+                                    do {
+                                        inspectionCache = try tool.inspectBatch(batch, cancellation: cancellation)
+                                    } catch is CancellationError {
+                                        throw CancellationError()
+                                    } catch {
+                                        // A disappeared/changed file or malformed batch must not
+                                        // prevent unrelated photos from being inspected safely.
+                                        inspectionCache = [:]
+                                    }
+                                }
+                                let (metadata, warning): (PhotoMetadata, String)
+                                if let cached = inspectionCache.removeValue(forKey: item.url.path) {
+                                    (metadata, warning) = try cached.get()
+                                } else {
+                                    (metadata, warning) = try tool.inspect(item.url, cancellation: cancellation)
+                                }
                                 item.metadata = metadata
                                 item.status = .ready
                                 item.detail = metadata.missingOffsets ? "有缺漏時區標籤。" : "三個時區標籤均已存在。"
@@ -151,6 +170,7 @@ public struct PhotoEngine: Sendable {
             _ = try tool.inspect(backup, cancellation: cancellation, strictOffsets: false)
         }
         if cancellation.isCancelled { throw CancellationError() }
+        try FileSafety.ensureWriteCapacity(item.url, fileSize: before.fileSize)
         let arguments = ["-charset", "filename=UTF8", "-P"] +
             requested.map { "-EXIF:\($0.0)=\(offset.value)" } + [item.url.path]
         // Deliberately omit -overwrite_original: ExifTool preserves _original.
@@ -210,6 +230,7 @@ public struct PhotoEngine: Sendable {
         // Also retain the current edited photo so restoration itself is
         // reversible. The .backup suffix excludes this from future scans.
         let currentCopy = URL(fileURLWithPath: item.url.path + ".before-restore-\(UUID().uuidString).backup")
+        try FileSafety.ensureWriteCapacity(item.url, fileSize: nil)
         try fm.copyItem(at: item.url, to: currentCopy)
         guard try FileSafety.hash(item.url) == FileSafety.hash(currentCopy) else {
             throw PhotoError("復原前的現況副本驗證失敗；未執行復原。")

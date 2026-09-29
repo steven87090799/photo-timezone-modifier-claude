@@ -14,9 +14,10 @@ struct PhotoTimezoneApp: App {
                 .background(WindowCloseGuard(model: model))
                 .onAppear { appDelegate.connect(model) }
                 .onOpenURL { model.addInputs([$0]) }
-                .frame(minWidth: 980, minHeight: 700)
+                .frame(minWidth: 1100, minHeight: 760)
+                .preferredColorScheme(.dark)
         }
-        .defaultSize(width: 1160, height: 820)
+        .defaultSize(width: 1320, height: 900)
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -43,6 +44,10 @@ struct PhotoTimezoneApp: App {
     }
 }
 
+enum ProcessingScope: String, CaseIterable {
+    case all = "全部預覽", filtered = "篩選結果", selected = "手動選取"
+}
+
 @MainActor
 final class PhotoViewModel: ObservableObject {
     @Published private(set) var inputs: [URL] = []
@@ -57,7 +62,20 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var total = 0
     @Published private(set) var summary: JobSummary?
     @Published private(set) var reportTitle = "處理報告"
-    @Published var selection: PhotoItem.ID?
+    @Published var selection: Set<PhotoItem.ID> = []
+    @Published var query = "" { didSet { if query != oldValue { scheduleCatalogue(resetPage: true) } } }
+    @Published var filter: PhotoFilter = .all { didSet { if filter != oldValue { scheduleCatalogue(resetPage: true) } } }
+    @Published var cameraFilter = "" { didSet { if cameraFilter != oldValue { scheduleCatalogue(resetPage: true) } } }
+    @Published var sort: PhotoSort = .filename { didSet { if sort != oldValue { scheduleCatalogue(resetPage: true) } } }
+    @Published var scope: ProcessingScope = .all
+    @Published private(set) var filteredItems: [PhotoItem] = []
+    @Published private(set) var pageItems: [PhotoItem] = []
+    @Published private(set) var cameras: [(name: String, count: Int)] = []
+    @Published private(set) var pageIndex = 0
+    @Published private(set) var totalBytes: Int64 = 0
+    @Published private(set) var missingOffsetCount = 0
+    @Published private(set) var elapsedSeconds: TimeInterval = 0
+    @Published private(set) var activeScopeCount = 0
     @Published var notice: PhotoNotice?
     @Published var dropTargeted = false
 
@@ -72,6 +90,17 @@ final class PhotoViewModel: ObservableObject {
     private var cancellation: CancellationToken?
     private var activeRunID: UUID?
     private var jobTask: Task<Void, Never>?
+    private var catalogueTask: Task<Void, Never>?
+    private var clockTask: Task<Void, Never>?
+    private var catalogueNeedsPageReset = false
+    private var importTask: Task<Void, Never>?
+    // Core events may arrive much faster than the UI can render. Only publish
+    // an immutable snapshot at the display cadence, never once per photo.
+    private var bufferedItems: [PhotoItem] = []
+    private var bufferDirty = false
+    private var pendingPhase: String?
+    private var pendingCompleted: Int?
+    private var pendingTotal: Int?
 
     private var currentSignature: ScanSignature {
         ScanSignature(paths: inputs.map(\.path).sorted(), recursive: recursive)
@@ -80,47 +109,110 @@ final class PhotoViewModel: ObservableObject {
     var canInspect: Bool { !isRunning && !inputs.isEmpty }
     var previewIsCurrent: Bool { previewSignature == currentSignature }
     var canWrite: Bool {
-        canInspect && previewIsCurrent && !previewFileURLs.isEmpty && items.contains { $0.status == .ready }
+        canInspect && previewIsCurrent && scopedItems.contains { $0.status == .ready }
     }
-    var canRestore: Bool { canInspect && previewIsCurrent && !previewFileURLs.isEmpty }
-    var selectedItem: PhotoItem? { items.first { $0.id == selection } }
-    var readyCount: Int { items.filter { $0.status == .ready }.count }
-    var missingOffsetCount: Int {
-        items.filter { item in
-            guard let metadata = item.metadata else { return false }
-            return [metadata.offsetOriginal, metadata.offsetDigitized, metadata.offsetTime]
-                .contains { $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false }
-        }.count
+    var canRestore: Bool { canInspect && previewIsCurrent && !scopedItems.isEmpty }
+    var selectedItem: PhotoItem? { items.first { selection.contains($0.id) } }
+    var pageCount: Int { max(1, (filteredItems.count + PhotoCatalogue.pageSize - 1) / PhotoCatalogue.pageSize) }
+    var scopedItems: [PhotoItem] {
+        switch scope {
+        case .all: return items
+        case .filtered: return filteredItems
+        case .selected: return PhotoCatalogue.selected(items, ids: selection)
+        }
+    }
+    var retryCount: Int { items.filter { PhotoFilter.unfinished.matches($0) }.count }
+    var processingCount: Int { isRunning ? activeScopeCount : scopedItems.count }
+    var estimateText: String {
+        let elapsed = Int(elapsedSeconds)
+        let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
+        guard completed >= 10, total > completed, elapsedSeconds >= 2 else { return "已用 \(time)" }
+        let remaining = Int(elapsedSeconds / Double(completed) * Double(total - completed))
+        return "已用 \(time) · 約剩 \(max(1, (remaining + 59) / 60)) 分鐘"
+    }
+
+    func setPage(_ index: Int) {
+        pageIndex = min(max(index, 0), pageCount - 1)
+        pageItems = PhotoCatalogue.page(filteredItems, index: pageIndex)
+    }
+
+    func selectFiltered() { refreshCatalogue(); selection = Set(filteredItems.map(\.id)); scope = .selected }
+
+    func retryUnfinished() {
+        guard !isRunning else { return }
+        let urls = items.filter { PhotoFilter.unfinished.matches($0) }.map(\.url)
+        guard !urls.isEmpty else { return }
+        inputs = urls
+        query = ""; filter = .all; cameraFilter = ""; scope = .all
+        invalidatePreview()
+        inspect()
+    }
+
+    private func scheduleCatalogue(resetPage: Bool = false) {
+        catalogueNeedsPageReset = catalogueNeedsPageReset || resetPage
+        guard catalogueTask == nil else { return }
+        catalogueTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.refreshCatalogue()
+        }
+    }
+
+    private func refreshCatalogue() {
+        catalogueTask?.cancel(); catalogueTask = nil
+        if bufferDirty {
+            items = bufferedItems
+            bufferDirty = false
+        }
+        if let pendingPhase, !isCancelling { phase = pendingPhase }
+        if let pendingCompleted { completed = pendingCompleted }
+        if let pendingTotal { total = pendingTotal; activeScopeCount = pendingTotal }
+        pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
+        filteredItems = PhotoCatalogue.filtered(items, query: query, filter: filter,
+                                                camera: cameraFilter.isEmpty ? nil : cameraFilter, sort: sort)
+        let counts = Dictionary(grouping: items.compactMap { $0.metadata?.camera }, by: { $0 }).mapValues(\.count)
+        cameras = counts.map { (name: $0.key, count: $0.value) }.sorted { $0.name < $1.name }
+        missingOffsetCount = items.filter { $0.metadata?.missingOffsets == true }.count
+        totalBytes = items.reduce(0) { $0 + ($1.metadata?.fileSize ?? 0) }
+        setPage(catalogueNeedsPageReset ? 0 : pageIndex)
+        catalogueNeedsPageReset = false
     }
 
     func setRecursive(_ value: Bool) {
         guard !isRunning, recursive != value else { return }
         recursive = value
         invalidatePreview()
+        if canInspect { inspect() }
     }
 
     func setOffset(_ value: UTCOffset) {
-        guard !isRunning else { return }
+        guard !isRunning, offset != value else { return }
         offset = value
     }
 
     func setMode(_ value: WriteMode) {
-        guard !isRunning else { return }
+        guard !isRunning, mode != value else { return }
         mode = value
     }
 
     func addInputs(_ urls: [URL]) {
-        guard !isRunning else {
-            notice = .busyInput
-            return
-        }
         var known = Set(inputs.map(\.path))
         let additions = urls.filter(\.isFileURL).map(\.standardizedFileURL).filter {
             known.insert($0.path).inserted
         }
         guard !additions.isEmpty else { return }
+        guard !isRunning else { notice = .busyInput; return }
         inputs.append(contentsOf: additions)
+        scope = .all
+        query = ""; filter = .all; cameraFilter = ""
         invalidatePreview()
+        // Import is read-only: automatically reveal metadata, never write.
+        // Coalesce multiple open-URL events from one Finder drag before starting.
+        importTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled else { return }
+            self?.inspect()
+        }
     }
 
     func removeInput(_ url: URL) {
@@ -136,11 +228,14 @@ final class PhotoViewModel: ObservableObject {
     }
 
     private func invalidatePreview() {
+        importTask?.cancel(); importTask = nil
         previewSignature = nil
         previewFileURLs = []
         items = []
+        bufferedItems = []; bufferDirty = false
         itemIndices = [:]
-        selection = nil
+        selection = []
+        refreshCatalogue()
         // Keep the last report available for export until the next job starts.
         phase = inputs.isEmpty ? "加入相片，開始檢查時區" : "來源已更新，請先掃描預覽"
         completed = 0
@@ -149,23 +244,29 @@ final class PhotoViewModel: ObservableObject {
 
     func chooseInputs() {
         guard !isRunning else { notice = .busyInput; return }
+        // Resolve the document window before constructing a panel: keyWindow
+        // can refer to a panel instead of the SwiftUI window during transitions.
+        let sourceWindow = NSApp.windows.first { $0.identifier?.rawValue == "main" }
+            ?? NSApp.mainWindow ?? NSApp.keyWindow
         let panel = NSOpenPanel()
         panel.title = "加入相片或資料夾"
-        panel.message = "可同時選取多張相片與多個資料夾。加入後，先掃描預覽 EXIF 資訊。"
+        panel.message = "可同時選取多張相片與多個資料夾。加入後自動讀取資訊，不會修改相片。"
         panel.prompt = "加入"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.canCreateDirectories = false
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard response == .OK else { return }
-            Task { @MainActor in self?.addInputs(panel.urls) }
+            Task { @MainActor in
+                sourceWindow?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                if response == .OK { self?.addInputs(panel.urls) }
+            }
         }
-        if let window = NSApp.keyWindow {
-            panel.beginSheetModal(for: window, completionHandler: completion)
-        } else {
-            panel.begin(completionHandler: completion)
-        }
+        // As a sheet, this mixed file/directory chooser can leave "Add"
+        // disabled despite a selected file on current macOS. A standalone
+        // panel validates the same selection correctly.
+        panel.begin(completionHandler: completion)
     }
 
     func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -208,20 +309,18 @@ final class PhotoViewModel: ObservableObject {
     }
 
     func requestWrite() {
+        refreshCatalogue()
         guard canWrite else { return }
-        if mode == .replaceAll {
-            notice = .replace(offset.value)
-        } else {
-            start(.write(offset: offset, mode: mode))
-        }
+        notice = .writeConfirmation(scopedItems.count, offset.value, mode == .replaceAll)
     }
 
     func confirmReplace() {
-        guard canWrite, mode == .replaceAll else { return }
+        guard canWrite else { return }
         start(.write(offset: offset, mode: mode))
     }
 
     func requestRestore() {
+        refreshCatalogue()
         guard canRestore else { return }
         notice = .restore
     }
@@ -265,7 +364,9 @@ final class PhotoViewModel: ObservableObject {
             guard previewIsCurrent, !previewFileURLs.isEmpty else { return }
             // Freeze the exact inspected files, including failed files for per-file reporting.
             // Never rescan the originally selected folders during a mutating operation.
-            jobInputs = previewFileURLs
+            let inspectedPaths = Set(previewFileURLs.map(\.path))
+            jobInputs = scopedItems.map(\.url).filter { inspectedPaths.contains($0.path) }
+            guard !jobInputs.isEmpty else { return }
             includeSubfolders = false
         }
         let token = CancellationToken()
@@ -275,12 +376,25 @@ final class PhotoViewModel: ObservableObject {
         previewFileURLs = []
         summary = nil
         items = []
+        bufferedItems = []; bufferDirty = false
+        pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
         itemIndices = [:]
-        selection = nil
+        selection = []
+        refreshCatalogue()
         completed = 0
         total = 0
         isCancelling = false
         isRunning = true
+        activeScopeCount = jobInputs.count
+        elapsedSeconds = 0
+        let startedAt = Date()
+        clockTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { break }
+                self?.elapsedSeconds = Date().timeIntervalSince(startedAt)
+            }
+        }
         switch operation {
         case .inspect:
             reportTitle = "掃描報告"
@@ -321,14 +435,15 @@ final class PhotoViewModel: ObservableObject {
         case .discovered(let photos):
             // Upsert also tolerates engines that discover in batches.
             for photo in photos { upsert(photo) }
-            total = max(total, items.count)
+            pendingTotal = bufferedItems.count
         case .updated(let photo, let done, let count):
             upsert(photo)
-            completed = done
-            total = count
+            pendingCompleted = done
+            pendingTotal = count
         case .phase(let text):
-            if !isCancelling { phase = text }
+            if !isCancelling { pendingPhase = text; scheduleCatalogue() }
         case .finished(let result):
+            refreshCatalogue()
             summary = result
             total = result.total
         }
@@ -336,12 +451,13 @@ final class PhotoViewModel: ObservableObject {
 
     private func upsert(_ photo: PhotoItem) {
         if let index = itemIndices[photo.id] {
-            items[index] = photo
+            bufferedItems[index] = photo
         } else {
-            itemIndices[photo.id] = items.count
-            items.append(photo)
+            itemIndices[photo.id] = bufferedItems.count
+            bufferedItems.append(photo)
         }
-        if selection == nil { selection = photo.id }
+        bufferDirty = true
+        scheduleCatalogue()
     }
 
     private func finish(_ operation: JobOperation, signature: ScanSignature, runID: UUID, token: CancellationToken) {
@@ -355,6 +471,9 @@ final class PhotoViewModel: ObservableObject {
             previewFileURLs = items.filter { !$0.url.hasDirectoryPath }.map(\.url)
         }
         isRunning = false
+        clockTask?.cancel(); clockTask = nil
+        refreshCatalogue()
+        if selection.isEmpty, let first = pageItems.first { selection = [first.id] }
         isCancelling = false
         cancellation = nil
         activeRunID = nil
@@ -402,7 +521,7 @@ final class PhotoViewModel: ObservableObject {
 }
 
 enum PhotoNotice: Identifiable {
-    case replace(String)
+    case writeConfirmation(Int, String, Bool)
     case restore
     case busyInput
     case busyClose
@@ -410,7 +529,7 @@ enum PhotoNotice: Identifiable {
 
     var id: String {
         switch self {
-        case .replace: return "replace"
+        case .writeConfirmation: return "writeConfirmation"
         case .restore: return "restore"
         case .busyInput: return "busyInput"
         case .busyClose: return "busyClose"
@@ -428,7 +547,7 @@ private struct PhotoMainView: View {
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 settings
-                    .frame(width: 280)
+                    .frame(width: 290)
                 Divider()
                 workspace
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -452,18 +571,16 @@ private struct PhotoMainView: View {
 
     private var header: some View {
         HStack(spacing: 14) {
-            Image(systemName: "photo.on.rectangle.angled")
-                .font(.system(size: 28, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+            Image(nsImage: AppArtwork.icon)
+                .resizable().interpolation(.high)
                 .frame(width: 52, height: 52)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 13))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text("3.0.0").font(.caption).foregroundStyle(.tertiary)
+                    Text("3.1.0").font(.caption).foregroundStyle(.tertiary)
                 }
-                Text("補上拍攝時區，保留原始拍攝時間。")
+                Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer(minLength: 16)
@@ -473,7 +590,7 @@ private struct PhotoMainView: View {
             .disabled(model.isRunning)
             .accessibilityIdentifier("addInputsButton")
             Button(action: model.inspect) {
-                Label("掃描預覽", systemImage: "doc.text.magnifyingglass")
+                Label("重新掃描", systemImage: "arrow.clockwise")
             }
             .disabled(!model.canInspect)
             .accessibilityIdentifier("inspectButton")
@@ -485,6 +602,7 @@ private struct PhotoMainView: View {
     }
 
     private var settings: some View {
+        VStack(spacing: 0) {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 sources
@@ -532,30 +650,37 @@ private struct PhotoMainView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
-                VStack(spacing: 10) {
-                    Button(action: model.requestWrite) {
-                        Label("寫入 \(model.offset.label)", systemImage: "clock.badge.checkmark")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!model.canWrite)
-                    .accessibilityIdentifier("writeButton")
-                    if !model.canWrite && !model.isRunning {
-                        Text(model.previewIsCurrent ? "沒有可寫入的相片。" : "完成目前來源的掃描後，即可寫入。")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    Button("從原始備份還原…", action: model.requestRestore)
-                        .buttonStyle(.link)
-                        .disabled(!model.canRestore)
-                        .accessibilityIdentifier("restoreButton")
-                        .help("先掃描預覽；僅還原此次掃描清單中的相片。")
-                }
             }
             .padding(20)
         }
+        Divider()
+        actionPanel.padding(16)
+        }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+    }
+
+    private var actionPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("處理範圍", selection: $model.scope) {
+                ForEach(ProcessingScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .disabled(model.isRunning)
+            .accessibilityIdentifier("processingScopePicker")
+            Text("此次範圍：\(model.processingCount) 張 · \(model.scope.rawValue)")
+                .font(.caption).foregroundStyle(.secondary)
+            Button(action: model.requestWrite) {
+                Label("檢查並寫入 \(model.offset.label)", systemImage: "clock.badge.checkmark")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .disabled(!model.canWrite).accessibilityIdentifier("writeButton")
+            Text(model.inputs.isEmpty ? "先加入相片查看資訊；不會自動寫入。" : (model.previewIsCurrent ? "拖入與篩選都不會修改相片；按下後仍需確認。" : "自動讀取資訊中，或請重新掃描後再決定。"))
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("從原始備份還原…", action: model.requestRestore)
+                .buttonStyle(.link).disabled(!model.canRestore)
+                .accessibilityIdentifier("restoreButton")
+        }
     }
 
     private var sources: some View {
@@ -617,7 +742,7 @@ private struct PhotoMainView: View {
                 .font(.callout)
                 .disabled(model.isRunning)
                 .accessibilityIdentifier("recursiveToggle")
-            Text("可將檔案拖到視窗任何位置。掃描只讀取資訊，不會更動相片。")
+            Text("拖入後自動讀取照片與資訊，不會更動檔案。記憶卡相片建議先複製到電腦，再處理副本。")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -629,14 +754,16 @@ private struct PhotoMainView: View {
                 Text("相片預覽").font(.title3.weight(.semibold))
                 Spacer()
                 if !model.items.isEmpty {
-                    Text("\(model.items.count) 張相片・\(model.missingOffsetCount) 張有時區未填")
+                    Text("\(model.items.count) 張 · 缺時區 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if model.items.isEmpty {
                 emptyState
             } else {
+                catalogueToolbar
                 photoTable
+                pageControls
             }
             if model.selectedItem != nil || model.summary != nil {
                 ScrollView {
@@ -649,7 +776,7 @@ private struct PhotoMainView: View {
                         }
                     }
                 }
-                .frame(maxHeight: model.summary == nil ? 200 : 300)
+                .frame(maxHeight: model.summary == nil ? 255 : 335)
                 .accessibilityIdentifier("detailsAndReportScrollArea")
             }
         }
@@ -664,7 +791,7 @@ private struct PhotoMainView: View {
                 .accessibilityHidden(true)
             Text(model.isRunning ? "正在準備相片清單" : (model.inputs.isEmpty ? "讓每張相片，保留正確時區" : "來源已就緒，先看看相片資訊"))
                 .font(.title3.weight(.semibold))
-            Text(model.isRunning ? "找到的相片與讀取結果將顯示在這裡。" : "加入來源 → 掃描預覽 → 確認固定 UTC 偏移 → 寫入時區")
+            Text(model.isRunning ? "正在自動讀取，沒有修改任何相片。" : "拖入相片 → 自動看照片與資訊 → 你決定要不要修改")
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             if !model.isRunning {
@@ -681,8 +808,60 @@ private struct PhotoMainView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    private var catalogueToolbar: some View {
+        VStack(spacing: 9) {
+            HStack(spacing: 10) {
+                TextField("搜尋檔名、相機、鏡頭、日期…", text: $model.query)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("photoSearch")
+                Picker("狀態", selection: $model.filter) {
+                    ForEach(PhotoFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .frame(width: 180).accessibilityIdentifier("photoFilter")
+            }
+            HStack(spacing: 10) {
+                Picker("相機", selection: $model.cameraFilter) {
+                    Text("所有相機").tag("")
+                    ForEach(model.cameras, id: \.name) { camera in
+                        Text("\(camera.name)（\(camera.count)）").tag(camera.name)
+                    }
+                }
+                .frame(maxWidth: 300).accessibilityIdentifier("cameraFilter")
+                Picker("排序", selection: $model.sort) {
+                    ForEach(PhotoSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .frame(width: 180)
+                Spacer(minLength: 0)
+                Button("選取篩選結果", action: model.selectFiltered)
+                    .disabled(model.filteredItems.isEmpty || model.isRunning)
+                    .accessibilityIdentifier("selectFilteredButton")
+                Button("取消選取") { model.selection = [] }
+                    .disabled(model.selection.isEmpty || model.isRunning)
+            }
+            .controlSize(.small)
+            Text("單擊照片看資訊；只改部分照片時，請將左側處理範圍設為『手動選取』或『篩選結果』。")
+                .font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var pageControls: some View {
+        HStack(spacing: 10) {
+            Text("篩選 \(model.filteredItems.count) / \(model.items.count) 張 · 已選 \(model.selection.count) 張")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button { model.setPage(model.pageIndex - 1) } label: { Image(systemName: "chevron.left") }
+                .disabled(model.pageIndex == 0).accessibilityLabel("上一頁")
+            Text("\(model.pageIndex + 1) / \(model.pageCount) 頁").font(.caption.monospacedDigit())
+            Button { model.setPage(model.pageIndex + 1) } label: { Image(systemName: "chevron.right") }
+                .disabled(model.pageIndex + 1 >= model.pageCount).accessibilityLabel("下一頁")
+        }
+        .controlSize(.small)
+        .help("每頁最多 200 張以保持順暢。Shift／Command 可複選；『選取篩選結果』會選取全部符合項目，不限本頁。")
+    }
+
     private var photoTable: some View {
-        Table(model.items, selection: $model.selection) {
+        Table(model.pageItems, selection: $model.selection) {
             TableColumn("相片") { item in
                 HStack(spacing: 8) {
                     Image(systemName: "photo").foregroundStyle(.secondary).accessibilityHidden(true)
@@ -691,12 +870,17 @@ private struct PhotoMainView: View {
                 .help(item.url.path)
             }
             .width(min: 150, ideal: 220)
+            TableColumn("相機") { item in
+                Text(item.metadata?.camera ?? "讀取中").font(.caption).lineLimit(1)
+                    .help(item.metadata?.camera ?? "")
+            }
+            .width(min: 85, ideal: 125, max: 160)
             TableColumn("原始拍攝時間") { item in
                 Text(display(item.metadata?.dateTimeOriginal))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(item.metadata?.dateTimeOriginal == nil ? .secondary : .primary)
             }
-            .width(min: 140, ideal: 155, max: 180)
+            .width(min: 130, ideal: 145, max: 175)
             TableColumn("拍攝時區") { item in
                 Text(display(item.metadata?.offsetOriginal))
                     .font(.system(.caption, design: .monospaced))
@@ -715,6 +899,11 @@ private struct PhotoMainView: View {
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.secondary.opacity(0.15)))
         .accessibilityIdentifier("photoTable")
+        .overlay {
+            if model.filteredItems.isEmpty && !model.isRunning {
+                Text("沒有符合篩選條件的相片").font(.callout).foregroundStyle(.secondary)
+            }
+        }
     }
 
     private func metadataDetails(_ item: PhotoItem) -> some View {
@@ -724,6 +913,23 @@ private struct PhotoMainView: View {
                     .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 Text(item.metadata?.fileType ?? "格式待確認").font(.caption).foregroundStyle(.secondary)
+            }
+            HStack(alignment: .top, spacing: 14) {
+                PhotoThumbnail(url: item.url)
+                    .frame(width: 140, height: 105)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(item.metadata?.camera ?? "未知相機").font(.headline)
+                    Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄").font(.caption).foregroundStyle(.secondary)
+                    Text("ISO \(item.metadata?.iso ?? "—")  ·  \(item.metadata?.exposureTime ?? "—") 秒  ·  f/\(item.metadata?.aperture ?? "—")  ·  \(item.metadata?.focalLength ?? "焦距未記錄")")
+                        .font(.caption).textSelection(.enabled)
+                    Text("\(item.metadata?.dimensions ?? "尺寸未記錄")  ·  \(ByteCountFormatter.string(fromByteCount: item.metadata?.fileSize ?? 0, countStyle: .file))")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("拍攝：\(item.metadata?.dateTimeOriginal ?? "未記錄")")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+                Button("快速查看") { NSWorkspace.shared.open(item.url) }
+                    .controlSize(.small).help("用系統預設程式開啟原檔；本 App 不會修改它。")
             }
             HStack(alignment: .top, spacing: 18) {
                 metadataField("拍攝時區", tag: "OffsetTimeOriginal", value: item.metadata?.offsetOriginal)
@@ -741,6 +947,7 @@ private struct PhotoMainView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityIdentifier("metadataDetails")
+        .id(item.id)
     }
 
     private func metadataField(_ title: String, tag: String, value: String?) -> some View {
@@ -757,6 +964,10 @@ private struct PhotoMainView: View {
             HStack {
                 Text(model.reportTitle).font(.callout.weight(.semibold))
                 Spacer()
+                if model.retryCount > 0 {
+                    Button("重新檢查失敗／取消 \(model.retryCount) 張", action: model.retryUnfinished)
+                        .disabled(model.isRunning).controlSize(.small)
+                }
                 Button(action: model.exportLog) {
                     Label("匯出記錄…", systemImage: "square.and.arrow.up")
                 }
@@ -807,6 +1018,7 @@ private struct PhotoMainView: View {
                     Text(model.phase).font(.callout).lineLimit(2)
                     Spacer(minLength: 8)
                     if model.isRunning && model.total > 0 {
+                        Text(model.estimateText).font(.caption).foregroundStyle(.secondary)
                         Text("\(model.completed) / \(model.total)")
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
@@ -849,17 +1061,17 @@ private struct PhotoMainView: View {
 
     private func alert(_ notice: PhotoNotice) -> Alert {
         switch notice {
-        case .replace(let offset):
+        case .writeConfirmation(let count, let offset, let replace):
             return Alert(
-                title: Text("覆寫所有相片的時區？"),
-                message: Text("此次已完成掃描清單中，可處理相片的三個 OffsetTime 標籤都將設為 \(offset)，包括已有時區的相片。原始拍攝時間不變，並保留最早的 _original 備份。"),
-                primaryButton: .destructive(Text("確認覆寫"), action: model.confirmReplace),
+                title: Text("確認處理 \(count) 張相片？"),
+                message: Text("範圍：\(model.scope.rawValue)\n目標：UTC\(offset)\n方式：\(replace ? "覆寫全部時區（包含既有值）" : "只補缺漏，保留既有時區")\n\n只寫入時區中繼資料，不轉換格式、不改拍攝時間；每張保留最早的 _original 備份。失敗檔案會個別列出，不會算入成功數量。\n\n請確認這批相片拍攝當時使用相同偏移，並留足備份空間。"),
+                primaryButton: .default(Text("確認寫入"), action: model.confirmReplace),
                 secondaryButton: .cancel(Text("返回檢查"))
             )
         case .restore:
             return Alert(
                 title: Text("從最早保留的原始備份還原？"),
-                message: Text("僅處理此次已完成掃描清單中的相片。將以第一次寫入時保留、最早的 _original 備份取代目前檔案，並非只復原上一次操作。\n\n還原前，目前版本會先另存為 .before-restore-UUID.backup 副本，再消耗 _original 備份。若原檔已遺失，會重建原檔並保留備份。沒有備份的相片將略過。"),
+                message: Text("範圍：\(model.scope.rawValue)，共 \(model.scopedItems.count) 張。將以第一次寫入時保留、最早的 _original 備份取代目前檔案，並非只復原上一次操作。\n\n還原前，目前版本會先另存為 .before-restore-UUID.backup 副本，再消耗 _original 備份。若原檔已遺失，會重建原檔並保留備份。沒有備份的相片將略過。"),
                 primaryButton: .destructive(Text("還原原始備份"), action: model.confirmRestore),
                 secondaryButton: .cancel(Text("取消"))
             )

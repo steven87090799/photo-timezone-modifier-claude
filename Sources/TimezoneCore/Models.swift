@@ -13,6 +13,21 @@ public struct PhotoMetadata: Codable, Sendable {
     public let createDate: String?
     public let modifyDate: String?
     public let dateTags: [String: String]
+    public var make: String? = nil
+    public var cameraModel: String? = nil
+    public var lensModel: String? = nil
+    public var iso: String? = nil
+    public var exposureTime: String? = nil
+    public var aperture: String? = nil
+    public var focalLength: String? = nil
+    public var imageWidth: String? = nil
+    public var imageHeight: String? = nil
+    public var fileSize: Int64? = nil
+    public var camera: String { cameraModel ?? make ?? "未知相機" }
+    public var dimensions: String? {
+        guard let imageWidth, let imageHeight else { return nil }
+        return "\(imageWidth) × \(imageHeight)"
+    }
     public var missingOffsets: Bool {
         offsetOriginal == nil || offsetDigitized == nil || offsetTime == nil
     }
