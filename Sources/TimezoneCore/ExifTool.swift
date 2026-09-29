@@ -50,15 +50,15 @@ struct ExifTool {
         while finished.wait(timeout: .now() + 0.05) == .timedOut {
             let expired = timeout.map { ProcessInfo.processInfo.systemUptime - started >= $0 } ?? false
             if expired || cancellation?.isCancelled == true {
-                // Only read-only callers opt into timeout/cancellation. Mutating
-                // commands finish naturally to avoid interrupting a file write.
+                // A timeout/cancellation is safe only for read-only commands
+                // or writes to disposable candidates, never an original.
                 process.terminate()
                 if finished.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
                     kill(process.processIdentifier, SIGKILL)
                     _ = finished.wait(timeout: .now() + 1)
                 }
                 if cancellation?.isCancelled == true { throw CancellationError() }
-                throw PhotoError("ExifTool 讀取逾時，未進行後續寫入。")
+                throw PhotoError("ExifTool 執行逾時，已停止這張照片的候選處理；原檔未更動。")
             }
         }
         try out.synchronize()
@@ -137,6 +137,41 @@ struct ExifTool {
         return results
     }
 
+    /// Compare every readable embedded tag, including unknown tags, while
+    /// excluding file-system/derived fields whose values depend on the path.
+    /// This is a metadata invariant, not a claim that ExifTool rewrites zero
+    /// non-metadata bytes or can see undocumented maker-note internals.
+    func embeddedMetadata(_ file: URL, cancellation: CancellationToken? = nil) throws -> [String: String] {
+        let output = try execute(["-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s", "-U", "-struct", file.path],
+                                 timeout: 120, cancellation: cancellation)
+        guard output.status == 0,
+              let entries = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
+              entries.count == 1, let record = entries.first else {
+            throw PhotoError("無法完整讀取內嵌中繼資料：\(output.text)")
+        }
+        if let error = record["ExifTool:Error"] { throw PhotoError("中繼資料讀取失敗：\(error)") }
+        var result: [String: String] = [:]
+        for (key, value) in record {
+            let group = key.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+            if key == "SourceFile" || ["File", "System", "Composite", "ExifTool"].contains(group) { continue }
+            let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys])
+            result[key] = String(decoding: data, as: UTF8.self)
+        }
+        return result
+    }
+
+    /// JPEG EXIF thumbnail offsets are pointers that may move when the EXIF
+    /// block grows. Only treat that relocation as harmless after comparing the
+    /// thumbnail's original binary payload byte-for-byte. `-m` permits older
+    /// cameras' nonstandard thumbnails to be extracted for this comparison.
+    func thumbnailBytes(_ file: URL) throws -> Data {
+        let output = try execute(["-m", "-b", "-ThumbnailImage", file.path], timeout: 120)
+        guard output.status == 0, !output.stdout.isEmpty else {
+            throw PhotoError("無法驗證內建縮圖內容；原檔未更動。\n\(output.text)")
+        }
+        return output.stdout
+    }
+
     private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
         if let error = record["ExifTool:Error"] as? String { throw PhotoError(error) }
         let warnings = [record["ExifTool:Warning"] as? String, stderr.isEmpty ? nil : stderr]
@@ -192,17 +227,67 @@ struct ExifTool {
 }
 
 enum FileSafety {
-    static func ensureWriteCapacity(_ url: URL, fileSize: Int64?) throws {
+    static func ensureWriteCapacity(_ url: URL, fileSize: Int64?, copies: Int64 = 4, sourceMustBeWritable: Bool = true) throws {
         let parent = url.deletingLastPathComponent()
         guard FileManager.default.isWritableFile(atPath: parent.path),
-              FileManager.default.isWritableFile(atPath: url.path) else {
-            throw PhotoError("相片或資料夾唯讀；請先從記憶卡複製到可寫入的磁碟，再處理副本。")
+              (!sourceMustBeWritable || FileManager.default.isWritableFile(atPath: url.path)) else {
+            throw PhotoError(sourceMustBeWritable
+                             ? "原檔或所在資料夾唯讀；替換模式需要可寫入的工作磁碟，請改用副本輸出或先複製照片。"
+                             : "輸出資料夾唯讀；請選擇可寫入的目的地。")
         }
         let size = try fileSize ?? Int64(url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         let available = try parent.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity
-        if let available, Int64(available) < max(size, 0) * 2 + 16 * 1024 * 1024 {
+        let (requiredCopies, overflow) = max(size, 0).multipliedReportingOverflow(by: copies)
+        guard !overflow else { throw PhotoError("相片尺寸超出安全容量計算範圍；未寫入。") }
+        let (required, overheadOverflow) = requiredCopies.addingReportingOverflow(32 * 1024 * 1024)
+        guard !overheadOverflow else { throw PhotoError("相片尺寸超出安全容量計算範圍；未寫入。") }
+        if let available, Int64(available) < required {
             throw PhotoError("磁碟可用空間不足以安全建立備份與暫存；未開始寫入此相片。")
         }
+    }
+
+    static func preserveAndVerifyFileAttributes(from source: URL, to candidate: URL) throws {
+        let manager = FileManager.default
+        let before = try manager.attributesOfItem(atPath: source.path)
+        let candidateBefore = try manager.attributesOfItem(atPath: candidate.path)
+        var requested: [FileAttributeKey: Any] = [:]
+        for key: FileAttributeKey in [.creationDate, .modificationDate, .posixPermissions] {
+            // Avoid rewriting attributes that the candidate already inherited
+            // exactly; that can itself introduce filesystem timestamp rounding.
+            if String(describing: before[key]) != String(describing: candidateBefore[key]) {
+                requested[key] = before[key]
+            }
+        }
+        if !requested.isEmpty { try manager.setAttributes(requested, ofItemAtPath: candidate.path) }
+        let after = try manager.attributesOfItem(atPath: candidate.path)
+        for key: FileAttributeKey in [.creationDate, .modificationDate, .posixPermissions] {
+            guard String(describing: before[key]) == String(describing: after[key]) else {
+                throw PhotoError("檔案屬性 \(key.rawValue) 無法保留；原檔未更動。")
+            }
+        }
+        guard try extendedAttributes(source) == extendedAttributes(candidate) else {
+            throw PhotoError("Finder／延伸屬性無法完整保留；原檔未更動。")
+        }
+    }
+
+    private static func extendedAttributes(_ url: URL) throws -> [String: Data] {
+        let length = listxattr(url.path, nil, 0, 0)
+        guard length >= 0 else { throw PhotoError("無法讀取延伸屬性：\(url.lastPathComponent)") }
+        if length == 0 { return [:] }
+        var names = [CChar](repeating: 0, count: length)
+        let actual = names.withUnsafeMutableBufferPointer { listxattr(url.path, $0.baseAddress, length, 0) }
+        guard actual >= 0 else { throw PhotoError("延伸屬性清單已變動，請重試。") }
+        var result: [String: Data] = [:]
+        for raw in names.prefix(actual).split(separator: 0) {
+            let name = String(decoding: raw.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+            let size = getxattr(url.path, name, nil, 0, 0, 0)
+            guard size >= 0 else { throw PhotoError("無法讀取延伸屬性 \(name)。") }
+            var bytes = [UInt8](repeating: 0, count: size)
+            let read = bytes.withUnsafeMutableBufferPointer { getxattr(url.path, name, $0.baseAddress, size, 0, 0) }
+            guard read == size else { throw PhotoError("延伸屬性 \(name) 讀取中改變，請重試。") }
+            result[name] = Data(bytes)
+        }
+        return result
     }
 
     static func ensureRegular(_ url: URL) throws {

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import TimezoneCore
 
@@ -112,12 +113,20 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let editedHash = try digest(of: photo)
         expectNotEqual(editedHash, originalHash)
         expectNotEqual(editedHash, firstEditHash)
+        let previousVersions = try FileManager.default.contentsOfDirectory(
+            at: temporaryDirectory, includingPropertiesForKeys: nil
+        ).filter {
+            $0.lastPathComponent.hasPrefix(photo.lastPathComponent + ".before-write-") && $0.pathExtension == "backup"
+        }
+        expectEqual(previousVersions.count, 1)
+        expectEqual(try digest(of: requireValue(previousVersions.first)), firstEditHash)
         assertOffsets(try tool.inspect(photo).0, original: "-00:15", digitized: "-00:15", time: "-00:15")
 
         let restored = await run([photo], operation: .restore)
         let restoredItems = try assertJob(restored, succeeded: 1)
         expectEqual(try digest(of: photo), originalHash)
         expectEqual(try Data(contentsOf: photo), originalBytes)
+        expectEqual(try Data(contentsOf: backup), originalBytes, "Restoration must retain the oldest backup")
         assertOffsets(try requireValue(restoredItems.first?.metadata), original: "+01:00", digitized: nil, time: nil)
         assertDates(try tool.inspect(photo).0)
         let savedEdits = try FileManager.default.contentsOfDirectory(
@@ -130,6 +139,9 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(try Data(contentsOf: savedEdit), editedBytes)
         expectEqual(try digest(of: savedEdit), editedHash)
         expectEqual(Set((first.summaries + second.summaries + restored.summaries).compactMap(\.logURL)).count, 3)
+        let hiddenStages = try FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path)
+            .filter { $0.hasPrefix(".photo-timezone-") }
+        expectTrue(hiddenStages.isEmpty)
     }
 
     @Test func testCancellationInFirstUpdatedCallbackLeavesRemainingPhotosByteIdentical() async throws {
@@ -350,6 +362,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             "-LensModel=FE 24-70mm F2.8 GM", "-ISO=800", "-ExposureTime=1/250", "-FNumber=2.8",
             "-FocalLength=35", "-ExifImageWidth=3", "-ExifImageHeight=2", photo.path])
         expectEqual(setup.status, 0)
+        let marker = [UInt8]("preserve-finder-attributes".utf8)
+        let setMarker = marker.withUnsafeBytes {
+            setxattr(photo.path, "com.example.photo-timezone-test", $0.baseAddress, marker.count, 0, 0)
+        }
+        expectEqual(setMarker, 0)
         let batch = try tool.inspectBatch([photo], cancellation: CancellationToken())
         let before = try requireValue(batch[photo.path]).get().0
         expectEqual(before.cameraModel, "ILCE-7M4")
@@ -368,6 +385,191 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(after.exposureTime, before.exposureTime)
         expectEqual(after.aperture, before.aperture)
         expectEqual(after.focalLength, before.focalLength)
+        var savedMarker = [UInt8](repeating: 0, count: marker.count)
+        let readMarker = savedMarker.withUnsafeMutableBytes {
+            getxattr(photo.path, "com.example.photo-timezone-test", $0.baseAddress, marker.count, 0, 0)
+        }
+        expectEqual(readMarker, marker.count)
+        expectEqual(savedMarker, marker)
+    }
+
+    @Test func testCopyOutputPreservesSourceTreeBytesAndNonTimezoneMetadata() async throws {
+        let source = try makeDirectory("imported-camera")
+        let jpeg = try makeSeededPhoto("imported-camera/day1/DSC001.jpg")
+        let tiff = try makeSeededPhoto("imported-camera/day2/DSC002.tiff", format: .tiff)
+        let setup = try tool.execute(["-overwrite_original", "-Artist=Test Photographer", "-Copyright=Test Rights", jpeg.path])
+        expectEqual(setup.status, 0)
+        let originalBytes = try [jpeg, tiff].map { try Data(contentsOf: $0) }
+        let originalTags = try [jpeg, tiff].map { try tool.embeddedMetadata($0) }
+        let output = try makeDirectory("output")
+        let job = await run([jpeg, tiff], operation: .writeCopy(
+            offset: UTCOffset(minutes: 345), mode: .fillMissing, destination: output, sourceRoots: [source]
+        ))
+        let items = try assertJob(job, succeeded: 2)
+        let copies = [output.appendingPathComponent("imported-camera/day1/DSC001.jpg"),
+                      output.appendingPathComponent("imported-camera/day2/DSC002.tiff")]
+        for index in 0..<2 {
+            expectEqual(try Data(contentsOf: [jpeg, tiff][index]), originalBytes[index])
+            expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: [jpeg, tiff][index]).path))
+            expectTrue(FileManager.default.fileExists(atPath: copies[index].path))
+            assertOffsets(try tool.inspect(copies[index]).0, original: "+05:45", digitized: "+05:45", time: "+05:45")
+            var expected = originalTags[index]
+            let changed = try tool.embeddedMetadata(copies[index])
+            for name in ["OffsetTimeOriginal", "OffsetTimeDigitized", "OffsetTime"] {
+                expected["ExifIFD:\(name)"] = changed["ExifIFD:\(name)"]
+            }
+            if index == 1 { expected["IFD0:StripOffsets"] = changed["IFD0:StripOffsets"] }
+            expectEqual(changed, expected)
+            expectTrue(items[index].detail.contains(copies[index].path))
+            expectEqual(items[index].outputURL, copies[index])
+            assertOffsets(try requireValue(items[index].metadata), original: nil, digitized: nil, time: nil)
+            assertOffsets(try requireValue(items[index].outputMetadata), original: "+05:45", digitized: "+05:45", time: "+05:45")
+        }
+    }
+
+    @Test func testCopyCollisionFailsClosedAndAnotherPhotoStillCompletes() async throws {
+        let folder = try makeDirectory("input")
+        let first = try makeSeededPhoto("input/a.jpg")
+        let second = try makeSeededPhoto("input/b.jpg")
+        let originals = try [first, second].map { try Data(contentsOf: $0) }
+        let output = try makeDirectory("output")
+        let existing = try makeFile("output/input/a.jpg", contents: Data("do not overwrite".utf8))
+        let existingBytes = try Data(contentsOf: existing)
+        let job = await run([first, second], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [folder]
+        ))
+        let items = try assertJob(job, succeeded: 1, failed: 1)
+        expectTrue(items[0].detail.contains("同名"))
+        expectEqual(try Data(contentsOf: existing), existingBytes)
+        expectEqual(try Data(contentsOf: first), originals[0])
+        expectEqual(try Data(contentsOf: second), originals[1])
+        assertOffsets(try tool.inspect(output.appendingPathComponent("input/b.jpg")).0,
+                      original: "+08:00", digitized: "+08:00", time: "+08:00")
+        // Once the user resolves a collision, only the failed source can be
+        // retried; the successful second output is never touched again.
+        let successfulCopy = output.appendingPathComponent("input/b.jpg")
+        let successfulBytes = try Data(contentsOf: successfulCopy)
+        try FileManager.default.removeItem(at: existing)
+        _ = try assertJob(await run([first], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [folder]
+        )), succeeded: 1)
+        expectEqual(try Data(contentsOf: successfulCopy), successfulBytes)
+        expectEqual(try Data(contentsOf: first), originals[0])
+        assertOffsets(try tool.inspect(existing).0, original: "+08:00", digitized: "+08:00", time: "+08:00")
+    }
+
+    @Test func testCopyIncludesAlreadyCompletePhotosWithoutChangingTheirBytes() async throws {
+        let photo = try makeSeededPhoto("already-complete.jpg", original: "+08:00", digitized: "+08:00", time: "+08:00")
+        let original = try Data(contentsOf: photo)
+        let output = try makeDirectory("output")
+        let rows = try assertJob(await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo]
+        )), succeeded: 1)
+        let copy = output.appendingPathComponent(photo.lastPathComponent)
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(try Data(contentsOf: copy), original)
+        expectEqual(rows[0].outputURL, copy)
+        expectTrue(rows[0].detail.contains("原樣輸出"))
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+    }
+
+    @Test func testCameraJPEGThumbnailRelocationRequiresIdenticalThumbnailBytes() async throws {
+        let sample = tool.url.deletingLastPathComponent().appendingPathComponent("t/images/Sony.jpg")
+        let original = try Data(contentsOf: sample)
+        let photo = try makeFile("camera-thumb.jpg", contents: original)
+        let thumbnail = try tool.thumbnailBytes(photo)
+        expectTrue(!thumbnail.isEmpty)
+        let output = try makeDirectory("output")
+        let copied = try assertJob(await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo]
+        )), succeeded: 1)
+        let copy = output.appendingPathComponent(photo.lastPathComponent)
+        expectEqual(copied[0].outputURL, copy)
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(try tool.thumbnailBytes(copy), thumbnail)
+        assertOffsets(try tool.inspect(copy).0, original: "+08:00", digitized: "+08:00", time: "+08:00")
+
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing
+        )), succeeded: 1)
+        expectEqual(try Data(contentsOf: originalBackup(for: photo)), original)
+        expectEqual(try tool.thumbnailBytes(photo), thumbnail)
+    }
+
+    @Test func testCopyCancellationLeavesUnprocessedSourcesAndOutputsUntouched() async throws {
+        let photos = try ["one.jpg", "two.jpg", "three.jpg"].map { try makeSeededPhoto($0) }
+        let originals = try photos.map { try Data(contentsOf: $0) }
+        let output = try makeDirectory("output")
+        let token = CancellationToken()
+        let rows = try assertJob(await run(photos, operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: photos
+        ), cancellation: token, cancelAfterFirstUpdate: true), succeeded: 1, cancelled: 2)
+        expectEqual(rows.map(\.status), [.success, .cancelled, .cancelled])
+        for (index, photo) in photos.enumerated() {
+            expectEqual(try Data(contentsOf: photo), originals[index])
+            expectEqual(FileManager.default.fileExists(atPath: output.appendingPathComponent(photo.lastPathComponent).path), index == 0)
+        }
+    }
+
+    @Test func testCopyDestinationInsideSourceIsRejectedBeforeAnyMutation() async throws {
+        let folder = try makeDirectory("camera")
+        let photo = try makeSeededPhoto("camera/a.jpg")
+        let original = try Data(contentsOf: photo)
+        let nested = try makeDirectory("camera/output")
+        let job = await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: nested, sourceRoots: [folder]
+        ))
+        expectEqual(job.summaries.first?.failed, 1)
+        expectEqual(try Data(contentsOf: photo), original)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+    }
+
+    @Test func testCopyFromReadOnlySourceNeverNeedsToWriteAtSource() async throws {
+        let photo = try makeSeededPhoto("card/card-photo.jpg")
+        let original = try Data(contentsOf: photo)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: photo.path)
+        let output = try makeDirectory("output")
+        let job = await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo]
+        ))
+        let items = try assertJob(job, succeeded: 1)
+        expectEqual(items[0].status, .success)
+        expectEqual(try Data(contentsOf: photo), original)
+        let copy = output.appendingPathComponent("card-photo.jpg")
+        assertOffsets(try tool.inspect(copy).0, original: "+08:00", digitized: "+08:00", time: "+08:00")
+    }
+
+    @Test func testCopyOutputSymlinkCannotEscapeChosenDestination() async throws {
+        let folder = try makeDirectory("source")
+        let photo = try makeSeededPhoto("source/a.jpg")
+        let original = try Data(contentsOf: photo)
+        let output = try makeDirectory("output")
+        let outside = try makeDirectory("outside")
+        try FileManager.default.createSymbolicLink(
+            at: output.appendingPathComponent("source"), withDestinationURL: outside
+        )
+        let job = await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [folder]
+        ))
+        let items = try assertJob(job, failed: 1)
+        expectTrue(items[0].detail.contains("符號連結"))
+        expectEqual(try Data(contentsOf: photo), original)
+        expectFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("a.jpg").path))
+    }
+
+    @Test func testPreparedBackupWithoutReplacementLeavesOriginalIntact() throws {
+        let photo = try makeSeededPhoto("interrupted.jpg")
+        let original = try Data(contentsOf: photo)
+        let stage = SafeFileTransaction.temporaryPhoto(beside: photo)
+        try SafeFileTransaction.copyAndSync(photo, to: stage)
+        let backupStage = temporaryDirectory.appendingPathComponent(".backup-in-progress")
+        let backup = originalBackup(for: photo)
+        try SafeFileTransaction.copyAndSync(photo, to: backupStage)
+        try SafeFileTransaction.publishExclusive(backupStage, to: backup)
+        // Simulates a crash before the single atomic replacement step.
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(try Data(contentsOf: backup), original)
+        expectEqual(try Data(contentsOf: stage), original)
     }
 
     @Test func testBatchedScanContinuesAcrossCorruptAndSpecialNamesWithoutMutation() async throws {
@@ -427,6 +629,46 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         _ = try assertJob(restored, succeeded: 10)
         for index in 0..<10 { expectEqual(try Data(contentsOf: photos[index]), originals[index % 2]) }
         print("STRESS_RESULT photos=1000 corrupt=1 scan_seconds=\(scanSeconds) write_seconds=\(writeSeconds) verified_backups=1000 restored=10")
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_STRESS"] == "1"))
+    func testThousandCopyOutputsPreserveEverySource() async throws {
+        let template = try makeSeededPhoto("templates/copy.jpg")
+        let original = try Data(contentsOf: template)
+        let root = try makeDirectory("copy-thousand")
+        let output = try makeDirectory("copy-output")
+        var photos: [URL] = []
+        for index in 0..<1000 {
+            photos.append(try makeFile("copy-thousand/day\(index / 100)/DSC\(index).jpg", contents: original))
+        }
+        let started = Date()
+        let copied = await run(photos, operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [root]
+        ))
+        let failures = copied.updates.map(\.item).filter { $0.status == .failed }
+        if !failures.isEmpty {
+            print("STRESS_COPY_FAILURES", failures.map { "\($0.url.lastPathComponent): \($0.detail)" })
+        }
+        let initialRows = try assertJob(copied, succeeded: 1000 - failures.count, failed: failures.count)
+        var finalRows = Dictionary(uniqueKeysWithValues: initialRows.map { ($0.url.path, $0) })
+        if !failures.isEmpty {
+            // The product exposes exactly this workflow: inspect/report the
+            // failures, then retry only those paths after the user confirms.
+            let retried = await run(failures.map(\.url), operation: .writeCopy(
+                offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [root]
+            ))
+            for item in try assertJob(retried, succeeded: failures.count) { finalRows[item.url.path] = item }
+        }
+        for (index, source) in photos.enumerated() {
+            expectEqual(try Data(contentsOf: source), original)
+            expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: source).path))
+            let copy = output.appendingPathComponent("copy-thousand/day\(index / 100)/DSC\(index).jpg")
+            let row = try requireValue(finalRows[source.path])
+            expectEqual(row.outputURL, copy)
+            assertOffsets(try requireValue(row.outputMetadata), original: "+08:00", digitized: "+08:00", time: "+08:00")
+            expectTrue(FileManager.default.fileExists(atPath: copy.path))
+        }
+        print("STRESS_COPY_RESULT photos=1000 copy_seconds=\(Date().timeIntervalSince(started)) sources_unchanged=1000 first_pass_failures=\(failures.count) retried=\(failures.count)")
     }
 
     private func makeSeededPhoto(

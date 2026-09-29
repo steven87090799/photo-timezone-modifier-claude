@@ -39,6 +39,8 @@ public struct PhotoItem: Identifiable, Codable, Sendable {
     public var status: PhotoStatus
     public var detail: String
     public var metadata: PhotoMetadata?
+    public var outputURL: URL? = nil
+    public var outputMetadata: PhotoMetadata? = nil
 
     public init(url: URL, status: PhotoStatus = .pending, detail: String = "") {
         self.id = UUID()
@@ -68,13 +70,16 @@ public struct UTCOffset: Identifiable, Hashable, Sendable {
 public enum JobOperation: Sendable {
     case inspect
     case write(offset: UTCOffset, mode: WriteMode)
+    case writeCopy(offset: UTCOffset, mode: WriteMode, destination: URL, sourceRoots: [URL])
     case restore
 
     var label: String {
         switch self {
         case .inspect: return "檢查"
         case .write(let offset, let mode):
-            return "寫入 \(offset.label) / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
+            return "替換原檔 \(offset.label) / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
+        case .writeCopy(let offset, let mode, _, _):
+            return "輸出副本 \(offset.label) / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
         case .restore: return "復原"
         }
     }

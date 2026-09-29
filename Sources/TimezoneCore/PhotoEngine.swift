@@ -40,8 +40,13 @@ public struct PhotoEngine: Sendable {
             jobLock = try JobLock(url: support.appendingPathComponent("job.lock"))
             onEvent(.phase("確認內建 ExifTool…"))
             try tool.validateVersion()
-            if case .write(let offset, _) = operation, !offset.isValid {
-                throw PhotoError("UTC 偏移必須介於 −12:00 與 +14:00，並以 15 分鐘為單位。")
+            switch operation {
+            case .write(let offset, _), .writeCopy(let offset, _, _, _):
+                guard offset.isValid else { throw PhotoError("UTC 偏移必須介於 −12:00 與 +14:00，並以 15 分鐘為單位。") }
+            case .inspect, .restore: break
+            }
+            if case .writeCopy(_, _, let destination, let roots) = operation {
+                try CopyDestination.validate(destination, roots: roots)
             }
             journal = try Journal(directory: logDirectory ?? support.appendingPathComponent("Logs"), operation: operation.label)
             onEvent(.phase("掃描檔案與資料夾…"))
@@ -91,7 +96,9 @@ public struct PhotoEngine: Sendable {
                                 item.detail = metadata.missingOffsets ? "有缺漏時區標籤。" : "三個時區標籤均已存在。"
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode):
-                                try write(item: &item, tool: tool, offset: offset, mode: mode, cancellation: cancellation)
+                                try write(item: &item, tool: tool, offset: offset, mode: mode, destination: nil, roots: [], cancellation: cancellation)
+                            case .writeCopy(let offset, let mode, let destination, let roots):
+                                try write(item: &item, tool: tool, offset: offset, mode: mode, destination: destination, roots: roots, cancellation: cancellation)
                             case .restore:
                                 try restore(item: &item, tool: tool, cancellation: cancellation)
                             }
@@ -113,7 +120,7 @@ public struct PhotoEngine: Sendable {
         } catch {
             generalError = error.localizedDescription
             if items.isEmpty {
-                items = [PhotoItem(url: exiftoolURL, status: .failed, detail: error.localizedDescription)]
+                items = [PhotoItem(url: inputs.first ?? exiftoolURL, status: .failed, detail: error.localizedDescription)]
                 onEvent(.discovered(items))
             } else {
                 for index in items.indices where items[index].status == .pending {
@@ -142,8 +149,10 @@ public struct PhotoEngine: Sendable {
     }
 
     private func write(
-        item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode, cancellation: CancellationToken
+        item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode,
+        destination: URL?, roots: [URL], cancellation: CancellationToken
     ) throws {
+        let fm = FileManager.default
         let (before, warning) = try tool.inspect(item.url, cancellation: cancellation)
         item.metadata = before
         let fields: [(String, String?)] = [
@@ -152,7 +161,8 @@ public struct PhotoEngine: Sendable {
             ("OffsetTime", before.offsetTime)
         ]
         let requested = fields.filter { mode == .replaceAll || $0.1 == nil }
-        guard requested.contains(where: { $0.1 != offset.value }) else {
+        let willChange = requested.contains(where: { $0.1 != offset.value })
+        guard willChange || destination != nil else {
             item.status = .skipped
             item.detail = "不需要變更；現有時區已保留。" + (warning.isEmpty ? "" : "\n警告：\(warning)")
             return
@@ -162,40 +172,126 @@ public struct PhotoEngine: Sendable {
             item.detail = "已取消；尚未開始寫入。"
             return
         }
-        let backup = URL(fileURLWithPath: item.url.path + "_original")
-        // ExifTool never replaces its original backup. Validate an existing
-        // backup instead of assuming any file with this name is a safe copy.
-        if FileManager.default.fileExists(atPath: backup.path) {
-            try FileSafety.ensureRegular(backup)
-            _ = try tool.inspect(backup, cancellation: cancellation, strictOffsets: false)
+        let target: URL
+        if let destination {
+            target = try CopyDestination.url(for: item.url, in: destination, roots: roots)
+            try CopyDestination.validate(destination, roots: roots)
+            try CopyDestination.prepareOutputParent(target.deletingLastPathComponent(), under: destination)
+            guard !fm.fileExists(atPath: target.path) else {
+                throw PhotoError("輸出目的地已有同名相片；未覆蓋：\(target.path)")
+            }
+            try FileSafety.ensureWriteCapacity(target, fileSize: before.fileSize, copies: 3, sourceMustBeWritable: false)
+        } else {
+            target = item.url
+            try FileSafety.ensureWriteCapacity(item.url, fileSize: before.fileSize)
         }
-        if cancellation.isCancelled { throw CancellationError() }
-        try FileSafety.ensureWriteCapacity(item.url, fileSize: before.fileSize)
-        let arguments = ["-charset", "filename=UTF8", "-P"] +
-            requested.map { "-EXIF:\($0.0)=\(offset.value)" } + [item.url.path]
-        // Deliberately omit -overwrite_original: ExifTool preserves _original.
-        let output = try tool.execute(arguments)
-        guard output.status == 0 else {
-            throw PhotoError("寫入失敗（\(output.status)）。原檔備份若已建立，位於 \(backup.lastPathComponent)。\n\(output.text)")
+        let sourceHash = try FileSafety.hash(item.url)
+        let beforeTags = willChange ? try tool.embeddedMetadata(item.url, cancellation: cancellation) : [:]
+        let stage = SafeFileTransaction.temporaryPhoto(beside: target)
+        defer { try? fm.removeItem(at: stage) }
+        try SafeFileTransaction.copyAndSync(item.url, to: stage)
+        var stderr = ""
+        if willChange {
+            // A read-only memory-card source is valid in copy mode. Only the
+            // disposable candidate becomes writable; original permissions
+            // are restored and verified before publication.
+            let attributes = try fm.attributesOfItem(atPath: stage.path)
+            let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            try fm.setAttributes([.posixPermissions: permissions | 0o200], ofItemAtPath: stage.path)
+            let arguments = ["-charset", "filename=UTF8", "-P", "-overwrite_original_in_place"] +
+                requested.map { "-EXIF:\($0.0)=\(offset.value)" } + [stage.path]
+            let output = try tool.execute(arguments, timeout: 600)
+            guard output.status == 0 else {
+                throw PhotoError("候選副本寫入失敗（\(output.status)）；原檔未更動。\n\(output.text)")
+            }
+            stderr = output.stderr
         }
-        guard FileManager.default.fileExists(atPath: backup.path) else {
-            throw PhotoError("寫入後未找到原檔備份，請先檢查檔案；不會標示為成功。")
+        let (after, postWarning) = try tool.inspect(stage)
+        if willChange {
+            var expectedTags = beforeTags
+            for (tag, _) in requested {
+                let value = try JSONSerialization.data(withJSONObject: offset.value, options: [.fragmentsAllowed])
+                expectedTags["ExifIFD:\(tag)"] = String(decoding: value, as: UTF8.self)
+            }
+            let actualTags = try tool.embeddedMetadata(stage)
+            // TIFF's StripOffsets is a byte pointer, not a user-visible photo
+            // property. Expanding EXIF may relocate the unchanged image strips.
+            // All other readable embedded tags must match exactly.
+            if before.fileType == "TIFF" {
+                expectedTags["IFD0:StripOffsets"] = actualTags["IFD0:StripOffsets"]
+            }
+            if before.fileType == "JPEG",
+               let oldThumbnailOffset = beforeTags["IFD1:ThumbnailOffset"],
+               let newThumbnailOffset = actualTags["IFD1:ThumbnailOffset"],
+               oldThumbnailOffset != newThumbnailOffset {
+                guard try tool.thumbnailBytes(item.url) == tool.thumbnailBytes(stage) else {
+                    throw PhotoError("候選副本的內建縮圖內容變動；原檔未更動，未輸出此張。")
+                }
+                expectedTags["IFD1:ThumbnailOffset"] = newThumbnailOffset
+            }
+            guard actualTags == expectedTags else {
+                let changed = Set(actualTags.keys).union(expectedTags.keys)
+                    .filter { actualTags[$0] != expectedTags[$0] }.sorted().prefix(8).joined(separator: "、")
+                throw PhotoError("候選副本有非時區中繼資料變動（\(changed)）；原檔未更動，未輸出此張。")
+            }
         }
-        let (after, postWarning) = try tool.inspect(item.url)
         let actual = ["OffsetTimeOriginal": after.offsetOriginal, "OffsetTimeDigitized": after.offsetDigitized, "OffsetTime": after.offsetTime]
         for (tag, prior) in fields {
             let expected = requested.contains(where: { $0.0 == tag }) ? offset.value : prior
-            guard actual[tag] == expected else { throw PhotoError("寫入後驗證失敗：\(tag)。可從 _original 備份復原。") }
+            guard actual[tag] == expected else { throw PhotoError("候選副本時區驗證失敗：\(tag)；原檔未更動。") }
         }
         guard before.dateTimeOriginal == after.dateTimeOriginal,
               before.createDate == after.createDate,
               before.modifyDate == after.modifyDate, before.dateTags == after.dateTags else {
-            throw PhotoError("拍攝／建立／修改時間驗證失敗；請從 _original 備份復原。")
+            throw PhotoError("候選副本拍攝／建立／修改時間變動；原檔未更動。")
         }
-        item.metadata = after
+        try FileSafety.preserveAndVerifyFileAttributes(from: item.url, to: stage)
+        try SafeFileTransaction.syncFile(stage)
+        guard try FileSafety.hash(item.url) == sourceHash else {
+            throw PhotoError("處理期間原檔被其他程式改動；未提交此張，請重新掃描。")
+        }
+        var backupName: String?
+        if destination == nil {
+            let oldest = URL(fileURLWithPath: item.url.path + "_original")
+            let backup: URL
+            if fm.fileExists(atPath: oldest.path) {
+                try FileSafety.ensureRegular(oldest)
+                _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
+                backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
+            } else {
+                backup = oldest
+            }
+            let backupStage = backup.deletingLastPathComponent()
+                .appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
+            defer { try? fm.removeItem(at: backupStage) }
+            try SafeFileTransaction.copyAndSync(item.url, to: backupStage)
+            try SafeFileTransaction.publishExclusive(backupStage, to: backup)
+            backupName = backup.lastPathComponent
+            guard try FileSafety.hash(item.url) == sourceHash else {
+                throw PhotoError("備份完成後原檔被其他程式改動；備份保留，未替換，請重新掃描。")
+            }
+            try SafeFileTransaction.replace(stage, at: item.url)
+        } else {
+            try SafeFileTransaction.publishExclusive(stage, to: target)
+        }
+        if destination == nil {
+            item.metadata = after
+        } else {
+            // The table still describes the unmodified source. Show the
+            // generated result separately instead of claiming its offsets
+            // are now present on the source photo.
+            item.metadata = before
+            item.outputURL = target
+            item.outputMetadata = after
+        }
         item.status = .success
-        item.detail = "已寫入並驗證 \(offset.value)；保留原檔備份：\(backup.lastPathComponent)"
-        let warnings = [warning, output.stderr, postWarning].filter { !$0.isEmpty }.joined(separator: "\n")
+        if let backupName {
+            item.detail = "已安全替換並驗證 \(offset.value)；替換前版本保留於 \(backupName)。"
+        } else {
+            item.detail = willChange ? "已輸出並驗證 \(offset.value) 的副本：\(target.path)；原檔未更動。"
+                                     : "原有時區完整，已原樣輸出副本：\(target.path)；原檔未更動。"
+        }
+        let warnings = [warning, stderr, postWarning].filter { !$0.isEmpty }.joined(separator: "\n")
         if !warnings.isEmpty { item.detail += "\n警告：\(warnings)" }
     }
 
@@ -215,10 +311,16 @@ public struct PhotoEngine: Sendable {
             item.detail = "已取消；未復原。"
             return
         }
+        let backupSize = Int64(try backup.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+        try FileSafety.ensureWriteCapacity(item.url, fileSize: backupSize, copies: 3, sourceMustBeWritable: false)
+        let stage = SafeFileTransaction.temporaryPhoto(beside: item.url)
+        defer { try? fm.removeItem(at: stage) }
+        try SafeFileTransaction.copyAndSync(backup, to: stage)
+        guard try FileSafety.hash(stage) == digest else {
+            throw PhotoError("原始備份暫存副本 SHA-256 驗證失敗；未復原。")
+        }
         if !fm.fileExists(atPath: item.url.path) {
-            // copyItem refuses an existing destination, including a dangling
-            // symlink; never overwrite a file created after the discovery.
-            try fm.copyItem(at: backup, to: item.url)
+            try SafeFileTransaction.publishExclusive(stage, to: item.url)
             guard try FileSafety.hash(item.url) == digest else {
                 throw PhotoError("遺失檔案重建後驗證失敗；_original 備份仍保留。")
             }
@@ -227,25 +329,26 @@ public struct PhotoEngine: Sendable {
             item.detail = "已從 _original 重建遺失檔案並驗證；原始備份仍保留。"
             return
         }
-        // Also retain the current edited photo so restoration itself is
-        // reversible. The .backup suffix excludes this from future scans.
+        try FileSafety.ensureRegular(item.url)
+        let currentHash = try FileSafety.hash(item.url)
+        // Retain the currently edited photo before the atomic replacement.
         let currentCopy = URL(fileURLWithPath: item.url.path + ".before-restore-\(UUID().uuidString).backup")
-        try FileSafety.ensureWriteCapacity(item.url, fileSize: nil)
-        try fm.copyItem(at: item.url, to: currentCopy)
-        guard try FileSafety.hash(item.url) == FileSafety.hash(currentCopy) else {
-            throw PhotoError("復原前的現況副本驗證失敗；未執行復原。")
+        let backupStage = currentCopy.deletingLastPathComponent()
+            .appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
+        defer { try? fm.removeItem(at: backupStage) }
+        try SafeFileTransaction.copyAndSync(item.url, to: backupStage)
+        try SafeFileTransaction.publishExclusive(backupStage, to: currentCopy)
+        guard try FileSafety.hash(item.url) == currentHash else {
+            throw PhotoError("復原前原檔被其他程式改動；現況副本保留，未執行復原。")
         }
-        let output = try tool.execute(["-charset", "filename=UTF8", "-restore_original", item.url.path])
-        guard output.status == 0 else {
-            throw PhotoError("復原失敗（\(output.status)）。目前版本已另存 \(currentCopy.lastPathComponent)。\n\(output.text)")
-        }
+        try SafeFileTransaction.replace(stage, at: item.url)
         guard try FileSafety.hash(item.url) == digest else {
             throw PhotoError("復原後 SHA-256 不符，請檢查原檔與 \(currentCopy.lastPathComponent)。")
         }
         let (metadata, warning) = try tool.inspect(item.url, strictOffsets: false)
         item.metadata = metadata
         item.status = .success
-        item.detail = "已還原 _original 並驗證完整檔案；復原前版本保留於 \(currentCopy.lastPathComponent)。"
+        item.detail = "已從 _original 原子還原並驗證完整檔案；_original 與復原前版本 \(currentCopy.lastPathComponent) 均保留。"
         if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
     }
 }

@@ -55,11 +55,16 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var recursive = true
     @Published private(set) var offset = UTCOffset(minutes: 480)
     @Published private(set) var mode: WriteMode = .fillMissing
+    @Published private(set) var replaceOriginals = false
+    @Published private(set) var outputDirectory: URL?
     @Published private(set) var isRunning = false
     @Published private(set) var isCancelling = false
     @Published private(set) var phase = "加入相片，開始檢查時區"
     @Published private(set) var completed = 0
     @Published private(set) var total = 0
+    @Published private(set) var progressSucceeded = 0
+    @Published private(set) var progressFailed = 0
+    @Published private(set) var progressSkipped = 0
     @Published private(set) var summary: JobSummary?
     @Published private(set) var reportTitle = "處理報告"
     @Published var selection: Set<PhotoItem.ID> = []
@@ -101,6 +106,10 @@ final class PhotoViewModel: ObservableObject {
     private var pendingPhase: String?
     private var pendingCompleted: Int?
     private var pendingTotal: Int?
+    private var bufferedSucceeded = 0
+    private var bufferedFailed = 0
+    private var bufferedSkipped = 0
+    private var copySourceRootsForRetry: [URL]?
 
     private var currentSignature: ScanSignature {
         ScanSignature(paths: inputs.map(\.path).sorted(), recursive: recursive)
@@ -138,10 +147,16 @@ final class PhotoViewModel: ObservableObject {
 
     func selectFiltered() { refreshCatalogue(); selection = Set(filteredItems.map(\.id)); scope = .selected }
 
+    func showFailures() {
+        filter = .failed
+        if let first = items.first(where: { $0.status == .failed }) { selection = [first.id] }
+    }
+
     func retryUnfinished() {
         guard !isRunning else { return }
         let urls = items.filter { PhotoFilter.unfinished.matches($0) }.map(\.url)
         guard !urls.isEmpty else { return }
+        copySourceRootsForRetry = copySourceRootsForRetry ?? inputs
         inputs = urls
         query = ""; filter = .all; cameraFilter = ""; scope = .all
         invalidatePreview()
@@ -167,6 +182,9 @@ final class PhotoViewModel: ObservableObject {
         if let pendingPhase, !isCancelling { phase = pendingPhase }
         if let pendingCompleted { completed = pendingCompleted }
         if let pendingTotal { total = pendingTotal; activeScopeCount = pendingTotal }
+        if progressSucceeded != bufferedSucceeded { progressSucceeded = bufferedSucceeded }
+        if progressFailed != bufferedFailed { progressFailed = bufferedFailed }
+        if progressSkipped != bufferedSkipped { progressSkipped = bufferedSkipped }
         pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
         filteredItems = PhotoCatalogue.filtered(items, query: query, filter: filter,
                                                 camera: cameraFilter.isEmpty ? nil : cameraFilter, sort: sort)
@@ -195,6 +213,35 @@ final class PhotoViewModel: ObservableObject {
         mode = value
     }
 
+    func setReplaceOriginals(_ value: Bool) {
+        guard !isRunning else { return }
+        replaceOriginals = value
+    }
+
+    func chooseOutputDirectory(confirmAfterSelection: Bool = false) {
+        guard !isRunning else { return }
+        let panel = NSOpenPanel()
+        panel.title = "選擇副本輸出資料夾"
+        panel.message = "請選獨立於來源的資料夾；不會覆蓋目的地已有的同名檔案。"
+        panel.prompt = "使用此資料夾"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.begin { [weak self] response in
+            Task { @MainActor in
+                guard response == .OK, let selected = panel.url, let self else { return }
+                do {
+                    try CopyDestination.validate(selected, roots: self.copySourceRootsForRetry ?? self.inputs)
+                    self.outputDirectory = selected.standardizedFileURL
+                    if confirmAfterSelection { self.requestWrite() }
+                } catch {
+                    self.notice = .error("無法使用這個輸出資料夾", error.localizedDescription)
+                }
+            }
+        }
+    }
+
     func addInputs(_ urls: [URL]) {
         var known = Set(inputs.map(\.path))
         let additions = urls.filter(\.isFileURL).map(\.standardizedFileURL).filter {
@@ -202,6 +249,7 @@ final class PhotoViewModel: ObservableObject {
         }
         guard !additions.isEmpty else { return }
         guard !isRunning else { notice = .busyInput; return }
+        copySourceRootsForRetry = nil
         inputs.append(contentsOf: additions)
         scope = .all
         query = ""; filter = .all; cameraFilter = ""
@@ -217,12 +265,14 @@ final class PhotoViewModel: ObservableObject {
 
     func removeInput(_ url: URL) {
         guard !isRunning else { return }
+        copySourceRootsForRetry = nil
         inputs.removeAll { $0 == url }
         invalidatePreview()
     }
 
     func clearInputs() {
         guard !isRunning else { return }
+        copySourceRootsForRetry = nil
         inputs.removeAll()
         invalidatePreview()
     }
@@ -235,11 +285,17 @@ final class PhotoViewModel: ObservableObject {
         bufferedItems = []; bufferDirty = false
         itemIndices = [:]
         selection = []
+        bufferedSucceeded = 0
+        bufferedFailed = 0
+        bufferedSkipped = 0
         refreshCatalogue()
         // Keep the last report available for export until the next job starts.
         phase = inputs.isEmpty ? "加入相片，開始檢查時區" : "來源已更新，請先掃描預覽"
         completed = 0
         total = 0
+        progressSucceeded = 0
+        progressFailed = 0
+        progressSkipped = 0
     }
 
     func chooseInputs() {
@@ -311,12 +367,26 @@ final class PhotoViewModel: ObservableObject {
     func requestWrite() {
         refreshCatalogue()
         guard canWrite else { return }
-        notice = .writeConfirmation(scopedItems.count, offset.value, mode == .replaceAll)
+        if !replaceOriginals && outputDirectory == nil {
+            chooseOutputDirectory(confirmAfterSelection: true)
+            return
+        }
+        if let outputDirectory, !replaceOriginals {
+            do { try CopyDestination.validate(outputDirectory, roots: copySourceRootsForRetry ?? inputs) }
+            catch { notice = .error("無法使用這個輸出資料夾", error.localizedDescription); return }
+        }
+        let placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
+        notice = .writeConfirmation(scopedItems.count, offset.value, mode == .replaceAll, placement)
     }
 
     func confirmReplace() {
         guard canWrite else { return }
-        start(.write(offset: offset, mode: mode))
+        if replaceOriginals {
+            start(.write(offset: offset, mode: mode))
+        } else if let outputDirectory {
+            start(.writeCopy(offset: offset, mode: mode, destination: outputDirectory,
+                             sourceRoots: copySourceRootsForRetry ?? inputs))
+        }
     }
 
     func requestRestore() {
@@ -360,7 +430,7 @@ final class PhotoViewModel: ObservableObject {
         case .inspect:
             jobInputs = inputs
             includeSubfolders = recursive
-        case .write, .restore:
+        case .write, .writeCopy, .restore:
             guard previewIsCurrent, !previewFileURLs.isEmpty else { return }
             // Freeze the exact inspected files, including failed files for per-file reporting.
             // Never rescan the originally selected folders during a mutating operation.
@@ -380,9 +450,15 @@ final class PhotoViewModel: ObservableObject {
         pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
         itemIndices = [:]
         selection = []
+        bufferedSucceeded = 0
+        bufferedFailed = 0
+        bufferedSkipped = 0
         refreshCatalogue()
         completed = 0
         total = 0
+        progressSucceeded = 0
+        progressFailed = 0
+        progressSkipped = 0
         isCancelling = false
         isRunning = true
         activeScopeCount = jobInputs.count
@@ -400,8 +476,11 @@ final class PhotoViewModel: ObservableObject {
             reportTitle = "掃描報告"
             phase = "正在尋找相片並讀取 EXIF…"
         case .write:
-            reportTitle = "寫入報告"
-            phase = "正在準備寫入時區…"
+            reportTitle = "替換原檔報告"
+            phase = "正在準備替換原檔…"
+        case .writeCopy:
+            reportTitle = "副本輸出報告"
+            phase = "正在準備輸出副本…"
         case .restore:
             reportTitle = "還原報告"
             phase = "正在尋找原始備份…"
@@ -440,12 +519,24 @@ final class PhotoViewModel: ObservableObject {
             upsert(photo)
             pendingCompleted = done
             pendingTotal = count
+            switch photo.status {
+            case .ready, .success: bufferedSucceeded += 1
+            case .failed: bufferedFailed += 1
+            case .skipped: bufferedSkipped += 1
+            case .pending, .cancelled: break
+            }
         case .phase(let text):
             if !isCancelling { pendingPhase = text; scheduleCatalogue() }
         case .finished(let result):
             refreshCatalogue()
             summary = result
             total = result.total
+            bufferedSucceeded = result.succeeded
+            bufferedFailed = result.failed
+            bufferedSkipped = result.skipped
+            progressSucceeded = result.succeeded
+            progressFailed = result.failed
+            progressSkipped = result.skipped
         }
     }
 
@@ -521,7 +612,7 @@ final class PhotoViewModel: ObservableObject {
 }
 
 enum PhotoNotice: Identifiable {
-    case writeConfirmation(Int, String, Bool)
+    case writeConfirmation(Int, String, Bool, String)
     case restore
     case busyInput
     case busyClose
@@ -578,7 +669,7 @@ private struct PhotoMainView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text("3.1.0").font(.caption).foregroundStyle(.tertiary)
+                    Text("3.2.0").font(.caption).foregroundStyle(.tertiary)
                 }
                 Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
                     .font(.callout).foregroundStyle(.secondary)
@@ -640,10 +731,37 @@ private struct PhotoMainView: View {
                         .foregroundStyle(model.mode == .replaceAll ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                VStack(alignment: .leading, spacing: 11) {
+                    sectionHeading("04", "選擇輸出位置")
+                    Toggle("替換來源資料夾中的原照片", isOn: Binding(
+                        get: { model.replaceOriginals }, set: model.setReplaceOriginals
+                    ))
+                    .font(.callout)
+                    .disabled(model.isRunning)
+                    .accessibilityIdentifier("replaceOriginalsToggle")
+                    if model.replaceOriginals {
+                        Text("逐張先驗證成品、保存原檔備份，再替換相同路徑的 JPEG／ARW／TIFF；不轉檔。")
+                            .font(.caption).foregroundStyle(.orange)
+                    } else {
+                        Button(model.outputDirectory == nil ? "選擇副本輸出資料夾…" : "變更副本輸出資料夾…") {
+                            model.chooseOutputDirectory()
+                        }
+                        .disabled(model.isRunning)
+                        .accessibilityIdentifier("chooseOutputDirectoryButton")
+                        if let destination = model.outputDirectory {
+                            Text(destination.path).font(.caption2).textSelection(.enabled)
+                                .lineLimit(2).truncationMode(.middle)
+                        }
+                        Text("預設保留來源，副本輸出到你選的獨立資料夾；保留來源資料夾結構，不覆蓋同名檔案。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 10) {
-                    Label("原始備份一律啟用", systemImage: "checkmark.shield.fill")
+                    Label(model.replaceOriginals ? "替換前保留備份" : "來源原檔保持不動", systemImage: "checkmark.shield.fill")
                         .font(.callout.weight(.semibold)).foregroundStyle(.green)
-                    Text("寫入時建立或保留 ExifTool 的 _original 備份。原始拍攝時間 DateTimeOriginal 不變。")
+                    Text(model.replaceOriginals
+                         ? "首次替換保留 _original，再次替換另存上一版本；復原也保留當前版本。"
+                         : "只在輸出資料夾建立副本；來源照片不會被修改。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -754,7 +872,7 @@ private struct PhotoMainView: View {
                 Text("相片預覽").font(.title3.weight(.semibold))
                 Spacer()
                 if !model.items.isEmpty {
-                    Text("\(model.items.count) 張 · 缺時區 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
+                    Text("\(model.items.count) 張 · 來源缺時區 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -881,7 +999,7 @@ private struct PhotoMainView: View {
                     .foregroundStyle(item.metadata?.dateTimeOriginal == nil ? .secondary : .primary)
             }
             .width(min: 130, ideal: 145, max: 175)
-            TableColumn("拍攝時區") { item in
+            TableColumn("來源時區") { item in
                 Text(display(item.metadata?.offsetOriginal))
                     .font(.system(.caption, design: .monospaced))
             }
@@ -936,6 +1054,18 @@ private struct PhotoMainView: View {
                 metadataField("數位化時區", tag: "OffsetTimeDigitized", value: item.metadata?.offsetDigitized)
                 metadataField("修改時區", tag: "OffsetTime", value: item.metadata?.offsetTime)
             }
+            if let output = item.outputURL, let outputMetadata = item.outputMetadata {
+                Divider()
+                Text("輸出副本的時區 · 來源保持不變")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.green)
+                HStack(alignment: .top, spacing: 18) {
+                    metadataField("拍攝時區", tag: "OffsetTimeOriginal", value: outputMetadata.offsetOriginal)
+                    metadataField("數位化時區", tag: "OffsetTimeDigitized", value: outputMetadata.offsetDigitized)
+                    metadataField("修改時區", tag: "OffsetTime", value: outputMetadata.offsetTime)
+                }
+                Text(output.path).font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2).truncationMode(.middle).help(output.path).textSelection(.enabled)
+            }
             if !item.detail.isEmpty {
                 Text(item.detail).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -982,6 +1112,33 @@ private struct PhotoMainView: View {
                 reportCount("失敗", value: summary.failed, color: summary.failed > 0 ? .red : .secondary)
                 reportCount("取消", value: summary.cancelled, color: .secondary)
             }
+            let failures = model.items.filter { $0.status == .failed }
+            if !failures.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("失敗原因", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red).font(.callout.weight(.semibold))
+                        Spacer()
+                        Button("顯示全部失敗項目", action: model.showFailures)
+                            .buttonStyle(.link).controlSize(.small)
+                    }
+                    ForEach(Array(failures.prefix(8))) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.url.lastPathComponent).font(.caption.weight(.semibold))
+                            Text(item.detail).font(.caption).foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if failures.count > 8 {
+                        Text("另有 \(failures.count - 8) 張；按「顯示全部失敗項目」逐張查看。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("重試會先重新讀取失敗／取消的照片；確認資訊後再按寫入。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("failureDetails")
+            }
             if !summary.message.isEmpty {
                 Text(summary.message).font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
@@ -1027,6 +1184,15 @@ private struct PhotoMainView: View {
                     ProgressView(value: Double(min(model.completed, model.total)), total: Double(max(model.total, 1)))
                         .accessibilityLabel("處理進度")
                         .accessibilityValue("已處理 \(model.completed) 張，共 \(model.total) 張")
+                    HStack(spacing: 12) {
+                        Text("\(Int(Double(model.completed) / Double(model.total) * 100))%")
+                        Text("成功 \(model.progressSucceeded)")
+                        if model.progressSkipped > 0 { Text("略過 \(model.progressSkipped)") }
+                        if model.progressFailed > 0 {
+                            Text("失敗 \(model.progressFailed)").foregroundStyle(.red)
+                        }
+                    }
+                    .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 }
             }
             if model.isRunning {
@@ -1061,17 +1227,17 @@ private struct PhotoMainView: View {
 
     private func alert(_ notice: PhotoNotice) -> Alert {
         switch notice {
-        case .writeConfirmation(let count, let offset, let replace):
+        case .writeConfirmation(let count, let offset, let replace, let placement):
             return Alert(
                 title: Text("確認處理 \(count) 張相片？"),
-                message: Text("範圍：\(model.scope.rawValue)\n目標：UTC\(offset)\n方式：\(replace ? "覆寫全部時區（包含既有值）" : "只補缺漏，保留既有時區")\n\n只寫入時區中繼資料，不轉換格式、不改拍攝時間；每張保留最早的 _original 備份。失敗檔案會個別列出，不會算入成功數量。\n\n請確認這批相片拍攝當時使用相同偏移，並留足備份空間。"),
+                message: Text("範圍：\(model.scope.rawValue)\n目標：UTC\(offset)\n方式：\(replace ? "覆寫全部時區（包含既有值）" : "只補缺漏，保留既有時區")\n位置：\(placement)\n\n只寫入時區中繼資料，不轉換 JPEG／ARW／TIFF 格式；成品驗證後才提交。失敗檔案會個別列出，不會算入成功數量。\n\n請確認這批照片拍攝時使用相同偏移，並留足磁碟空間及獨立備份。"),
                 primaryButton: .default(Text("確認寫入"), action: model.confirmReplace),
                 secondaryButton: .cancel(Text("返回檢查"))
             )
         case .restore:
             return Alert(
                 title: Text("從最早保留的原始備份還原？"),
-                message: Text("範圍：\(model.scope.rawValue)，共 \(model.scopedItems.count) 張。將以第一次寫入時保留、最早的 _original 備份取代目前檔案，並非只復原上一次操作。\n\n還原前，目前版本會先另存為 .before-restore-UUID.backup 副本，再消耗 _original 備份。若原檔已遺失，會重建原檔並保留備份。沒有備份的相片將略過。"),
+                message: Text("範圍：\(model.scope.rawValue)，共 \(model.scopedItems.count) 張。將以第一次寫入時保留、最早的 _original 備份取代目前檔案，並非只復原上一次操作。\n\n還原前，目前版本會另存為 .before-restore-UUID.backup；_original 不會消耗。若原檔已遺失，會重建原檔並保留備份。沒有備份的相片將略過。"),
                 primaryButton: .destructive(Text("還原原始備份"), action: model.confirmRestore),
                 secondaryButton: .cancel(Text("取消"))
             )
