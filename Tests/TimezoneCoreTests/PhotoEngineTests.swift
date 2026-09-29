@@ -358,7 +358,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
 
     @Test func testCameraMetadataSurvivesWriteAndBatchRead() async throws {
         let photo = try makeSeededPhoto("camera.jpg")
-        let setup = try tool.execute(["-overwrite_original", "-Make=SONY", "-Model=ILCE-7M4",
+        let setup = try tool.execute(["-overwrite_original", "-Make=SONY", "-Model=ILCE-7M4", "-SerialNumber=TEST-12345",
             "-LensModel=FE 24-70mm F2.8 GM", "-ISO=800", "-ExposureTime=1/250", "-FNumber=2.8",
             "-FocalLength=35", "-ExifImageWidth=3", "-ExifImageHeight=2", photo.path])
         expectEqual(setup.status, 0)
@@ -370,6 +370,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let batch = try tool.inspectBatch([photo], cancellation: CancellationToken())
         let before = try requireValue(batch[photo.path]).get().0
         expectEqual(before.cameraModel, "ILCE-7M4")
+        expectEqual(before.cameraSerialNumber, "TEST-12345")
         expectEqual(before.make, "SONY")
         expectEqual(before.lensModel, "FE 24-70mm F2.8 GM")
         expectEqual(before.iso, "800")
@@ -380,6 +381,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), succeeded: 1)
         let after = try tool.inspect(photo).0
         expectEqual(after.cameraModel, before.cameraModel)
+        expectEqual(after.cameraSerialNumber, before.cameraSerialNumber)
         expectEqual(after.lensModel, before.lensModel)
         expectEqual(after.iso, before.iso)
         expectEqual(after.exposureTime, before.exposureTime)

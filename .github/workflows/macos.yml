@@ -28,9 +28,9 @@ jobs:
       - name: Build universal app
         run: ./build.sh --universal
       - name: Package app preserving executable modes
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-3.2.0-macOS.zip
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-3.3.0-macOS.zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PhotoTimezone-macOS
-          path: dist/PhotoTimezone-3.2.0-macOS.zip
+          path: dist/PhotoTimezone-3.3.0-macOS.zip
           if-no-files-found: error

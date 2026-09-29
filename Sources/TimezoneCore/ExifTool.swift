@@ -16,6 +16,11 @@ struct ProcessOutput {
 struct ExifTool {
     let url: URL
     static let inspectionBatchSize = 48
+    struct Snapshot {
+        let metadata: PhotoMetadata
+        let warnings: String
+        let embeddedTags: [String: String]
+    }
     func execute(_ arguments: [String], timeout: TimeInterval? = nil, cancellation: CancellationToken? = nil) throws -> ProcessOutput {
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: "/usr/bin/perl") else {
@@ -83,7 +88,7 @@ struct ExifTool {
             "-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s",
             "-EXIF:DateTimeOriginal", "-EXIF:CreateDate", "-EXIF:ModifyDate",
             "-EXIF:OffsetTimeOriginal", "-EXIF:OffsetTimeDigitized", "-EXIF:OffsetTime",
-            "-Make", "-Model", "-LensModel", "-ISO", "-ExposureTime", "-FNumber", "-FocalLength",
+            "-Make", "-Model", "-SerialNumber", "-LensModel", "-ISO", "-ExposureTime", "-FNumber", "-FocalLength",
             "-ExifImageWidth", "-ExifImageHeight", "-ImageWidth", "-ImageHeight", "-FileSize#",
             "-FileType", "-Error", "-Warning"
         ]
@@ -142,6 +147,13 @@ struct ExifTool {
     /// This is a metadata invariant, not a claim that ExifTool rewrites zero
     /// non-metadata bytes or can see undocumented maker-note internals.
     func embeddedMetadata(_ file: URL, cancellation: CancellationToken? = nil) throws -> [String: String] {
+        try snapshot(file, cancellation: cancellation).embeddedTags
+    }
+
+    /// One complete read supplies both the preview fields and the invariant
+    /// check. This removes two ExifTool launches per changed photo without
+    /// weakening the per-photo comparison or transactional write path.
+    func snapshot(_ file: URL, cancellation: CancellationToken? = nil) throws -> Snapshot {
         let output = try execute(["-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s", "-U", "-struct", file.path],
                                  timeout: 120, cancellation: cancellation)
         guard output.status == 0,
@@ -150,6 +162,8 @@ struct ExifTool {
             throw PhotoError("無法完整讀取內嵌中繼資料：\(output.text)")
         }
         if let error = record["ExifTool:Error"] { throw PhotoError("中繼資料讀取失敗：\(error)") }
+        var (metadata, warnings) = try decode(record, stderr: output.stderr, strictOffsets: true)
+        metadata.fileSize = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init)
         var result: [String: String] = [:]
         for (key, value) in record {
             let group = key.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
@@ -157,7 +171,7 @@ struct ExifTool {
             let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys])
             result[key] = String(decoding: data, as: UTF8.self)
         }
-        return result
+        return Snapshot(metadata: metadata, warnings: warnings, embeddedTags: result)
     }
 
     /// JPEG EXIF thumbnail offsets are pointers that may move when the EXIF
@@ -211,6 +225,7 @@ struct ExifTool {
         )
         metadata.make = tag("Make")
         metadata.cameraModel = tag("Model")
+        metadata.cameraSerialNumber = tag("SerialNumber")
         metadata.lensModel = tag("LensModel")
         metadata.iso = tag("ISO")
         metadata.exposureTime = tag("ExposureTime")

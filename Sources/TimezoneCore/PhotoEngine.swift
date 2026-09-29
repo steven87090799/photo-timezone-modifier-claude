@@ -76,7 +76,9 @@ public struct PhotoEngine: Sendable {
                                     let batch = items[index..<min(index + ExifTool.inspectionBatchSize, items.count)]
                                         .filter { $0.status == .pending }.map(\.url)
                                     do {
-                                        inspectionCache = try tool.inspectBatch(batch, cancellation: cancellation)
+                                        inspectionCache = try autoreleasepool {
+                                            try tool.inspectBatch(batch, cancellation: cancellation)
+                                        }
                                     } catch is CancellationError {
                                         throw CancellationError()
                                     } catch {
@@ -89,16 +91,22 @@ public struct PhotoEngine: Sendable {
                                 if let cached = inspectionCache.removeValue(forKey: item.url.path) {
                                     (metadata, warning) = try cached.get()
                                 } else {
-                                    (metadata, warning) = try tool.inspect(item.url, cancellation: cancellation)
+                                    (metadata, warning) = try autoreleasepool {
+                                        try tool.inspect(item.url, cancellation: cancellation)
+                                    }
                                 }
                                 item.metadata = metadata
                                 item.status = .ready
                                 item.detail = metadata.missingOffsets ? "有缺漏時區標籤。" : "三個時區標籤均已存在。"
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode):
-                                try write(item: &item, tool: tool, offset: offset, mode: mode, destination: nil, roots: [], cancellation: cancellation)
+                                try autoreleasepool {
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, destination: nil, roots: [], cancellation: cancellation)
+                                }
                             case .writeCopy(let offset, let mode, let destination, let roots):
-                                try write(item: &item, tool: tool, offset: offset, mode: mode, destination: destination, roots: roots, cancellation: cancellation)
+                                try autoreleasepool {
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, destination: destination, roots: roots, cancellation: cancellation)
+                                }
                             case .restore:
                                 try restore(item: &item, tool: tool, cancellation: cancellation)
                             }
@@ -116,6 +124,10 @@ public struct PhotoEngine: Sendable {
                 // fails, stop all further writes rather than losing the audit.
                 try journal?.append(item)
                 onEvent(.updated(item, completed: index + 1, total: items.count))
+                // Full Sony metadata JSON causes many short-lived allocations.
+                // Return empty malloc pages periodically during long jobs;
+                // this does not discard live catalogue data or image files.
+                if index % 16 == 15 { _ = malloc_zone_pressure_relief(nil, 0) }
             }
         } catch {
             generalError = error.localizedDescription
@@ -146,6 +158,7 @@ public struct PhotoEngine: Sendable {
             total: items.count, succeeded: succeeded, skipped: skipped, failed: failed,
             cancelled: cancelled, logURL: journal?.url, message: message
         )))
+        _ = malloc_zone_pressure_relief(nil, 0)
     }
 
     private func write(
@@ -153,7 +166,9 @@ public struct PhotoEngine: Sendable {
         destination: URL?, roots: [URL], cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
-        let (before, warning) = try tool.inspect(item.url, cancellation: cancellation)
+        let originalSnapshot = try tool.snapshot(item.url, cancellation: cancellation)
+        let before = originalSnapshot.metadata
+        let warning = originalSnapshot.warnings
         item.metadata = before
         let fields: [(String, String?)] = [
             ("OffsetTimeOriginal", before.offsetOriginal),
@@ -186,7 +201,7 @@ public struct PhotoEngine: Sendable {
             try FileSafety.ensureWriteCapacity(item.url, fileSize: before.fileSize)
         }
         let sourceHash = try FileSafety.hash(item.url)
-        let beforeTags = willChange ? try tool.embeddedMetadata(item.url, cancellation: cancellation) : [:]
+        let beforeTags = willChange ? originalSnapshot.embeddedTags : [:]
         let stage = SafeFileTransaction.temporaryPhoto(beside: target)
         defer { try? fm.removeItem(at: stage) }
         try SafeFileTransaction.copyAndSync(item.url, to: stage)
@@ -206,14 +221,16 @@ public struct PhotoEngine: Sendable {
             }
             stderr = output.stderr
         }
-        let (after, postWarning) = try tool.inspect(stage)
+        let candidateSnapshot = try tool.snapshot(stage)
+        let after = candidateSnapshot.metadata
+        let postWarning = candidateSnapshot.warnings
         if willChange {
             var expectedTags = beforeTags
             for (tag, _) in requested {
                 let value = try JSONSerialization.data(withJSONObject: offset.value, options: [.fragmentsAllowed])
                 expectedTags["ExifIFD:\(tag)"] = String(decoding: value, as: UTF8.self)
             }
-            let actualTags = try tool.embeddedMetadata(stage)
+            let actualTags = candidateSnapshot.embeddedTags
             // TIFF's StripOffsets is a byte pointer, not a user-visible photo
             // property. Expanding EXIF may relocate the unchanged image strips.
             // All other readable embedded tags must match exactly.
@@ -231,8 +248,16 @@ public struct PhotoEngine: Sendable {
             }
             guard actualTags == expectedTags else {
                 let changed = Set(actualTags.keys).union(expectedTags.keys)
-                    .filter { actualTags[$0] != expectedTags[$0] }.sorted().prefix(8).joined(separator: "、")
-                throw PhotoError("候選副本有非時區中繼資料變動（\(changed)）；原檔未更動，未輸出此張。")
+                    .filter { actualTags[$0] != expectedTags[$0] }.sorted()
+                let sonyPointers: Set<String> = [
+                    "MPImage2:MPImageStart", "IFD0:PreviewImageStart", "IFD1:ThumbnailOffset",
+                    "SR2:SR2SubIFDLength", "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"
+                ]
+                if before.make?.uppercased() == "SONY", !changed.isEmpty,
+                   changed.allSatisfy({ sonyPointers.contains($0) }) {
+                    throw PhotoError("Sony 檔案寫入後發生內部位址重排（\(changed.joined(separator: "、"))）。為遵守『其他資料不變』，這張未輸出、來源原檔未更動；在相同模式直接重試仍會失敗。")
+                }
+                throw PhotoError("候選副本有非時區中繼資料變動（\(changed.prefix(8).joined(separator: "、"))）；原檔未更動，未輸出此張。")
             }
         }
         let actual = ["OffsetTimeOriginal": after.offsetOriginal, "OffsetTimeDigitized": after.offsetDigitized, "OffsetTime": after.offsetTime]

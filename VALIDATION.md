@@ -1,3 +1,18 @@
+# 3.3 本機驗證紀錄
+
+驗證日期：2026-09-29。環境：Apple Silicon、macOS 27、Command Line Tools / Swift 6.4。
+
+- `./scripts/test.sh`：5 個測試群組、共 53 項；51 項一般測試通過，2 項千張壓力測試依設計略過。包含新時區說明、相機序號與原有備份／副本／重試回歸。
+- 額外執行 `PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousandPhotoScanWriteAndBackupIntegrity`：1,000 張合成 JPEG／TIFF 加一張損壞照片；掃描約 3.67 秒，逐張寫入／驗證約 271.81 秒；1,000 份備份內容驗證通過，10 張復原通過。這僅量到小型合成檔，不能推論實拍 Sony ARW 的速度或相容性。
+- `swift build` 與 `./build.sh --universal` 已成功；arm64/x86_64、ad-hoc 簽章、plist 與繁體中文資源已驗證。獨立 QA bundle 的實際 SwiftUI 操作確認：頂部選單是「相片時區修改器／檔案／編輯／顯示方式／相片／資訊／視窗／輔助說明」；時區選擇置中、預設整點、可展開 15 分鐘；診斷頁顯示版本 3.3.0、ExifTool 13.59 和 App 記憶體，CPU 在後續一秒採樣。最終 bundle 再確認處理範圍與通知開關可透過側欄捲動完整顯示，不遮擋底部執行按鈕。
+- 原版桌面 `.app` 的 `main.scpt` 已唯讀還原，與 `legacy/main.applescript` 比較完全相同。原版萬用 `OffsetTime*` 與新版三個明確 `EXIF:OffsetTime*` 在 Sony ARW 可丟棄副本產生相同的標準 `ExifIFD` 時區標籤，見 [ORIGINAL_AUDIT.md](ORIGINAL_AUDIT.md)。
+- 最近一次實拍 Sony 批次紀錄：副本模式 122 張全數安全失敗、來源沒有被替換；JPEG/ARW 的候選檔有內部指標變更。對一組實拍 JPG/ARW 僅讀取原檔；寫入實驗只在可丟棄副本。提取後的縮圖、預覽與 ARW 影像 strip 位元組相同，但 MakerNotes 原始區塊雜湊不同。因此不能宣稱「除時區外所有原始位元組不變」，目前嚴格模式仍拒絕這些 Sony 檔。
+- 3.2 舊行程處理上述批次後曾有約 4.6 GB resident memory；`vmmap` 顯示大量空的 malloc small 頁、當時存活配置約 111 MB。3.3 加入每張寫入的 `autoreleasepool`、每 16 張的 malloc pressure relief、縮圖解碼短期物件釋放。這是針對觀測結果的修正，**尚未**以 122 張實拍 Sony 或千張實拍 RAW 證實 3.3 的峰值記憶體。
+- 3.3 把完整中繼資料與預覽欄位合併讀取；每張發生寫入時比 3.2 少兩次 ExifTool 啟動，不移除來源雜湊、候選檔驗證、備份與同步。一般回歸測試約 23.5 秒；合成小檔測試不可代表實拍 RAW 吞吐量。
+- 通知預設關閉，未在 QA 中請求系統授權；通知橫幅與 macOS 13–26 的在機表現尚未實測。Apple Silicon 原生 App 另有視覺測試，Intel 尚無實機測試。
+
+---
+
 # 3.2 本機驗證紀錄
 
 驗證日期：2026-09-29。環境：Apple Silicon、macOS 27、Command Line Tools / Swift 6.4。全部測試素材為獨立的合成或 ExifTool 隨附範例副本，沒有讀寫使用者相片。

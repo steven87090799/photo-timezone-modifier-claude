@@ -26,6 +26,7 @@ else
 fi
 
 /bin/cp app/Info.plist "$APP_PATH/Contents/Info.plist"
+/bin/cp -R app/Localization/zh-Hant-TW.lproj "$APP_PATH/Contents/Resources/"
 /bin/cp -R "$PROJECT_DIR/.build/vendor-exiftool" "$APP_PATH/Contents/Resources/ExifTool"
 /bin/cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/"
 /bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"

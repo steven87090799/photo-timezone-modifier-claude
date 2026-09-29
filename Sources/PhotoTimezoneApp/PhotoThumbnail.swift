@@ -20,20 +20,22 @@ private actor ThumbnailLoader {
     func load(_ url: URL) -> Data? {
         guard !Task.isCancelled else { return nil }
         if let cached = cache[url] { return cached }
-        guard let source = CGImageSourceCreateWithURL(url as CFURL,
-                [kCGImageSourceShouldCache: false] as CFDictionary),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 480,
-                kCGImageSourceShouldCacheImmediately: false
-              ] as CFDictionary),
-              let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
-              !Task.isCancelled else { return nil }
-        cache[url] = data
-        recent.append(url)
-        if recent.count > 8 { cache.removeValue(forKey: recent.removeFirst()) }
-        return data
+        return autoreleasepool {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL,
+                    [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 480,
+                    kCGImageSourceShouldCacheImmediately: false
+                  ] as CFDictionary),
+                  let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
+                  !Task.isCancelled else { return nil }
+            cache[url] = data
+            recent.append(url)
+            if recent.count > 8 { cache.removeValue(forKey: recent.removeFirst()) }
+            return data
+        }
     }
 }
 

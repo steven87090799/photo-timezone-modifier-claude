@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+import UserNotifications
 import TimezoneCore
 
 @main
@@ -40,8 +41,15 @@ struct PhotoTimezoneApp: App {
                 Button("匯出記錄…", action: model.exportLog)
                     .disabled(model.isRunning || model.summary?.logURL == nil)
             }
+            CommandMenu("資訊") {
+                Button("版本與診斷") { model.activePage = .diagnostics }
+            }
         }
     }
+}
+
+enum AppPage: String, CaseIterable {
+    case photos = "相片處理", diagnostics = "版本與診斷"
 }
 
 enum ProcessingScope: String, CaseIterable {
@@ -56,6 +64,7 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var offset = UTCOffset(minutes: 480)
     @Published private(set) var mode: WriteMode = .fillMissing
     @Published private(set) var replaceOriginals = false
+    @Published private(set) var notificationsEnabled = false
     @Published private(set) var outputDirectory: URL?
     @Published private(set) var isRunning = false
     @Published private(set) var isCancelling = false
@@ -73,6 +82,8 @@ final class PhotoViewModel: ObservableObject {
     @Published var cameraFilter = "" { didSet { if cameraFilter != oldValue { scheduleCatalogue(resetPage: true) } } }
     @Published var sort: PhotoSort = .filename { didSet { if sort != oldValue { scheduleCatalogue(resetPage: true) } } }
     @Published var scope: ProcessingScope = .all
+    @Published var activePage: AppPage = .photos
+    @Published var showingOffsetChooser = false
     @Published private(set) var filteredItems: [PhotoItem] = []
     @Published private(set) var pageItems: [PhotoItem] = []
     @Published private(set) var cameras: [(name: String, count: Int)] = []
@@ -83,6 +94,42 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var activeScopeCount = 0
     @Published var notice: PhotoNotice?
     @Published var dropTargeted = false
+
+    init() {
+        notificationsEnabled = UserDefaults.standard.bool(forKey: "PhotoTimezoneCompletionNotifications")
+    }
+
+    func setNotificationsEnabled(_ value: Bool) {
+        guard value else {
+            notificationsEnabled = false
+            UserDefaults.standard.set(false, forKey: "PhotoTimezoneCompletionNotifications")
+            return
+        }
+        Task { @MainActor in
+            do {
+                let granted = try await UNUserNotificationCenter.current()
+                    .requestAuthorization(options: [.alert, .sound])
+                notificationsEnabled = granted
+                UserDefaults.standard.set(granted, forKey: "PhotoTimezoneCompletionNotifications")
+                if !granted {
+                    notice = .error("無法開啟完成通知", "系統未授權通知；仍可在 App 的進度與報告查看結果。")
+                }
+            } catch {
+                notificationsEnabled = false
+                notice = .error("無法開啟完成通知", error.localizedDescription)
+            }
+        }
+    }
+
+    private func postNotification(title: String, body: String) {
+        guard notificationsEnabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        Task { try? await UNUserNotificationCenter.current().add(request) }
+    }
 
     private struct ScanSignature: Equatable {
         let paths: [String]
@@ -485,6 +532,12 @@ final class PhotoViewModel: ObservableObject {
             reportTitle = "還原報告"
             phase = "正在尋找原始備份…"
         }
+        if notificationsEnabled {
+            switch operation {
+            case .inspect: break
+            default: postNotification(title: "相片時區處理開始", body: "正在處理 \(jobInputs.count) 張；請在 App 查看進度。")
+            }
+        }
 
         // A single ordered stream keeps discovery, row updates and the final report in order.
         let (events, continuation) = AsyncStream<JobEvent>.makeStream()
@@ -579,6 +632,14 @@ final class PhotoViewModel: ObservableObject {
         } else {
             phase = "工作完成；再次寫入前請重新掃描預覽"
         }
+        if let summary {
+            switch operation {
+            case .inspect: break
+            default:
+                postNotification(title: "相片時區處理完成",
+                                 body: "成功 \(summary.succeeded) 張、失敗 \(summary.failed) 張、略過 \(summary.skipped) 張。")
+            }
+        }
     }
 
     func exportLog() {
@@ -636,11 +697,16 @@ private struct PhotoMainView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            HStack(alignment: .top, spacing: 0) {
-                settings
-                    .frame(width: 290)
-                Divider()
-                workspace
+            if model.activePage == .photos {
+                HStack(alignment: .top, spacing: 0) {
+                    settings
+                        .frame(width: 290)
+                    Divider()
+                    workspace
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                DiagnosticsView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
@@ -657,6 +723,17 @@ private struct PhotoMainView: View {
             }
         }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
+        .overlay {
+            if model.showingOffsetChooser {
+                Color.black.opacity(0.7).ignoresSafeArea()
+                    .accessibilityHidden(true)
+                OffsetChooserView(selected: model.offset, onConfirm: { chosen in
+                    model.setOffset(chosen)
+                    model.showingOffsetChooser = false
+                }, onCancel: { model.showingOffsetChooser = false })
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
         .alert(item: $model.notice, content: alert)
     }
 
@@ -669,23 +746,31 @@ private struct PhotoMainView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text("3.2.0").font(.caption).foregroundStyle(.tertiary)
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.3.0")
+                        .font(.caption).foregroundStyle(.tertiary)
                 }
                 Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer(minLength: 16)
-            Button(action: model.chooseInputs) {
-                Label("加入項目…", systemImage: "plus")
+            Picker("頁面", selection: $model.activePage) {
+                ForEach(AppPage.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .disabled(model.isRunning)
-            .accessibilityIdentifier("addInputsButton")
-            Button(action: model.inspect) {
-                Label("重新掃描", systemImage: "arrow.clockwise")
+            .pickerStyle(.segmented).labelsHidden().frame(width: 245)
+            .accessibilityIdentifier("mainPagePicker")
+            if model.activePage == .photos {
+                Button(action: model.chooseInputs) {
+                    Label("加入項目…", systemImage: "plus")
+                }
+                .disabled(model.isRunning)
+                .accessibilityIdentifier("addInputsButton")
+                Button(action: model.inspect) {
+                    Label("重新掃描", systemImage: "arrow.clockwise")
+                }
+                .disabled(!model.canInspect)
+                .accessibilityIdentifier("inspectButton")
+                .help("讀取相片資訊；掃描不會修改檔案。")
             }
-            .disabled(!model.canInspect)
-            .accessibilityIdentifier("inspectButton")
-            .help("讀取相片資訊；掃描不會修改檔案。")
         }
         .controlSize(.large)
         .padding(.horizontal, 24)
@@ -700,15 +785,23 @@ private struct PhotoMainView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeading("02", "設定固定時區")
-                    Picker("UTC 偏移", selection: Binding(get: { model.offset }, set: model.setOffset)) {
-                        ForEach(UTCOffset.all) { offset in
-                            Text(offset.label).tag(offset)
+                    Button {
+                        model.showingOffsetChooser = true
+                    } label: {
+                        HStack {
+                            Label(model.offset.label, systemImage: "globe.asia.australia")
+                                .font(.body.monospacedDigit().weight(.semibold))
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption)
                         }
                     }
-                    .labelsHidden()
-                    .accessibilityLabel("固定 UTC 時區偏移")
-                    .accessibilityIdentifier("utcOffsetPicker")
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("選擇固定 UTC 時區偏移，現在為 \(model.offset.label)")
+                    .accessibilityIdentifier("chooseOffsetButton")
                     .disabled(model.isRunning)
+                    Text(OffsetGuide.examples(for: model.offset))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("選擇拍攝當時的固定 UTC 偏移，包含半小時與 15 分鐘選項。此設定不是城市時區，不會自動套用日光節約時間（夏令時間）。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -768,31 +861,46 @@ private struct PhotoMainView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionHeading("05", "處理範圍")
+                    Picker("處理範圍", selection: $model.scope) {
+                        Text("全部").tag(ProcessingScope.all)
+                        Text("篩選").tag(ProcessingScope.filtered)
+                        Text("已選").tag(ProcessingScope.selected)
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
+                    .disabled(model.isRunning)
+                    .accessibilityIdentifier("processingScopePicker")
+                    Text("此次處理：\(model.processingCount) 張 · \(model.scope.rawValue)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("處理開始與完成時通知", isOn: Binding(
+                        get: { model.notificationsEnabled }, set: model.setNotificationsEnabled
+                    ))
+                    .accessibilityIdentifier("completionNotificationsToggle")
+                    Text("預設關閉；開啟時才請求 macOS 通知權限。進度與逐張結果仍可在 App 查看。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(20)
         }
         Divider()
-        actionPanel.padding(16)
+        actionPanel.padding(12)
         }
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
     private var actionPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker("處理範圍", selection: $model.scope) {
-                ForEach(ProcessingScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .disabled(model.isRunning)
-            .accessibilityIdentifier("processingScopePicker")
-            Text("此次範圍：\(model.processingCount) 張 · \(model.scope.rawValue)")
-                .font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 7) {
             Button(action: model.requestWrite) {
                 Label("檢查並寫入 \(model.offset.label)", systemImage: "clock.badge.checkmark")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent).controlSize(.large)
             .disabled(!model.canWrite).accessibilityIdentifier("writeButton")
-            Text(model.inputs.isEmpty ? "先加入相片查看資訊；不會自動寫入。" : (model.previewIsCurrent ? "拖入與篩選都不會修改相片；按下後仍需確認。" : "自動讀取資訊中，或請重新掃描後再決定。"))
+            Text(model.inputs.isEmpty ? "先加入相片；不會自動寫入。" : (model.previewIsCurrent ? "按下後會再次確認。" : "請先完成掃描預覽。"))
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("從原始備份還原…", action: model.requestRestore)
@@ -1037,6 +1145,9 @@ private struct PhotoMainView: View {
                     .frame(width: 140, height: 105)
                 VStack(alignment: .leading, spacing: 7) {
                     Text(item.metadata?.camera ?? "未知相機").font(.headline)
+                    if let serial = item.metadata?.cameraSerialNumber {
+                        Text("相機序號：\(serial)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                     Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄").font(.caption).foregroundStyle(.secondary)
                     Text("ISO \(item.metadata?.iso ?? "—")  ·  \(item.metadata?.exposureTime ?? "—") 秒  ·  f/\(item.metadata?.aperture ?? "—")  ·  \(item.metadata?.focalLength ?? "焦距未記錄")")
                         .font(.caption).textSelection(.enabled)

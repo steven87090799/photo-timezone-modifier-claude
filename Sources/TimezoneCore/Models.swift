@@ -15,6 +15,7 @@ public struct PhotoMetadata: Codable, Sendable {
     public let dateTags: [String: String]
     public var make: String? = nil
     public var cameraModel: String? = nil
+    public var cameraSerialNumber: String? = nil
     public var lensModel: String? = nil
     public var iso: String? = nil
     public var exposureTime: String? = nil
