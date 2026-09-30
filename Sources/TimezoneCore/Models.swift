@@ -32,6 +32,7 @@ public struct PhotoMetadata: Codable, Sendable {
     public var missingOffsets: Bool {
         offsetOriginal == nil || offsetDigitized == nil || offsetTime == nil
     }
+    public var missingCaptureOffset: Bool { offsetOriginal == nil }
 }
 
 public struct PhotoItem: Identifiable, Codable, Sendable {
@@ -55,6 +56,22 @@ public enum WriteMode: String, CaseIterable, Sendable {
     case fillMissing, replaceAll
 }
 
+public enum OffsetTargets: String, CaseIterable, Sendable {
+    case captureOnly, allThree
+}
+
+public struct WriteOptions: Sendable {
+    public let targets: OffsetTargets
+    public let sonyCompatibility: Bool
+
+    // Existing programmatic callers retain their three-tag behavior. The App
+    // explicitly selects captureOnly by default for new user-facing jobs.
+    public init(targets: OffsetTargets = .allThree, sonyCompatibility: Bool = false) {
+        self.targets = targets
+        self.sonyCompatibility = sonyCompatibility
+    }
+}
+
 public struct UTCOffset: Identifiable, Hashable, Sendable {
     public let minutes: Int
     public var id: Int { minutes }
@@ -70,17 +87,17 @@ public struct UTCOffset: Identifiable, Hashable, Sendable {
 
 public enum JobOperation: Sendable {
     case inspect
-    case write(offset: UTCOffset, mode: WriteMode)
-    case writeCopy(offset: UTCOffset, mode: WriteMode, destination: URL, sourceRoots: [URL])
+    case write(offset: UTCOffset, mode: WriteMode, options: WriteOptions = WriteOptions())
+    case writeCopy(offset: UTCOffset, mode: WriteMode, destination: URL, sourceRoots: [URL], options: WriteOptions = WriteOptions())
     case restore
 
     var label: String {
         switch self {
         case .inspect: return "檢查"
-        case .write(let offset, let mode):
-            return "替換原檔 \(offset.label) / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
-        case .writeCopy(let offset, let mode, _, _):
-            return "輸出副本 \(offset.label) / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
+        case .write(let offset, let mode, let options):
+            return "替換原檔 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
+        case .writeCopy(let offset, let mode, _, _, let options):
+            return "輸出副本 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
         case .restore: return "復原"
         }
     }

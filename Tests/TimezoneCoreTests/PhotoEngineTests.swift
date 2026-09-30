@@ -92,6 +92,23 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
+    @Test func testCaptureOnlyEmbedsStandardOffsetWithoutShiftingDatesOrOtherOffsets() async throws {
+        let photo = try makeSeededPhoto("capture-only.jpg", digitized: "-03:30", time: "+09:00")
+        let original = try Data(contentsOf: photo)
+        let output = try makeDirectory("capture-output")
+        let rows = try assertJob(await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output,
+            sourceRoots: [photo], options: WriteOptions(targets: .captureOnly)
+        )), succeeded: 1)
+        let candidate = output.appendingPathComponent(photo.lastPathComponent)
+        let metadata = try tool.inspect(candidate).0
+        assertOffsets(metadata, original: "+08:00", digitized: "-03:30", time: "+09:00")
+        assertDates(metadata)
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(rows[0].outputURL, candidate)
+        expectEqual(try tool.imageDataSHA256(photo), tool.imageDataSHA256(candidate))
+    }
+
     @Test func testRepeatedWritesPreserveExactFirstOriginalAndRestoreKeepsEditedCopy() async throws {
         let photo = try makeSeededPhoto("round-trip.tiff", format: .tiff, original: "+01:00")
         let originalBytes = try Data(contentsOf: photo)

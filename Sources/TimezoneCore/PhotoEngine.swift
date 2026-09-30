@@ -41,11 +41,11 @@ public struct PhotoEngine: Sendable {
             onEvent(.phase("確認內建 ExifTool…"))
             try tool.validateVersion()
             switch operation {
-            case .write(let offset, _), .writeCopy(let offset, _, _, _):
+            case .write(let offset, _, _), .writeCopy(let offset, _, _, _, _):
                 guard offset.isValid else { throw PhotoError("UTC 偏移必須介於 −12:00 與 +14:00，並以 15 分鐘為單位。") }
             case .inspect, .restore: break
             }
-            if case .writeCopy(_, _, let destination, let roots) = operation {
+            if case .writeCopy(_, _, let destination, let roots, _) = operation {
                 try CopyDestination.validate(destination, roots: roots)
             }
             journal = try Journal(directory: logDirectory ?? support.appendingPathComponent("Logs"), operation: operation.label)
@@ -97,15 +97,15 @@ public struct PhotoEngine: Sendable {
                                 }
                                 item.metadata = metadata
                                 item.status = .ready
-                                item.detail = metadata.missingOffsets ? "有缺漏時區標籤。" : "三個時區標籤均已存在。"
+                                item.detail = metadata.missingCaptureOffset ? "缺少拍攝時區標籤。" : "已有拍攝時區標籤。"
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
-                            case .write(let offset, let mode):
+                            case .write(let offset, let mode, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, destination: nil, roots: [], cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, destination: nil, roots: [], cancellation: cancellation)
                                 }
-                            case .writeCopy(let offset, let mode, let destination, let roots):
+                            case .writeCopy(let offset, let mode, let destination, let roots, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, destination: destination, roots: roots, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, destination: destination, roots: roots, cancellation: cancellation)
                                 }
                             case .restore:
                                 try restore(item: &item, tool: tool, cancellation: cancellation)
@@ -162,7 +162,7 @@ public struct PhotoEngine: Sendable {
     }
 
     private func write(
-        item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode,
+        item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode, options: WriteOptions,
         destination: URL?, roots: [URL], cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
@@ -170,11 +170,15 @@ public struct PhotoEngine: Sendable {
         let before = originalSnapshot.metadata
         let warning = originalSnapshot.warnings
         item.metadata = before
-        let fields: [(String, String?)] = [
+        let allFields: [(String, String?)] = [
             ("OffsetTimeOriginal", before.offsetOriginal),
             ("OffsetTimeDigitized", before.offsetDigitized),
             ("OffsetTime", before.offsetTime)
         ]
+        guard before.dateTimeOriginal != nil else {
+            throw PhotoError("照片沒有可確認的 EXIF 拍攝時間 DateTimeOriginal；不能只補偏移後假裝拍攝時刻已完整。原檔未更動。")
+        }
+        let fields = options.targets == .captureOnly ? Array(allFields.prefix(1)) : allFields
         let requested = fields.filter { mode == .replaceAll || $0.1 == nil }
         let willChange = requested.contains(where: { $0.1 != offset.value })
         guard willChange || destination != nil else {
@@ -224,6 +228,7 @@ public struct PhotoEngine: Sendable {
         let candidateSnapshot = try tool.snapshot(stage)
         let after = candidateSnapshot.metadata
         let postWarning = candidateSnapshot.warnings
+        var sonyVerificationNote = ""
         if willChange {
             var expectedTags = beforeTags
             for (tag, _) in requested {
@@ -246,26 +251,69 @@ public struct PhotoEngine: Sendable {
                 }
                 expectedTags["IFD1:ThumbnailOffset"] = newThumbnailOffset
             }
-            guard actualTags == expectedTags else {
+            var sonyRelocationNote = ""
+            if actualTags != expectedTags {
                 let changed = Set(actualTags.keys).union(expectedTags.keys)
                     .filter { actualTags[$0] != expectedTags[$0] }.sorted()
                 let sonyPointers: Set<String> = [
                     "MPImage2:MPImageStart", "IFD0:PreviewImageStart", "IFD1:ThumbnailOffset",
                     "SR2:SR2SubIFDLength", "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"
                 ]
-                if before.make?.uppercased() == "SONY", !changed.isEmpty,
-                   changed.allSatisfy({ sonyPointers.contains($0) }) {
+                let isSony = before.make?.uppercased() == "SONY"
+                if isSony, !changed.isEmpty, changed.allSatisfy({ sonyPointers.contains($0) }),
+                   options.sonyCompatibility {
+                    guard before.fileType == after.fileType, postWarning.isEmpty else {
+                        throw PhotoError("Sony 候選副本格式改變或 ExifTool 發出警告；未輸出，原檔未更動。")
+                    }
+                    guard try tool.imageDataSHA256(item.url) == tool.imageDataSHA256(stage) else {
+                        throw PhotoError("Sony 候選副本的主影像資料不同；未輸出，原檔未更動。")
+                    }
+                    let linkedImages: [String: String] = [
+                        "MPImage2:MPImageStart": "MPImage2:PreviewImage",
+                        "IFD0:PreviewImageStart": "IFD0:PreviewImage",
+                        "IFD1:ThumbnailOffset": "IFD1:ThumbnailImage"
+                    ]
+                    for pointer in changed {
+                        guard let imageTag = linkedImages[pointer] else { continue }
+                        guard beforeTags[imageTag] != nil, actualTags[imageTag] != nil,
+                              let sourceDigest = try tool.binarySHA256(item.url, tag: imageTag),
+                              let candidateDigest = try tool.binarySHA256(stage, tag: imageTag),
+                              sourceDigest == candidateDigest else {
+                            throw PhotoError("Sony 候選副本的內嵌影像 \(imageTag) 無法驗證為相同；未輸出，原檔未更動。")
+                        }
+                    }
+                    for pointer in changed { expectedTags[pointer] = actualTags[pointer] }
+                    sonyRelocationNote = "Sony 相容模式：影像內容與可讀欄位已核對；內部位置重排（\(changed.joined(separator: "、"))），無法保證未公開的 Sony 私有資料位元組完全不變。"
+                } else if isSony, !changed.isEmpty, changed.allSatisfy({ sonyPointers.contains($0) }) {
                     throw PhotoError("Sony 檔案寫入後發生內部位址重排（\(changed.joined(separator: "、"))）。為遵守『其他資料不變』，這張未輸出、來源原檔未更動；在相同模式直接重試仍會失敗。")
+                } else {
+                    throw PhotoError("候選副本有非時區中繼資料變動（\(changed.prefix(8).joined(separator: "、"))）；原檔未更動，未輸出此張。")
                 }
-                throw PhotoError("候選副本有非時區中繼資料變動（\(changed.prefix(8).joined(separator: "、"))）；原檔未更動，未輸出此張。")
             }
+            guard actualTags == expectedTags else { throw PhotoError("Sony 中繼資料核對失敗；原檔未更動。") }
+            if before.make?.uppercased() == "SONY" {
+                let oldMaker = try tool.binarySHA256(item.url, tag: "MakerNotes")
+                let newMaker = try tool.binarySHA256(stage, tag: "MakerNotes")
+                guard oldMaker == newMaker || options.sonyCompatibility else {
+                    throw PhotoError("Sony MakerNotes 原始位元組發生變動；嚴格模式拒絕輸出，原檔未更動。")
+                }
+                if oldMaker != newMaker {
+                    guard try tool.imageDataSHA256(item.url) == tool.imageDataSHA256(stage),
+                          postWarning.isEmpty else {
+                        throw PhotoError("Sony 私有資料重排時影像雜湊或警告核對失敗；未輸出，原檔未更動。")
+                    }
+                    sonyRelocationNote += (sonyRelocationNote.isEmpty ? "" : "\n") +
+                        "Sony MakerNotes 原始位元組不同；這是明確開啟相容模式後接受的未知私有資料風險。"
+                }
+            }
+            sonyVerificationNote = sonyRelocationNote
         }
         let actual = ["OffsetTimeOriginal": after.offsetOriginal, "OffsetTimeDigitized": after.offsetDigitized, "OffsetTime": after.offsetTime]
-        for (tag, prior) in fields {
+        for (tag, prior) in allFields {
             let expected = requested.contains(where: { $0.0 == tag }) ? offset.value : prior
             guard actual[tag] == expected else { throw PhotoError("候選副本時區驗證失敗：\(tag)；原檔未更動。") }
         }
-        guard before.dateTimeOriginal == after.dateTimeOriginal,
+        guard before.fileType == after.fileType, before.dateTimeOriginal == after.dateTimeOriginal,
               before.createDate == after.createDate,
               before.modifyDate == after.modifyDate, before.dateTags == after.dateTags else {
             throw PhotoError("候選副本拍攝／建立／修改時間變動；原檔未更動。")
@@ -316,6 +364,7 @@ public struct PhotoEngine: Sendable {
             item.detail = willChange ? "已輸出並驗證 \(offset.value) 的副本：\(target.path)；原檔未更動。"
                                      : "原有時區完整，已原樣輸出副本：\(target.path)；原檔未更動。"
         }
+        if !sonyVerificationNote.isEmpty { item.detail += "\n" + sonyVerificationNote }
         let warnings = [warning, stderr, postWarning].filter { !$0.isEmpty }.joined(separator: "\n")
         if !warnings.isEmpty { item.detail += "\n警告：\(warnings)" }
     }

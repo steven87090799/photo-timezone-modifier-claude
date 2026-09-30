@@ -1,14 +1,14 @@
 import Foundation
 
 public enum PhotoFilter: String, CaseIterable, Sendable {
-    case all = "全部", missing = "缺少時區", complete = "時區完整"
+    case all = "全部", missing = "缺拍攝時區", complete = "有拍攝時區"
     case failed = "失敗", unfinished = "失敗／取消", success = "已完成"
 
     public func matches(_ item: PhotoItem) -> Bool {
         switch self {
         case .all: return true
-        case .missing: return item.metadata?.missingOffsets == true
-        case .complete: return item.metadata?.missingOffsets == false
+        case .missing: return item.metadata?.missingCaptureOffset == true
+        case .complete: return item.metadata?.missingCaptureOffset == false
         case .failed: return item.status == .failed
         case .unfinished: return item.status == .failed || item.status == .cancelled
         case .success: return item.status == .success

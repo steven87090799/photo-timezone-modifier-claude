@@ -63,6 +63,8 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var recursive = true
     @Published private(set) var offset = UTCOffset(minutes: 480)
     @Published private(set) var mode: WriteMode = .fillMissing
+    @Published private(set) var offsetTargets: OffsetTargets = .captureOnly
+    @Published private(set) var sonyCompatibility = false
     @Published private(set) var replaceOriginals = false
     @Published private(set) var notificationsEnabled = false
     @Published private(set) var outputDirectory: URL?
@@ -237,7 +239,7 @@ final class PhotoViewModel: ObservableObject {
                                                 camera: cameraFilter.isEmpty ? nil : cameraFilter, sort: sort)
         let counts = Dictionary(grouping: items.compactMap { $0.metadata?.camera }, by: { $0 }).mapValues(\.count)
         cameras = counts.map { (name: $0.key, count: $0.value) }.sorted { $0.name < $1.name }
-        missingOffsetCount = items.filter { $0.metadata?.missingOffsets == true }.count
+        missingOffsetCount = items.filter { $0.metadata?.missingCaptureOffset == true }.count
         totalBytes = items.reduce(0) { $0 + ($1.metadata?.fileSize ?? 0) }
         setPage(catalogueNeedsPageReset ? 0 : pageIndex)
         catalogueNeedsPageReset = false
@@ -258,6 +260,16 @@ final class PhotoViewModel: ObservableObject {
     func setMode(_ value: WriteMode) {
         guard !isRunning, mode != value else { return }
         mode = value
+    }
+
+    func setOffsetTargets(_ value: OffsetTargets) {
+        guard !isRunning else { return }
+        offsetTargets = value
+    }
+
+    func setSonyCompatibility(_ value: Bool) {
+        guard !isRunning else { return }
+        sonyCompatibility = value
     }
 
     func setReplaceOriginals(_ value: Bool) {
@@ -422,17 +434,22 @@ final class PhotoViewModel: ObservableObject {
             do { try CopyDestination.validate(outputDirectory, roots: copySourceRootsForRetry ?? inputs) }
             catch { notice = .error("無法使用這個輸出資料夾", error.localizedDescription); return }
         }
-        let placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
+        var placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
+        placement += "\n欄位：\(offsetTargets == .captureOnly ? "只寫 EXIF 拍攝時區 OffsetTimeOriginal" : "寫入三個 EXIF OffsetTime 欄位")。"
+        if sonyCompatibility {
+            placement += "\nSony 相容模式已開啟：允許已驗證的內部位置重排，但無法保證 MakerNotes 私有位元組完全不變。"
+        }
         notice = .writeConfirmation(scopedItems.count, offset.value, mode == .replaceAll, placement)
     }
 
     func confirmReplace() {
         guard canWrite else { return }
+        let options = WriteOptions(targets: offsetTargets, sonyCompatibility: sonyCompatibility)
         if replaceOriginals {
-            start(.write(offset: offset, mode: mode))
+            start(.write(offset: offset, mode: mode, options: options))
         } else if let outputDirectory {
             start(.writeCopy(offset: offset, mode: mode, destination: outputDirectory,
-                             sourceRoots: copySourceRootsForRetry ?? inputs))
+                             sourceRoots: copySourceRootsForRetry ?? inputs, options: options))
         }
     }
 
@@ -746,7 +763,7 @@ private struct PhotoMainView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.3.0")
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.0")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
                 Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
@@ -808,9 +825,19 @@ private struct PhotoMainView: View {
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeading("03", "選擇寫入方式")
+                    Picker("寫入欄位", selection: Binding(get: { model.offsetTargets }, set: model.setOffsetTargets)) {
+                        Text("只寫拍攝時區（建議）").tag(OffsetTargets.captureOnly)
+                        Text("三個時區欄位（進階）").tag(OffsetTargets.allThree)
+                    }
+                    .pickerStyle(.radioGroup)
+                    .disabled(model.isRunning)
+                    .accessibilityIdentifier("offsetTargetsPicker")
+                    Text("預設只補 EXIF OffsetTimeOriginal；DateTimeOriginal 的鐘點不加減。三個欄位各有不同用途，只有確認其時間都適用同一偏移時才選進階。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Picker("寫入方式", selection: Binding(get: { model.mode }, set: model.setMode)) {
                         Text("只補上缺少的時區").tag(WriteMode.fillMissing)
-                        Text("覆寫所有時區").tag(WriteMode.replaceAll)
+                        Text("覆寫所選時區").tag(WriteMode.replaceAll)
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
@@ -818,10 +845,19 @@ private struct PhotoMainView: View {
                     .accessibilityLabel("時區寫入方式")
                     .accessibilityIdentifier("writeModePicker")
                     Text(model.mode == .fillMissing
-                         ? "保留已填寫的時區，只補上缺少的 OffsetTime 標籤。"
-                         : "所有 OffsetTime 標籤都會改成選定偏移。寫入前需要再次確認。")
+                         ? "保留所選欄位已有的時區，只補缺漏。"
+                         : "所選時區欄位會改成指定偏移；拍攝時間本身不變。")
                         .font(.caption)
                         .foregroundStyle(model.mode == .replaceAll ? Color.orange : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Toggle("Sony 相容模式（預設關閉）", isOn: Binding(
+                        get: { model.sonyCompatibility }, set: model.setSonyCompatibility
+                    ))
+                    .disabled(model.isRunning)
+                    .accessibilityIdentifier("sonyCompatibilityToggle")
+                    Text("只在 Sony 候選副本中容許已知的內部位置重排；仍逐張核對主影像、相關預覽／縮圖和可讀欄位。MakerNotes 原始位元組可能變動，無法保證私有資料逐位元不變。建議先選副本輸出測試。")
+                        .font(.caption)
+                        .foregroundStyle(model.sonyCompatibility ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 11) {
@@ -980,7 +1016,7 @@ private struct PhotoMainView: View {
                 Text("相片預覽").font(.title3.weight(.semibold))
                 Spacer()
                 if !model.items.isEmpty {
-                    Text("\(model.items.count) 張 · 來源缺時區 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
+                    Text("\(model.items.count) 張 · 缺拍攝時區 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -1341,7 +1377,7 @@ private struct PhotoMainView: View {
         case .writeConfirmation(let count, let offset, let replace, let placement):
             return Alert(
                 title: Text("確認處理 \(count) 張相片？"),
-                message: Text("範圍：\(model.scope.rawValue)\n目標：UTC\(offset)\n方式：\(replace ? "覆寫全部時區（包含既有值）" : "只補缺漏，保留既有時區")\n位置：\(placement)\n\n只寫入時區中繼資料，不轉換 JPEG／ARW／TIFF 格式；成品驗證後才提交。失敗檔案會個別列出，不會算入成功數量。\n\n請確認這批照片拍攝時使用相同偏移，並留足磁碟空間及獨立備份。"),
+                message: Text("範圍：\(model.scope.rawValue)\n目標：UTC\(offset)\n方式：\(replace ? "覆寫所選時區（包含既有值）" : "只補缺漏，保留既有時區")\n位置：\(placement)\n\n拍攝時間數值不加減，也不轉換 JPEG／ARW／TIFF 格式；寫入 EXIF 時檔案內部可能重排，成品驗證後才提交。失敗檔案會個別列出，不會算入成功數量。\n\n請確認這批照片拍攝時使用相同偏移，並留足磁碟空間及獨立備份。"),
                 primaryButton: .default(Text("確認寫入"), action: model.confirmReplace),
                 secondaryButton: .cancel(Text("返回檢查"))
             )

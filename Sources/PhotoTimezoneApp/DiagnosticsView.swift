@@ -60,7 +60,7 @@ struct DiagnosticsView: View {
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
                     detail("可處理格式", "JPEG、TIFF、Sony ARW；僅補寫時區，不轉換原格式")
-                    Text("3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
+                    Text("3.4：預設只補 EXIF 拍攝時區；Sony 相容模式需明確開啟並核對影像資料。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

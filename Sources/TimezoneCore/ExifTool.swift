@@ -186,6 +186,30 @@ struct ExifTool {
         return output.stdout
     }
 
+    /// ExifTool hashes the actual image stream without including rewritten EXIF.
+    /// An absent or unsupported hash is a failed verification, never a pass.
+    func imageDataSHA256(_ file: URL) throws -> String {
+        let output = try execute(["-api", "ImageHashType=SHA256", "-s3", "-ImageDataHash", file.path], timeout: 120)
+        let digest = String(data: output.stdout, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard output.status == 0, digest.count == 64,
+              digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw PhotoError("無法取得主影像 SHA-256，Sony 候選副本未輸出。\n\(output.text)")
+        }
+        return digest
+    }
+
+    /// Nil means the binary tag is absent on both sides; required preview tags
+    /// are separately checked by the caller before accepting a relocation.
+    func binarySHA256(_ file: URL, tag: String) throws -> String? {
+        let output = try execute(["-b", "-\(tag)", file.path], timeout: 120)
+        guard output.status == 0 else {
+            throw PhotoError("無法讀取 \(tag) 進行驗證；原檔未更動。\n\(output.text)")
+        }
+        guard !output.stdout.isEmpty else { return nil }
+        return SHA256.hash(data: output.stdout).map { String(format: "%02x", $0) }.joined()
+    }
+
     private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
         if let error = record["ExifTool:Error"] as? String { throw PhotoError(error) }
         let warnings = [record["ExifTool:Warning"] as? String, stderr.isEmpty ? nil : stderr]
