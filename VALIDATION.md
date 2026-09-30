@@ -1,4 +1,13 @@
-# 3.3 本機驗證紀錄
+# 本機驗證紀錄
+
+## 3.4（2026-09-30）
+
+- `swift build --target PhotoTimezoneApp` 與 `./build.sh` 成功；產生並驗證 ad-hoc 簽章的 3.4.0 App。
+- 使用者實拍 Sony JPG／ARW **僅唯讀取樣**，寫入實驗在獨立暫存副本進行，測試後暫存副本清除。目標只寫 `EXIF:OffsetTimeOriginal=+10:00`，未寫另外兩個時區欄位、未改拍攝／建立／修改時間。
+- 相同兩張暫存副本：嚴格模式成功 0、拒絕 2；明確開啟 Sony 相容模式成功 2、拒絕 0。輸出後重新讀取確認原本日期不變、只新增拍攝時區、主影像 SHA-256 相同；引擎亦逐項核對重排所涉及的預覽與縮圖，以及 ExifTool 可讀的其餘中繼資料。兩張 Sony MakerNotes 原始位元組均不同，故不能宣稱私有資料逐位元不變。
+- 本機 `swift test` 因目前 Command Line Tools 缺少 `TestingMacros` 外掛而無法編譯測試目標；這是測試工具鏈限制，**不代表測試已通過**。新增的 capture-only 回歸測試已提交，仍需在有完整 Swift Testing 外掛的 CI／Xcode 環境執行。
+
+## 3.3
 
 驗證日期：2026-09-29。環境：Apple Silicon、macOS 27、Command Line Tools / Swift 6.4。
 
