@@ -88,7 +88,8 @@ struct ExifTool {
             "-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s",
             "-EXIF:DateTimeOriginal", "-EXIF:CreateDate", "-EXIF:ModifyDate",
             "-EXIF:OffsetTimeOriginal", "-EXIF:OffsetTimeDigitized", "-EXIF:OffsetTime",
-            "-Make", "-Model", "-SerialNumber", "-LensModel", "-ISO", "-ExposureTime", "-FNumber", "-FocalLength",
+            "-Make", "-Model", "-SerialNumber", "-LensModel", "-LensSpec", "-Lens", "-LensID", "-LensInfo",
+            "-ISO", "-ExposureTime", "-FNumber", "-FocalLength",
             "-ExifImageWidth", "-ExifImageHeight", "-ImageWidth", "-ImageHeight", "-FileSize#",
             "-FileType", "-Error", "-Warning"
         ]
@@ -250,7 +251,16 @@ struct ExifTool {
         metadata.make = tag("Make")
         metadata.cameraModel = tag("Model")
         metadata.cameraSerialNumber = tag("SerialNumber")
-        metadata.lensModel = tag("LensModel")
+        // Prefer the recorded model/specification over a derived LensID.
+        // These display-only fallbacks never become tags to write.
+        for name in ["LensModel", "LensSpec", "Lens", "LensID"] {
+            if let value = tag(name) {
+                metadata.lensModel = value
+                metadata.lensModelSource = name == "LensID" ? "LensID（ExifTool 辨識）" : name
+                break
+            }
+        }
+        metadata.lensInfo = tag("LensInfo")
         metadata.iso = tag("ISO")
         metadata.exposureTime = tag("ExposureTime")
         metadata.aperture = tag("FNumber")

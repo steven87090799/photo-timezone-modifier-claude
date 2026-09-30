@@ -715,6 +715,8 @@ private struct PhotoMainView: View {
             header
             Divider()
             if model.activePage == .photos {
+                sonyModeBanner
+                Divider()
                 HStack(alignment: .top, spacing: 0) {
                     settings
                         .frame(width: 290)
@@ -763,7 +765,7 @@ private struct PhotoMainView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.1")
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.2")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
                 Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
@@ -792,6 +794,30 @@ private struct PhotoMainView: View {
         .controlSize(.large)
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
+    }
+
+    private var sonyModeBanner: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label(model.sonyCompatibility ? "Sony 相容模式：已開啟（預設）" : "Sony 嚴格模式：相容模式已關閉",
+                      systemImage: model.sonyCompatibility ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                    .font(.headline)
+                    .foregroundStyle(model.sonyCompatibility ? Color.green : Color.orange)
+                    .accessibilityIdentifier("sonyModeStatus")
+                Text(model.sonyCompatibility
+                     ? "允許已知內部位置重排；仍核對影像、拍攝時間與可讀資訊。未知 MakerNotes 位元組可能變動。"
+                     : "Sony 照片即使只補時區，也可能因內部位置或 MakerNotes 變動而被拒絕。需要相容模式可開啟右側開關。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Toggle("Sony 相容模式", isOn: Binding(get: { model.sonyCompatibility }, set: model.setSonyCompatibility))
+                .toggleStyle(.switch).tint(.green)
+                .disabled(model.isRunning)
+                .accessibilityIdentifier("sonyCompatibilityPrimaryToggle")
+        }
+        .padding(.horizontal, 24).padding(.vertical, 12)
+        .background((model.sonyCompatibility ? Color.green : Color.orange).opacity(0.09))
     }
 
     private var settings: some View {
@@ -1137,6 +1163,13 @@ private struct PhotoMainView: View {
                     .help(item.metadata?.camera ?? "")
             }
             .width(min: 85, ideal: 125, max: 160)
+            TableColumn("鏡頭") { item in
+                Text(item.metadata?.lensModel ?? "未記錄／無法辨識")
+                    .font(.caption).lineLimit(1).truncationMode(.middle)
+                    .help([item.metadata?.lensModel, item.metadata?.lensInfo, item.metadata?.lensModelSource]
+                        .compactMap { $0 }.joined(separator: " · "))
+            }
+            .width(min: 100, ideal: 175, max: 250)
             TableColumn("原始拍攝時間") { item in
                 Text(display(item.metadata?.dateTimeOriginal))
                     .font(.system(.caption, design: .monospaced))
@@ -1184,7 +1217,13 @@ private struct PhotoMainView: View {
                     if let serial = item.metadata?.cameraSerialNumber {
                         Text("相機序號：\(serial)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
-                    Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄").font(.caption).foregroundStyle(.secondary)
+                    Text("鏡頭：\(item.metadata?.lensModel ?? "未記錄／無法辨識")")
+                        .font(.callout.weight(.medium)).textSelection(.enabled)
+                        .accessibilityIdentifier("photoLensModel")
+                    if let source = item.metadata?.lensModelSource {
+                        Text("鏡頭資訊來源：\(source)\(item.metadata?.lensInfo.map { " · \($0)" } ?? "")")
+                            .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                     Text("ISO \(item.metadata?.iso ?? "—")  ·  \(item.metadata?.exposureTime ?? "—") 秒  ·  f/\(item.metadata?.aperture ?? "—")  ·  \(item.metadata?.focalLength ?? "焦距未記錄")")
                         .font(.caption).textSelection(.enabled)
                     Text("\(item.metadata?.dimensions ?? "尺寸未記錄")  ·  \(ByteCountFormatter.string(fromByteCount: item.metadata?.fileSize ?? 0, countStyle: .file))")

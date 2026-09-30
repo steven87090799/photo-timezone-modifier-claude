@@ -20,6 +20,25 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(WriteOptions(targets: .captureOnly, sonyCompatibility: false).sonyCompatibility, false)
     }
 
+    @Test func testLensFallbackReadsXMPWithoutChangingPhotoAndPrefersRecordedModel() throws {
+        let photo = try makeSeededPhoto("lens-fallback.jpg")
+        let seeded = try tool.execute(["-XMP-aux:Lens=Fallback 18-135mm", "-overwrite_original", photo.path])
+        expectEqual(seeded.status, 0)
+        let original = try Data(contentsOf: photo)
+        let batch = try tool.inspectBatch([photo], cancellation: CancellationToken())
+        let metadata = try requireValue(batch[photo.path]).get().0
+        expectEqual(metadata.lensModel, "Fallback 18-135mm")
+        expectEqual(metadata.lensModelSource, "Lens")
+        expectEqual(try tool.snapshot(photo).metadata.lensModel, metadata.lensModel)
+        expectEqual(try Data(contentsOf: photo), original)
+
+        let withModel = try tool.execute(["-EXIF:LensModel=Recorded Lens", "-overwrite_original", photo.path])
+        expectEqual(withModel.status, 0)
+        let preferred = try tool.inspect(photo).0
+        expectEqual(preferred.lensModel, "Recorded Lens")
+        expectEqual(preferred.lensModelSource, "LensModel")
+    }
+
     override init() throws {
         try super.init()
         let repository = URL(fileURLWithPath: #filePath)

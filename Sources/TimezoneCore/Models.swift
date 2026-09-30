@@ -17,6 +17,8 @@ public struct PhotoMetadata: Codable, Sendable {
     public var cameraModel: String? = nil
     public var cameraSerialNumber: String? = nil
     public var lensModel: String? = nil
+    public var lensModelSource: String? = nil
+    public var lensInfo: String? = nil
     public var iso: String? = nil
     public var exposureTime: String? = nil
     public var aperture: String? = nil
@@ -98,9 +100,9 @@ public enum JobOperation: Sendable {
         switch self {
         case .inspect: return "檢查"
         case .write(let offset, let mode, let options):
-            return "替換原檔 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
+            return "替換原檔 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
         case .writeCopy(let offset, let mode, _, _, let options):
-            return "輸出副本 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區")"
+            return "輸出副本 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
         case .restore: return "復原"
         }
     }
