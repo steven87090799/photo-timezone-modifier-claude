@@ -13,6 +13,13 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     private let createdDate = "2021:04:05 06:07:09"
     private let modifiedDate = "2022:10:11 12:13:14"
 
+    @Test func testAppDefaultsEnableSonyCompatibilityAndKeepCaptureOnly() {
+        expectEqual(WriteOptions.appDefault.targets, .captureOnly)
+        expectEqual(WriteOptions.appDefault.sonyCompatibility, true)
+        // A caller can still explicitly select strict verification.
+        expectEqual(WriteOptions(targets: .captureOnly, sonyCompatibility: false).sonyCompatibility, false)
+    }
+
     override init() throws {
         try super.init()
         let repository = URL(fileURLWithPath: #filePath)
@@ -106,7 +113,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         assertDates(metadata)
         expectEqual(try Data(contentsOf: photo), original)
         expectEqual(rows[0].outputURL, candidate)
-        expectEqual(try tool.imageDataSHA256(photo), tool.imageDataSHA256(candidate))
+        expectEqual(try tool.imageDataSHA256(photo), try tool.imageDataSHA256(candidate))
     }
 
     @Test func testRepeatedWritesPreserveExactFirstOriginalAndRestoreKeepsEditedCopy() async throws {
@@ -492,24 +499,34 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
     }
 
-    @Test func testCameraJPEGThumbnailRelocationRequiresIdenticalThumbnailBytes() async throws {
+    @Test func testSonyJPEGStrictRejectsMakerNotesButCompatiblePreservesThumbnailBytes() async throws {
         let sample = tool.url.deletingLastPathComponent().appendingPathComponent("t/images/Sony.jpg")
         let original = try Data(contentsOf: sample)
         let photo = try makeFile("camera-thumb.jpg", contents: original)
         let thumbnail = try tool.thumbnailBytes(photo)
         expectTrue(!thumbnail.isEmpty)
         let output = try makeDirectory("output")
-        let copied = try assertJob(await run([photo], operation: .writeCopy(
-            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo]
-        )), succeeded: 1)
         let copy = output.appendingPathComponent(photo.lastPathComponent)
+        let rejected = try assertJob(await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo],
+            options: WriteOptions(targets: .allThree, sonyCompatibility: false)
+        )), failed: 1)
+        expectTrue(rejected[0].detail.contains("MakerNotes") || rejected[0].detail.contains("內部位址"))
+        expectFalse(FileManager.default.fileExists(atPath: copy.path))
+        expectEqual(try Data(contentsOf: photo), original)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+        let copied = try assertJob(await run([photo], operation: .writeCopy(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo],
+            options: WriteOptions(targets: .allThree, sonyCompatibility: true)
+        )), succeeded: 1)
         expectEqual(copied[0].outputURL, copy)
         expectEqual(try Data(contentsOf: photo), original)
         expectEqual(try tool.thumbnailBytes(copy), thumbnail)
         assertOffsets(try tool.inspect(copy).0, original: "+08:00", digitized: "+08:00", time: "+08:00")
 
         _ = try assertJob(await run([photo], operation: .write(
-            offset: UTCOffset(minutes: 480), mode: .fillMissing
+            offset: UTCOffset(minutes: 480), mode: .fillMissing,
+            options: WriteOptions(targets: .allThree, sonyCompatibility: true)
         )), succeeded: 1)
         expectEqual(try Data(contentsOf: originalBackup(for: photo)), original)
         expectEqual(try tool.thumbnailBytes(photo), thumbnail)

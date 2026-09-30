@@ -303,7 +303,7 @@ public struct PhotoEngine: Sendable {
                         throw PhotoError("Sony 私有資料重排時影像雜湊或警告核對失敗；未輸出，原檔未更動。")
                     }
                     sonyRelocationNote += (sonyRelocationNote.isEmpty ? "" : "\n") +
-                        "Sony MakerNotes 原始位元組不同；這是明確開啟相容模式後接受的未知私有資料風險。"
+                        "Sony MakerNotes 原始位元組不同；相容模式允許此差異，但仍有未知私有資料風險。"
                 }
             }
             sonyVerificationNote = sonyRelocationNote

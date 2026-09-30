@@ -64,6 +64,9 @@ public struct WriteOptions: Sendable {
     public let targets: OffsetTargets
     public let sonyCompatibility: Bool
 
+    /// User-facing defaults; legacy programmatic callers remain unchanged.
+    public static let appDefault = WriteOptions(targets: .captureOnly, sonyCompatibility: true)
+
     // Existing programmatic callers retain their three-tag behavior. The App
     // explicitly selects captureOnly by default for new user-facing jobs.
     public init(targets: OffsetTargets = .allThree, sonyCompatibility: Bool = false) {

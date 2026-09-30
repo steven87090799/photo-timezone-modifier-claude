@@ -63,8 +63,8 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var recursive = true
     @Published private(set) var offset = UTCOffset(minutes: 480)
     @Published private(set) var mode: WriteMode = .fillMissing
-    @Published private(set) var offsetTargets: OffsetTargets = .captureOnly
-    @Published private(set) var sonyCompatibility = false
+    @Published private(set) var offsetTargets: OffsetTargets = WriteOptions.appDefault.targets
+    @Published private(set) var sonyCompatibility = WriteOptions.appDefault.sonyCompatibility
     @Published private(set) var replaceOriginals = false
     @Published private(set) var notificationsEnabled = false
     @Published private(set) var outputDirectory: URL?
@@ -763,7 +763,7 @@ private struct PhotoMainView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.0")
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.1")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
                 Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
@@ -850,12 +850,12 @@ private struct PhotoMainView: View {
                         .font(.caption)
                         .foregroundStyle(model.mode == .replaceAll ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Toggle("Sony 相容模式（預設關閉）", isOn: Binding(
+                    Toggle("Sony 相容模式（預設開啟）", isOn: Binding(
                         get: { model.sonyCompatibility }, set: model.setSonyCompatibility
                     ))
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("sonyCompatibilityToggle")
-                    Text("只在 Sony 候選副本中容許已知的內部位置重排；仍逐張核對主影像、相關預覽／縮圖和可讀欄位。MakerNotes 原始位元組可能變動，無法保證私有資料逐位元不變。建議先選副本輸出測試。")
+                    Text("只在 Sony 候選副本中容許已知的內部位置重排；仍逐張核對主影像、相關預覽／縮圖和可讀欄位。MakerNotes 原始位元組可能變動，無法保證私有資料逐位元不變。關閉可使用嚴格模式；建議先選副本輸出測試。")
                         .font(.caption)
                         .foregroundStyle(model.sonyCompatibility ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -60,7 +60,7 @@ struct DiagnosticsView: View {
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
                     detail("可處理格式", "JPEG、TIFF、Sony ARW；僅補寫時區，不轉換原格式")
-                    Text("3.4：預設只補 EXIF 拍攝時區；Sony 相容模式需明確開啟並核對影像資料。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
+                    Text("3.4.1：Sony 相容模式預設開啟，保留嚴格模式開關與逐張驗證。\n3.4：預設只補 EXIF 拍攝時區，不加減拍攝鐘點。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -69,6 +69,7 @@ struct DiagnosticsView: View {
                     detail("目前狀態", model.isRunning ? model.phase : "閒置；沒有正在執行的寫入")
                     detail("已加入來源", "\(model.inputs.count) 個；目前清單 \(model.items.count) 張")
                     detail("輸出方式", model.replaceOriginals ? "替換原檔（先留備份）" : "輸出副本（保留來源）")
+                    detail("Sony 驗證模式", model.sonyCompatibility ? "相容模式（預設）；允許已知位置重排與 MakerNotes 位元組差異" : "嚴格模式；拒絕不允許的位置或 MakerNotes 變動")
                     if let summary = model.summary {
                         detail("最近報告", "完成 \(summary.succeeded)、略過 \(summary.skipped)、失敗 \(summary.failed)、取消 \(summary.cancelled)")
                     }
@@ -85,7 +86,7 @@ struct DiagnosticsView: View {
                 }
 
                 section("安全界線", symbol: "checkmark.shield") {
-                    Text("寫入前先製作候選檔；驗證可讀的非時區中繼資料、影像內容與檔案屬性。替換原檔模式會先保留備份，再原子提交。發現無法確認的 Sony 私有結構變更時會拒絕該張，失敗不代表原檔遺失。")
+                    Text("寫入前先製作候選檔並核對可讀中繼資料與檔案屬性。Sony 相容模式會核對主影像與涉及重排的預覽／縮圖，容許已知位置重排及 MakerNotes 位元組差異；關閉時採嚴格模式。核對失敗仍拒絕該張。替換原檔模式先保留備份，再原子提交。")
                     Text("ExifTool 可能重排檔案內部位址；軟體無法保證磁碟故障、突然斷電或未知相機私有資料下絕對零風險。正式處理前請保留另一份獨立備份。")
                         .foregroundStyle(.secondary)
                 }
@@ -138,6 +139,7 @@ struct DiagnosticsView: View {
             "CPU（App 本體）：\(metrics.cpuPercent.map { String(format: "%.1f %%", $0) } ?? "無法讀取")",
             "記憶體（App 本體）：\(metrics.memoryBytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory) } ?? "無法讀取")",
             "處理狀態：\(model.isRunning ? "處理中" : "閒置")",
+            "Sony 模式：\(model.sonyCompatibility ? "相容模式" : "嚴格模式")",
             "最近結果：成功 \(model.summary?.succeeded ?? 0)、失敗 \(model.summary?.failed ?? 0)"
         ]
         NSPasteboard.general.clearContents()
