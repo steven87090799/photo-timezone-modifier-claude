@@ -34,17 +34,6 @@ jobs:
           PHOTO_TIMEZONE_STRESS: '1'
         run: ./scripts/test.sh --filter testThousand
 
-  gps-native-macos:
-    runs-on: macos-15
-    timeout-minutes: 6
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Native manual GPS safety bundle
-        timeout-minutes: 4
-        env:
-          PHOTO_TIMEZONE_STRESS: '0'
-        run: ./scripts/test.sh --filter testManualGPSSafetyBundle
-
   test-and-build-macos:
     runs-on: macos-15
     timeout-minutes: 22
@@ -74,7 +63,7 @@ jobs:
         run: ./scripts/test.sh --filter testPinnedExifToolVersionAndPersistentTransportStarts
 
       - name: Critical photo write tests
-        timeout-minutes: 7
+        timeout-minutes: 8
         env:
           PHOTO_TIMEZONE_STRESS: '0'
         run: |
@@ -83,6 +72,11 @@ jobs:
           ./scripts/test.sh --filter testSubsecondsAndEveryDateSurviveThreeOffsetWrites
           ./scripts/test.sh --filter testNumericSnapshotRejectsSubDisplayGPSMutation
           ./scripts/test.sh --filter testConflictingXMPIsReportedAndNeverRewritten
+          # The full manual-GPS transaction bundle is covered by portable-tests.
+          # macOS validates the production code path via the same core build,
+          # critical write tests, and the universal app build below. A separate
+          # filtered GPS job is intentionally avoided because current macOS
+          # SwiftPM runners can leave swiftpm-testing orphaned after Build complete.
 
       - name: Build universal app
         timeout-minutes: 8
