@@ -44,11 +44,17 @@ public struct PhotoMetadata: Codable, Sendable {
     public var colorSpace: String? = nil
     public var software: String? = nil
     public var mimeType: String? = nil
+    public var gpsVersionID: String? = nil
     public var gpsLatitude: String? = nil
+    public var gpsLatitudeRef: String? = nil
     public var gpsLongitude: String? = nil
+    public var gpsLongitudeRef: String? = nil
     public var gpsAltitude: String? = nil
+    public var gpsAltitudeRef: String? = nil
     public var gpsDateStamp: String? = nil
     public var gpsTimeStamp: String? = nil
+    public var embeddedXMPGPSDetected: Bool = false
+    public var sidecarGPSDetected: Bool = false
     public var imageWidth: String? = nil
     public var imageHeight: String? = nil
     public var fileSize: Int64? = nil
@@ -61,6 +67,78 @@ public struct PhotoMetadata: Codable, Sendable {
         !TimeValidation.isOffset(offsetOriginal) || !TimeValidation.isOffset(offsetDigitized) || !TimeValidation.isOffset(offsetTime)
     }
     public var missingCaptureOffset: Bool { !TimeValidation.isOffset(offsetOriginal) }
+
+    /// Manual GPS insertion is allowed only when no embedded EXIF GPS, embedded
+    /// XMP GPS, or XMP sidecar GPS is present. Partial GPS is treated as
+    /// existing metadata and is never silently overwritten.
+    public var hasEmbeddedEXIFGPS: Bool {
+        [gpsVersionID, gpsLatitude, gpsLatitudeRef, gpsLongitude, gpsLongitudeRef,
+         gpsAltitude, gpsAltitudeRef, gpsDateStamp, gpsTimeStamp].contains { value in
+            guard let value else { return false }
+            return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+    public var hasCompleteGPSCoordinate: Bool { gpsLatitude != nil && gpsLongitude != nil }
+    public var hasAnyGPS: Bool { hasEmbeddedEXIFGPS || embeddedXMPGPSDetected || sidecarGPSDetected }
+}
+
+public struct GPSCoordinate: Equatable, Sendable {
+    public let latitude: Double
+    public let longitude: Double
+    public let altitudeMeters: Double?
+
+    public init(latitude: Double, longitude: Double, altitudeMeters: Double? = nil) throws {
+        guard latitude.isFinite, longitude.isFinite,
+              (-90.0...90.0).contains(latitude), (-180.0...180.0).contains(longitude) else {
+            throw PhotoError("GPS 經緯度超出範圍；緯度需介於 -90～90，經度需介於 -180～180。")
+        }
+        if let altitudeMeters {
+            guard altitudeMeters.isFinite, (-12000.0...100000.0).contains(altitudeMeters) else {
+                throw PhotoError("GPS 高度超出合理範圍（-12000～100000 公尺）。")
+            }
+        }
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitudeMeters = altitudeMeters
+    }
+
+    public static func parse(latitude: String, longitude: String, altitude: String) throws -> GPSCoordinate {
+        func number(_ raw: String, name: String, required: Bool) throws -> Double? {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                if required { throw PhotoError("\(name)不可留空。") }
+                return nil
+            }
+            guard let value = Double(trimmed), value.isFinite else {
+                throw PhotoError("\(name)格式錯誤；請輸入十進位數字，例如 25.0330。")
+            }
+            return value
+        }
+        return try GPSCoordinate(
+            latitude: number(latitude, name: "緯度", required: true)!,
+            longitude: number(longitude, name: "經度", required: true)!,
+            altitudeMeters: number(altitude, name: "高度", required: false)
+        )
+    }
+
+    private func decimal(_ value: Double) -> String {
+        var text = String(format: "%.8f", locale: Locale(identifier: "en_US_POSIX"), value)
+        while text.contains(".") && text.last == "0" { text.removeLast() }
+        if text.last == "." { text.removeLast() }
+        return text == "-0" ? "0" : text
+    }
+
+    public var latitudeArgument: String { decimal(abs(latitude)) }
+    public var longitudeArgument: String { decimal(abs(longitude)) }
+    public var altitudeArgument: String? { altitudeMeters.map { decimal(abs($0)) } }
+    public var latitudeRef: String { latitude < 0 ? "S" : "N" }
+    public var longitudeRef: String { longitude < 0 ? "W" : "E" }
+    public var altitudeRef: String? { altitudeMeters.map { $0 < 0 ? "1" : "0" } }
+    public var display: String {
+        var value = "\(decimal(latitude)), \(decimal(longitude))"
+        if let altitudeMeters { value += " · \(decimal(altitudeMeters)) m" }
+        return value
+    }
 }
 
 public struct PhotoItem: Identifiable, Codable, Sendable {
@@ -120,6 +198,8 @@ public enum JobOperation: Sendable {
     case inspect
     case write(offset: UTCOffset, mode: WriteMode, options: WriteOptions = WriteOptions())
     case writeCopy(offset: UTCOffset, mode: WriteMode, destination: URL, sourceRoots: [URL], options: WriteOptions = WriteOptions())
+    case addGPS(location: GPSCoordinate, options: WriteOptions = WriteOptions())
+    case addGPSCopy(location: GPSCoordinate, destination: URL, sourceRoots: [URL], options: WriteOptions = WriteOptions())
     case restore
 
     var label: String {
@@ -129,6 +209,10 @@ public enum JobOperation: Sendable {
             return "替換原檔 \(offset.label) / 三個 EXIF 時區 / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
         case .writeCopy(let offset, let mode, _, _, let options):
             return "輸出副本 \(offset.label) / 三個 EXIF 時區 / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
+        case .addGPS(let location, let options):
+            return "替換原檔 / 新增 GPS \(location.display) / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
+        case .addGPSCopy(let location, _, _, let options):
+            return "輸出副本 / 新增 GPS \(location.display) / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
         case .restore: return "復原"
         }
     }
