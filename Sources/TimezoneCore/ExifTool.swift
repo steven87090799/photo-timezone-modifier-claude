@@ -137,8 +137,9 @@ final class ExifTool {
             // Image/file identity and GPS diagnostics.
             "-EXIF:Orientation", "-EXIF:ColorSpace", "-EXIF:ExifImageWidth", "-EXIF:ExifImageHeight",
             "-EXIF:Software", "-ImageWidth", "-ImageHeight", "-FileSize#", "-FileType", "-MIMEType",
-            "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
-            "-GPSDateStamp", "-GPSTimeStamp",
+            "-GPSVersionID", "-GPSLatitude", "-GPSLatitudeRef", "-GPSLongitude", "-GPSLongitudeRef",
+            "-GPSAltitude", "-GPSAltitudeRef", "-GPSDateStamp", "-GPSTimeStamp",
+            "-XMP-exif:GPSLatitude", "-XMP-exif:GPSLongitude", "-XMP-exif:GPSAltitude",
             "-Error", "-Warning"
         ]
     }
@@ -227,9 +228,13 @@ final class ExifTool {
         let url: URL
         let identity: FileIdentity
         let dates: [String: String]
+        let hasGPS: Bool
         let warning: String
         func issues(for photo: PhotoMetadata) -> [String] {
             var result = TimeValidation.issues(photo, dates: dates).map { "\(url.lastPathComponent): \($0)" }
+            if hasGPS {
+                result.append("\(url.lastPathComponent): XMP sidecar contains GPS metadata; it was left unchanged.")
+            }
             if !warning.isEmpty { result.append(warning) }
             return result
         }
@@ -238,20 +243,30 @@ final class ExifTool {
     func readSidecar(_ file: URL, cancellation: CancellationToken? = nil) throws -> SidecarSnapshot {
         let identity = try FileIdentity.read(file)
         guard identity.size <= 8 * 1024 * 1024 else {
-            return SidecarSnapshot(url: file, identity: identity, dates: [:],
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false,
                 warning: "XMP sidecar exceeds the 8 MiB diagnostic budget; copied without rewriting: \(file.lastPathComponent)")
         }
-        let output = try execute(["-j", "-G1:4", "-s", "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate",
-            "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated", file.path], timeout: 120, cancellation: cancellation)
+        let output = try execute(["-j", "-G1:4", "-s",
+            "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
+            "-XMP-exif:GPSLatitude", "-XMP-exif:GPSLongitude", "-XMP-exif:GPSAltitude",
+            file.path], timeout: 120, cancellation: cancellation)
         try identity.verify(file)
         guard output.status == 0,
               let records = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
               records.count == 1, let record = records.first else {
-            return SidecarSnapshot(url: file, identity: identity, dates: [:],
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false,
                 warning: "XMP sidecar could not be diagnosed; it was not rewritten: \(file.lastPathComponent)")
         }
-        let dates = record.filter { $0.key.hasPrefix("XMP") }.mapValues { String(describing: $0) }
-        return SidecarSnapshot(url: file, identity: identity, dates: dates, warning: output.stderr)
+        let dates = record.filter { key, _ in
+            key.hasPrefix("XMP") && ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated"]
+                .contains(String(key.split(separator: ":").last ?? ""))
+        }.mapValues { String(describing: $0) }
+        let gpsNames: Set<String> = ["GPSLatitude", "GPSLongitude", "GPSAltitude"]
+        let hasGPS = record.contains { key, value in
+            key.hasPrefix("XMP") && gpsNames.contains(String(key.split(separator: ":").last ?? ""))
+                && !String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return SidecarSnapshot(url: file, identity: identity, dates: dates, hasGPS: hasGPS, warning: output.stderr)
     }
 
     private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
@@ -350,11 +365,20 @@ final class ExifTool {
         metadata.colorSpace = grouped("ExifIFD:ColorSpace")
         metadata.software = grouped("IFD0:Software") ?? tag("Software")
         metadata.mimeType = grouped("File:MIMEType")
+        metadata.gpsVersionID = grouped("GPS:GPSVersionID") ?? tag(in: "GPS", "GPSVersionID")
         metadata.gpsLatitude = grouped("GPS:GPSLatitude") ?? tag(in: "GPS", "GPSLatitude")
+        metadata.gpsLatitudeRef = grouped("GPS:GPSLatitudeRef") ?? tag(in: "GPS", "GPSLatitudeRef")
         metadata.gpsLongitude = grouped("GPS:GPSLongitude") ?? tag(in: "GPS", "GPSLongitude")
+        metadata.gpsLongitudeRef = grouped("GPS:GPSLongitudeRef") ?? tag(in: "GPS", "GPSLongitudeRef")
         metadata.gpsAltitude = grouped("GPS:GPSAltitude") ?? tag(in: "GPS", "GPSAltitude")
+        metadata.gpsAltitudeRef = grouped("GPS:GPSAltitudeRef") ?? tag(in: "GPS", "GPSAltitudeRef")
         metadata.gpsDateStamp = grouped("GPS:GPSDateStamp") ?? tag(in: "GPS", "GPSDateStamp")
         metadata.gpsTimeStamp = grouped("GPS:GPSTimeStamp") ?? tag(in: "GPS", "GPSTimeStamp")
+        let xmpGPSNames: Set<String> = ["GPSLatitude", "GPSLongitude", "GPSAltitude"]
+        metadata.embeddedXMPGPSDetected = record.contains { key, value in
+            key.hasPrefix("XMP") && xmpGPSNames.contains(String(key.split(separator: ":").last ?? ""))
+                && !String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         metadata.imageWidth = grouped("ExifIFD:ExifImageWidth") ?? tag("ExifImageWidth") ?? tag("ImageWidth")
         metadata.imageHeight = grouped("ExifIFD:ExifImageHeight") ?? tag("ExifImageHeight") ?? tag("ImageHeight")
         metadata.fileSize = tag("FileSize").flatMap(Int64.init)
