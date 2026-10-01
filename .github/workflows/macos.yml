@@ -52,9 +52,9 @@ jobs:
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" app/Info.plist
 
-      - name: Build universal app
+      - name: Build Apple Silicon app
         timeout-minutes: 8
-        run: ./build.sh --universal
+        run: ./build.sh
 
       - name: Package app preserving executable modes
         run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-macOS.zip
@@ -88,7 +88,7 @@ jobs:
           tag="build-$GITHUB_SHA"
           notes="$RUNNER_TEMP/app-release-notes.md"
           cat > "$notes" <<EOF
-          自動建置的 macOS 13+ 通用 App，支援 Apple Silicon 與 Intel。
+          自動建置的 macOS 13+ Apple Silicon App，適用 M 系列晶片。
           下載 PhotoTimezone-macOS.zip，解壓縮後將 App 放到「應用程式」。
 
           提交：$GITHUB_SHA

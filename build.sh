@@ -3,6 +3,10 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
+if [[ $# != 0 ]]; then
+  echo "用法：./build.sh（僅建置 Apple Silicon／M 系列 App）" >&2
+  exit 1
+fi
 ./scripts/prepare-exiftool.sh
 bash ./scripts/prepare-icon.sh
 mkdir -p "$PROJECT_DIR/dist"
@@ -10,18 +14,12 @@ APP_STAGE="$(mktemp -d "$PROJECT_DIR/dist/native-build.XXXXXX")"
 APP_PATH="$APP_STAGE/相片時區修改器.app"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
-if [[ "$#" -gt 0 ]] && [[ "$1" == "--universal" ]]; then
-  swift build --build-system native -c release --arch arm64 -Xswiftc -Osize
-  ARM_BIN="$(swift build --build-system native -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
-  swift build --build-system native -c release --arch x86_64 -Xswiftc -Osize
-  INTEL_BIN="$(swift build --build-system native -c release --arch x86_64 --show-bin-path)/PhotoTimezoneApp"
-  /usr/bin/lipo -create "$ARM_BIN" "$INTEL_BIN" -output "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
-elif [[ $# == 0 ]]; then
-  swift build --build-system native -c release -Xswiftc -Osize
-  APP_BIN="$(swift build --build-system native -c release --show-bin-path)/PhotoTimezoneApp"
-  /bin/cp "$APP_BIN" "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
-else
-  echo "用法：./build.sh [--universal]" >&2
+swift build --build-system native -c release --arch arm64 -Xswiftc -Osize
+APP_BIN="$(swift build --build-system native -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
+/bin/cp "$APP_BIN" "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
+APP_ARCHS="$(/usr/bin/lipo -archs "$APP_PATH/Contents/MacOS/PhotoTimezoneApp")"
+if [[ "$APP_ARCHS" != "arm64" ]]; then
+  echo "App 架構不符：預期 arm64，實際為 $APP_ARCHS" >&2
   exit 1
 fi
 

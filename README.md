@@ -38,7 +38,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 [下載最新版 macOS App](https://github.com/steven87090799/photo-timezone-modifier-claude/releases/latest/download/PhotoTimezone-macOS.zip) · [所有建置版本](https://github.com/steven87090799/photo-timezone-modifier-claude/releases)
 
-每次推送或合併到 `main`，GitHub Actions 會執行 Linux／macOS 完整一般測試、建置 Apple Silicon／Intel 通用 App，成功後自動發布到 Releases。ZIP 解壓縮後，將「相片時區修改器.app」放到「應用程式」即可。固定下載連結提供最新成功發布的版本；測試或建置失敗時保留上一個成功版本。
+每次推送或合併到 `main`，GitHub Actions 會執行 Linux／macOS 完整一般測試、建置僅適用 Apple Silicon（M 系列晶片）的 App，成功後自動發布到 Releases。ZIP 解壓縮後，將「相片時區修改器.app」放到「應用程式」即可。固定下載連結提供最新成功發布的版本；測試或建置失敗時保留上一個成功版本。
 
 每個 Release 記錄提交與建置編號，舊版本可保留下載。PR 的建置成品只放在 Actions 的 `PhotoTimezone-macOS` artifact。也可在 Actions 手動執行 `macOS native app`，選擇 `main` 重新建置發布。App 目前使用 ad-hoc 簽章，尚未取得 Apple Developer ID 簽章／公證。
 
@@ -49,10 +49,10 @@ macOS 13+，需 Swift 6 工具鏈與系統 `/usr/bin/perl`。
 ```bash
 ./scripts/test.sh
 PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
-./build.sh --universal
+./build.sh
 ```
 
-成品位於 `dist/相片時區修改器.app`。預設是 ad-hoc 簽章，不是 Apple 公證發行版。Linux 可跑核心測試，不能產生 macOS App。
+成品位於 `dist/相片時區修改器.app`，僅包含 arm64 架構，適用 M 系列 Mac。預設是 ad-hoc 簽章，不是 Apple 公證發行版。Linux 可跑核心測試，不能產生 macOS App。
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
 
