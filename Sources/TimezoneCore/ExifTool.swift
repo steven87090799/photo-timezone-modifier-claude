@@ -284,6 +284,15 @@ final class ExifTool {
             let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
             return result.isEmpty ? nil : (key, result)
         }
+        func tag(in group: String, _ name: String) -> String? {
+            let key = record.keys.filter {
+                let parts = $0.split(separator: ":")
+                return parts.first == Substring(group) && parts.last == Substring(name)
+            }.sorted().first
+            guard let key, let value = record[key] else { return nil }
+            let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.isEmpty ? nil : result
+        }
         func tag(_ name: String) -> String? { tagWithKey(name)?.value }
         var metadata = PhotoMetadata(
             dateTimeOriginal: text("ExifIFD:DateTimeOriginal"),
@@ -301,7 +310,7 @@ final class ExifTool {
         metadata.cameraModel = grouped("IFD0:Model") ?? tag("Model")
         // ExifTool calls tag 0xA431 SerialNumber; the EXIF specification calls
         // the same field BodySerialNumber.
-        metadata.bodySerialNumber = grouped("ExifIFD:SerialNumber")
+        metadata.bodySerialNumber = grouped("ExifIFD:SerialNumber") ?? tag(in: "ExifIFD", "SerialNumber")
         metadata.cameraSerialNumber = metadata.bodySerialNumber ?? tag("SerialNumber")
         metadata.lensMake = grouped("ExifIFD:LensMake")
 
@@ -341,11 +350,11 @@ final class ExifTool {
         metadata.colorSpace = grouped("ExifIFD:ColorSpace")
         metadata.software = grouped("IFD0:Software") ?? tag("Software")
         metadata.mimeType = grouped("File:MIMEType")
-        metadata.gpsLatitude = grouped("GPS:GPSLatitude")
-        metadata.gpsLongitude = grouped("GPS:GPSLongitude")
-        metadata.gpsAltitude = grouped("GPS:GPSAltitude")
-        metadata.gpsDateStamp = grouped("GPS:GPSDateStamp")
-        metadata.gpsTimeStamp = grouped("GPS:GPSTimeStamp")
+        metadata.gpsLatitude = grouped("GPS:GPSLatitude") ?? tag(in: "GPS", "GPSLatitude")
+        metadata.gpsLongitude = grouped("GPS:GPSLongitude") ?? tag(in: "GPS", "GPSLongitude")
+        metadata.gpsAltitude = grouped("GPS:GPSAltitude") ?? tag(in: "GPS", "GPSAltitude")
+        metadata.gpsDateStamp = grouped("GPS:GPSDateStamp") ?? tag(in: "GPS", "GPSDateStamp")
+        metadata.gpsTimeStamp = grouped("GPS:GPSTimeStamp") ?? tag(in: "GPS", "GPSTimeStamp")
         metadata.imageWidth = grouped("ExifIFD:ExifImageWidth") ?? tag("ExifImageWidth") ?? tag("ImageWidth")
         metadata.imageHeight = grouped("ExifIFD:ExifImageHeight") ?? tag("ExifImageHeight") ?? tag("ImageHeight")
         metadata.fileSize = tag("FileSize").flatMap(Int64.init)
