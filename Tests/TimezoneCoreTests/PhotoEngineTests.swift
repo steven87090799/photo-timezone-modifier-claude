@@ -63,7 +63,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             "-overwrite_original",
             "-EXIF:Make=Preview Camera Co.",
             "-EXIF:Model=Preview Body 1",
-            "-EXIF:BodySerialNumber=BODY-123",
+            "-EXIF:SerialNumber=BODY-123",
             "-EXIF:LensMake=Preview Lens Co.",
             "-EXIF:LensModel=35mm Test Lens",
             "-EXIF:LensSerialNumber=LENS-456",
@@ -84,10 +84,10 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             "-EXIF:Orientation#=1",
             "-EXIF:ColorSpace#=1",
             "-EXIF:Software=PhotoTimezone Preview Test",
-            "-GPS:GPSLatitude#=25.03", "-GPS:GPSLatitudeRef=N",
-            "-GPS:GPSLongitude#=121.56", "-GPS:GPSLongitudeRef=E",
-            "-GPS:GPSAltitude#=10", "-GPS:GPSAltitudeRef#=0",
-            "-GPS:GPSDateStamp=2026:10:01", "-GPS:GPSTimeStamp=06:30:00",
+            "-GPSLatitude#=25.03", "-GPSLatitudeRef=N",
+            "-GPSLongitude#=121.56", "-GPSLongitudeRef=E",
+            "-GPSAltitude#=10", "-GPSAltitudeRef#=0",
+            "-GPSDateStamp=2026:10:01", "-GPSTimeStamp=06:30:00",
             photo.path
         ], timeout: 120)
         expectEqual(output.status, 0)
