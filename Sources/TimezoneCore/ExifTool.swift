@@ -229,6 +229,7 @@ final class ExifTool {
         let identity: FileIdentity
         let dates: [String: String]
         let hasGPS: Bool
+        let gpsCheckReliable: Bool
         let warning: String
         func issues(for photo: PhotoMetadata) -> [String] {
             var result = TimeValidation.issues(photo, dates: dates).map { "\(url.lastPathComponent): \($0)" }
@@ -243,8 +244,8 @@ final class ExifTool {
     func readSidecar(_ file: URL, cancellation: CancellationToken? = nil) throws -> SidecarSnapshot {
         let identity = try FileIdentity.read(file)
         guard identity.size <= 8 * 1024 * 1024 else {
-            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false,
-                warning: "XMP sidecar exceeds the 8 MiB diagnostic budget; copied without rewriting: \(file.lastPathComponent)")
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
+                warning: "XMP sidecar exceeds the 8 MiB diagnostic budget; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
         let output = try execute(["-j", "-G1:4", "-s",
             "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
@@ -254,8 +255,8 @@ final class ExifTool {
         guard output.status == 0,
               let records = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
               records.count == 1, let record = records.first else {
-            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false,
-                warning: "XMP sidecar could not be diagnosed; it was not rewritten: \(file.lastPathComponent)")
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
+                warning: "XMP sidecar could not be diagnosed; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
         let dates = record.filter { key, _ in
             key.hasPrefix("XMP") && ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated"]
@@ -266,7 +267,7 @@ final class ExifTool {
             key.hasPrefix("XMP") && gpsNames.contains(String(key.split(separator: ":").last ?? ""))
                 && !String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        return SidecarSnapshot(url: file, identity: identity, dates: dates, hasGPS: hasGPS, warning: output.stderr)
+        return SidecarSnapshot(url: file, identity: identity, dates: dates, hasGPS: hasGPS, gpsCheckReliable: true, warning: output.stderr)
     }
 
     private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
