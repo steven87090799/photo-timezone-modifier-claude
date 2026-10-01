@@ -45,7 +45,9 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             }
             throw PhotoError("Pinned ExifTool is not installed. Run scripts/prepare-exiftool.sh or set TEST_EXIFTOOL_PATH to ExifTool \(EngineResources.version).")
         }
-        tool = ExifTool(url: url)
+        // Match production transport: reuse one bounded ExifTool worker instead
+        // of paying a new Perl/ExifTool launch for every fixture assertion.
+        tool = ExifTool(url: url, persistent: true)
         // A wrong or broken installation is a failure, never a silent skip.
         try tool.validateVersion()
         logDirectory = temporaryDirectory.appendingPathComponent("logs", isDirectory: true)
