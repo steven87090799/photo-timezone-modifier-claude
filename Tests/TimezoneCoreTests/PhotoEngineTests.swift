@@ -57,6 +57,75 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try tool.validateVersion()
     }
 
+    @Test func testImportantExifPreviewFieldsAreReadFromStandardTags() throws {
+        let photo = try makeSeededPhoto("important-exif-preview.jpg")
+        let output = try tool.execute([
+            "-overwrite_original",
+            "-EXIF:Make=Preview Camera Co.",
+            "-EXIF:Model=Preview Body 1",
+            "-EXIF:BodySerialNumber=BODY-123",
+            "-EXIF:LensMake=Preview Lens Co.",
+            "-EXIF:LensModel=35mm Test Lens",
+            "-EXIF:LensSerialNumber=LENS-456",
+            "-EXIF:SubSecTimeOriginal=123",
+            "-EXIF:SubSecTimeDigitized=456",
+            "-EXIF:SubSecTime=789",
+            "-EXIF:ISO=200",
+            "-EXIF:ExposureTime=1/125",
+            "-EXIF:FNumber=2.8",
+            "-EXIF:ExposureProgram#=1",
+            "-EXIF:ExposureCompensation=-0.7",
+            "-EXIF:MeteringMode#=5",
+            "-EXIF:Flash#=0",
+            "-EXIF:FocalLength=35",
+            "-EXIF:FocalLengthIn35mmFormat=35",
+            "-EXIF:WhiteBalance#=0",
+            "-EXIF:SceneCaptureType#=0",
+            "-EXIF:Orientation#=1",
+            "-EXIF:ColorSpace#=1",
+            "-EXIF:Software=PhotoTimezone Preview Test",
+            "-GPS:GPSLatitude#=25.03", "-GPS:GPSLatitudeRef=N",
+            "-GPS:GPSLongitude#=121.56", "-GPS:GPSLongitudeRef=E",
+            "-GPS:GPSAltitude#=10", "-GPS:GPSAltitudeRef#=0",
+            "-GPS:GPSDateStamp=2026:10:01", "-GPS:GPSTimeStamp=06:30:00",
+            photo.path
+        ], timeout: 120)
+        expectEqual(output.status, 0)
+
+        let metadata = try tool.inspect(photo).0
+        expectEqual(metadata.make, "Preview Camera Co.")
+        expectEqual(metadata.cameraModel, "Preview Body 1")
+        expectEqual(metadata.bodySerialNumber, "BODY-123")
+        expectEqual(metadata.cameraSerialNumber, "BODY-123")
+        expectEqual(metadata.lensMake, "Preview Lens Co.")
+        expectEqual(metadata.lensModel, "35mm Test Lens")
+        expectEqual(metadata.lensModelSource, "ExifIFD:LensModel")
+        expectEqual(metadata.lensSerialNumber, "LENS-456")
+        expectEqual(metadata.subSecTimeOriginal, "123")
+        expectEqual(metadata.subSecTimeDigitized, "456")
+        expectEqual(metadata.subSecTime, "789")
+        expectEqual(metadata.software, "PhotoTimezone Preview Test")
+        expectTrue(metadata.iso != nil)
+        expectTrue(metadata.exposureTime != nil)
+        expectTrue(metadata.aperture != nil)
+        expectTrue(metadata.exposureProgram != nil)
+        expectTrue(metadata.exposureCompensation != nil)
+        expectTrue(metadata.meteringMode != nil)
+        expectTrue(metadata.flash != nil)
+        expectTrue(metadata.focalLength != nil)
+        expectTrue(metadata.focalLength35mm != nil)
+        expectTrue(metadata.whiteBalance != nil)
+        expectTrue(metadata.sceneCaptureType != nil)
+        expectTrue(metadata.orientation != nil)
+        expectTrue(metadata.colorSpace != nil)
+        expectTrue(metadata.mimeType != nil)
+        expectTrue(metadata.gpsLatitude != nil)
+        expectTrue(metadata.gpsLongitude != nil)
+        expectTrue(metadata.gpsAltitude != nil)
+        expectTrue(metadata.gpsDateStamp != nil)
+        expectTrue(metadata.gpsTimeStamp != nil)
+    }
+
     @Test func testBadFirstPhotoDoesNotPreventFollowingJPEGAndTIFFWrites() async throws {
         let bad = try makeFile("00-corrupt.jpg", contents: Data("plain text, not a JPEG".utf8))
         let badBytes = try Data(contentsOf: bad)
