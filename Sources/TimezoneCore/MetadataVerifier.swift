@@ -41,6 +41,85 @@ enum MetadataVerifier {
         return ["Metadata-only verification: layout pointers relocated (\(relocations.joined(separator: ", "))). Image and private binary bytes were not hashed."]
     }
 
+    static func verifyGPSAddition(before: ExifTool.Snapshot, after: ExifTool.Snapshot,
+                                  location: GPSCoordinate, options: WriteOptions) throws -> [String] {
+        let old = before.metadata, new = after.metadata
+        guard old.fileType == new.fileType, old.dateTags == new.dateTags,
+              old.dateTimeOriginal == new.dateTimeOriginal, old.createDate == new.createDate,
+              old.modifyDate == new.modifyDate else {
+            throw PhotoError("GPS 寫入時日期、時間或次秒欄位發生變化；候選檔已拒絕，原檔未更動。")
+        }
+        guard !old.hasAnyGPS else {
+            throw PhotoError("照片已含 GPS 資訊；為避免覆寫既有位置資料，未新增 GPS。")
+        }
+
+        func signed(_ value: String?, ref: String?, negativeRef: String) -> Double? {
+            guard let value, let number = Double(value) else { return nil }
+            return ref?.uppercased() == negativeRef ? -abs(number) : abs(number)
+        }
+        guard let latitude = signed(new.gpsLatitude, ref: new.gpsLatitudeRef, negativeRef: "S"),
+              let longitude = signed(new.gpsLongitude, ref: new.gpsLongitudeRef, negativeRef: "W"),
+              abs(latitude - location.latitude) <= 0.0000002,
+              abs(longitude - location.longitude) <= 0.0000002 else {
+            throw PhotoError("GPS 經緯度寫入後讀回值不符；候選檔已拒絕，原檔未更動。")
+        }
+        if let expectedAltitude = location.altitudeMeters {
+            guard let raw = new.gpsAltitude, let altitude = Double(raw) else {
+                throw PhotoError("GPS 高度寫入後無法讀回；候選檔已拒絕，原檔未更動。")
+            }
+            let signedAltitude = (new.gpsAltitudeRef == "1") ? -abs(altitude) : abs(altitude)
+            guard abs(signedAltitude - expectedAltitude) <= 0.01 else {
+                throw PhotoError("GPS 高度寫入後讀回值不符；候選檔已拒絕，原檔未更動。")
+            }
+        }
+
+        var expected = before.embeddedTags
+        let actual = after.embeddedTags
+        let changed = Set(expected.keys).union(actual.keys).filter { expected[$0] != actual[$0] }.sorted()
+        let allowedGPS: Set<String> = [
+            "GPSVersionID", "GPSLatitude", "GPSLatitudeRef", "GPSLongitude", "GPSLongitudeRef",
+            "GPSAltitude", "GPSAltitudeRef"
+        ]
+        var relocations: [String] = []
+        for key in changed {
+            let parts = key.split(separator: ":")
+            let group = parts.first.map(String.init) ?? ""
+            let tag = parts.last.map(String.init) ?? ""
+
+            if group == "GPS" && allowedGPS.contains(tag), let value = actual[key] {
+                expected[key] = value
+                continue
+            }
+            if group == "IFD0", ["GPSInfo", "GPSInfoIFDPointer"].contains(tag),
+               expected[key] == nil, let updated = actual[key],
+               validPointers(updated, limit: new.fileSize) {
+                expected[key] = updated
+                relocations.append(key)
+                continue
+            }
+            if let prior = expected[key], let updated = actual[key],
+               permittedPointer(key, metadata: old, options: options),
+               validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
+               pointerCount(prior) == pointerCount(updated) {
+                expected[key] = updated
+                relocations.append(key)
+                continue
+            }
+            throw PhotoError("GPS 以外的中繼資料發生變化：\(key)。候選檔已拒絕，原檔未更動。")
+        }
+        guard expected == actual else {
+            throw PhotoError("GPS 寫入後的中繼資料驗證不一致；候選檔已拒絕，原檔未更動。")
+        }
+
+        let previousWarnings = Set(before.warnings.split(separator: "\n").map(String.init))
+        let newWarnings = Set(after.warnings.split(separator: "\n").map(String.init)).subtracting(previousWarnings)
+        guard newWarnings.isEmpty else {
+            throw PhotoError("GPS 寫入後出現新的 ExifTool 警告：\(newWarnings.sorted().joined(separator: "; "))")
+        }
+        if relocations.isEmpty { return [] }
+        return ["GPS metadata verified; layout pointers relocated (\(relocations.joined(separator: ", "))). Image and private binary bytes were not hashed."]
+    }
+
     private static func permittedPointer(_ key: String, metadata: PhotoMetadata, options: WriteOptions) -> Bool {
         let components = key.split(separator: ":")
         guard components.count == 2 else { return false }
