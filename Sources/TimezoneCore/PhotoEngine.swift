@@ -158,7 +158,7 @@ public struct PhotoEngine: Sendable {
                 // fails, stop all further writes rather than losing the audit.
                 try journal?.append(item)
                 onEvent(.updated(item, completed: index + 1, total: items.count))
-                // Full Sony metadata JSON causes many short-lived allocations.
+                // Full metadata JSON causes many short-lived allocations.
                 // Return empty malloc pages periodically during long jobs;
                 // this does not discard live catalogue data or image files.
                 if index % 16 == 15 { releaseUnusedPages() }
@@ -208,13 +208,12 @@ public struct PhotoEngine: Sendable {
         var before = originalSnapshot.metadata
         item.metadata = before
         try sourceIdentity.verify(item.url)
-        try TimeValidation.validateForWrite(before, mode: mode, targets: options.targets)
+        try TimeValidation.validateForWrite(before, mode: mode)
         let allFields: [(String, String?)] = [
             ("OffsetTimeOriginal", before.offsetOriginal),
             ("OffsetTimeDigitized", before.offsetDigitized), ("OffsetTime", before.offsetTime)
         ]
-        let fields = options.targets == .captureOnly ? Array(allFields.prefix(1)) : allFields
-        let requested = fields.filter { (mode == .replaceAll || $0.1 == nil) && $0.1 != offset.value }
+        let requested = allFields.filter { (mode == .replaceAll || $0.1 == nil) && $0.1 != offset.value }
         let assignments = requested.map { ($0.0, offset.value) }
         let sidecars = try SidecarSupport.find(beside: item.url)
         var notices: [String] = []

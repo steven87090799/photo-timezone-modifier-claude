@@ -63,22 +63,16 @@ public enum WriteMode: String, CaseIterable, Sendable {
     case fillMissing, replaceAll
 }
 
-public enum OffsetTargets: String, CaseIterable, Sendable {
-    case captureOnly, allThree
-}
-
 public struct WriteOptions: Sendable {
-    public let targets: OffsetTargets
     public let sonyCompatibility: Bool
 
-    /// The GUI and API share exactly the same policy. Existing values are
-    /// retained by fillMissing; replaceAll changes offsets, never timestamps.
+    /// The GUI and API always operate on all three standard EXIF offset fields.
+    /// Existing values are retained by fillMissing; replaceAll changes offsets,
+    /// never timestamps.
     public static let appDefault = WriteOptions()
 
     public let copySidecars: Bool
-    public init(targets: OffsetTargets = .allThree, sonyCompatibility: Bool = true,
-                copySidecars: Bool = true) {
-        self.targets = targets
+    public init(sonyCompatibility: Bool = true, copySidecars: Bool = true) {
         self.sonyCompatibility = sonyCompatibility
         self.copySidecars = copySidecars
     }
@@ -107,9 +101,9 @@ public enum JobOperation: Sendable {
         switch self {
         case .inspect: return "檢查"
         case .write(let offset, let mode, let options):
-            return "替換原檔 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
+            return "替換原檔 \(offset.label) / 三個 EXIF 時區 / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
         case .writeCopy(let offset, let mode, _, _, let options):
-            return "輸出副本 \(offset.label) / \(options.targets == .captureOnly ? "拍攝時區" : "三個時區") / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
+            return "輸出副本 \(offset.label) / 三個 EXIF 時區 / \(mode == .fillMissing ? "補齊缺漏" : "覆寫時區") / Sony \(options.sonyCompatibility ? "相容" : "嚴格")"
         case .restore: return "復原"
         }
     }

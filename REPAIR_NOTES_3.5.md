@@ -13,7 +13,7 @@ nanosecond stat identities replace the repeated whole-file reads. This is a
 tradeoff explicitly selected by the user, NOT proof of identical image bytes.
 Unknown binary contents and adversarial concurrent writers are not certified.
 
-The default is all three ExifIFD OffsetTime fields. Fill-missing preserves
+All write entry points use all three ExifIFD OffsetTime fields; there is no single-field write mode. Fill-missing preserves
 existing offsets; replace-all only replaces offsets. No missing date is created,
 no wall-clock arithmetic is performed, and XMP dates are never silently synced.
 The chosen fixed offset must be appropriate for each associated timestamp.
@@ -27,7 +27,7 @@ The chosen fixed offset must be appropriate for each associated timestamp.
 | F03 Sony private bytes | Only enumerated layout pointers may differ; metadata-only limits shown; no MakerNotes byte guarantee. |
 | F04 publication ambiguity | Durable intent before mutation, explicit published/unconfirmed state, startup review and retry blocking. |
 | F05 application conflicts | Embedded/sidecar XMP diagnostics and preserved values; ON1/LR/cloud end-to-end validation remains external. |
-| F06 defaults | GUI/API both allThree, Sony compatibility on, copied sidecars on, fill-missing and copy output by default in GUI. |
+| F06 defaults | GUI/API are fixed to all three standard EXIF offset fields; Sony compatibility on, copied sidecars on, fill-missing and copy output by default in GUI. |
 | F07 malformed values | Strict capture calendar/offset checks; absent ancillary dates are reported, never invented. |
 | F08 stale preview | Device/inode/size/mtime/ctime identities checked across preview, staging and commit; final path race not claimed eliminated. |
 | F09 sidecars | Detect .xmp/.on1/.acr, copy unchanged, preserve shared companions, reject collisions and changed sources. |

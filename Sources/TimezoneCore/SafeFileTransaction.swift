@@ -76,14 +76,10 @@ enum SafeFileTransaction {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw PhotoError("無法同步檔案到磁碟：\(url.lastPathComponent)") }
         defer { close(fd) }
-        // F_FULLFSYNC requests that macOS flush drive caches as well. Some
-        // external filesystems don't implement it; regular fsync is required.
-        #if canImport(Darwin)
-        let synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0
-        #else
-        let synced = fsync(fd) == 0
-        #endif
-        if !synced {
+        // fsync provides the transaction's filesystem durability without the
+        // large per-photo latency of macOS F_FULLFSYNC. The durable backup and
+        // transaction manifest remain in place before an original is replaced.
+        if fsync(fd) != 0 {
             throw PhotoError("磁碟同步失敗：\(url.lastPathComponent)（\(String(cString: strerror(errno)))）")
         }
     }

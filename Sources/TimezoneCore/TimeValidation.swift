@@ -28,15 +28,13 @@ public enum TimeValidation {
         return day <= days[month - 1]
     }
 
-    static func validateForWrite(_ metadata: PhotoMetadata, mode: WriteMode,
-                                 targets: OffsetTargets) throws {
+    static func validateForWrite(_ metadata: PhotoMetadata, mode: WriteMode) throws {
         guard isCaptureDate(metadata.dateTimeOriginal) else {
             throw PhotoError("Invalid or missing EXIF DateTimeOriginal; timestamps were not repaired or changed.")
         }
         let offsets = [metadata.offsetOriginal, metadata.offsetDigitized, metadata.offsetTime]
-        for (index, value) in offsets.enumerated() where value != nil && !isOffset(value) {
-            let selected = targets == .allThree || index == 0
-            guard selected && mode == .replaceAll else {
+        for value in offsets where value != nil && !isOffset(value) {
+            guard mode == .replaceAll else {
                 throw PhotoError("Invalid existing EXIF offset. Use an explicitly confirmed offset replacement; fill-missing will not overwrite it.")
             }
         }
