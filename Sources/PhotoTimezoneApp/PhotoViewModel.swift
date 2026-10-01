@@ -144,7 +144,7 @@ final class PhotoViewModel: ObservableObject {
         guard !isRunning, !catalogueUpdating, previewIsCurrent, selection.count == 1,
               let item = selectedItem, item.status == .ready, item.sourceIdentity != nil,
               !item.publicationUnconfirmed, let metadata = item.metadata else { return false }
-        return !metadata.hasAnyGPS
+        return metadata.canSafelyAddGPS
     }
     var pageCount: Int { max(1, (filteredItems.count + PhotoCatalogue.pageSize - 1) / PhotoCatalogue.pageSize) }
     var scopedItems: [PhotoItem] {
