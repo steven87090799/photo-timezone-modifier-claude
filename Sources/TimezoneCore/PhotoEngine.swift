@@ -129,6 +129,7 @@ public struct PhotoEngine: Sendable {
                                 for sidecar in try SidecarSupport.find(beside: item.url) where sidecar.pathExtension.lowercased() == "xmp" {
                                     let read = try tool.readSidecar(sidecar, cancellation: cancellation)
                                     diagnosed.sidecarGPSDetected = diagnosed.sidecarGPSDetected || read.hasGPS
+                                    diagnosed.gpsSafetyUncertain = diagnosed.gpsSafetyUncertain || !read.gpsCheckReliable
                                     diagnosed.compatibilityIssues += read.issues(for: metadata)
                                 }
                                 diagnosed.compatibilityIssues = Array(Set(diagnosed.compatibilityIssues)).sorted()
@@ -398,15 +399,18 @@ public struct PhotoEngine: Sendable {
         let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
             .map { try tool.readSidecar($0, cancellation: cancellation) }
         before.sidecarGPSDetected = sidecarReads.contains { $0.hasGPS }
+        before.gpsSafetyUncertain = sidecarReads.contains { !$0.gpsCheckReliable }
         before.compatibilityIssues = Array(Set(
             before.compatibilityIssues + sidecarReads.flatMap { $0.issues(for: before) }
         )).sorted()
         item.metadata = before
 
-        guard !before.hasAnyGPS else {
+        guard before.canSafelyAddGPS else {
             try sourceIdentity.verify(item.url)
             item.status = .skipped
-            if before.sidecarGPSDetected {
+            if before.gpsSafetyUncertain {
+                item.detail = "無法可靠確認 XMP sidecar 是否含 GPS；為避免位置衝突，未寫入。"
+            } else if before.sidecarGPSDetected {
                 item.detail = "XMP sidecar 已含 GPS；為避免 EXIF/XMP 位置衝突，未寫入。"
             } else if before.embeddedXMPGPSDetected {
                 item.detail = "照片內嵌 XMP 已含 GPS；為避免覆寫既有位置資料，未寫入。"
@@ -463,6 +467,7 @@ public struct PhotoEngine: Sendable {
         )
         var after = candidateSnapshot.metadata
         after.sidecarGPSDetected = before.sidecarGPSDetected
+        after.gpsSafetyUncertain = before.gpsSafetyUncertain
         notices += TimeValidation.issues(after)
         for read in sidecarReads { notices += read.issues(for: after) }
         if !sidecars.isEmpty {
