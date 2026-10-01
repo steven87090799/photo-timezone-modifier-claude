@@ -26,7 +26,18 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var progressSkipped = 0
     @Published private(set) var summary: JobSummary?
     @Published private(set) var reportTitle = "處理報告"
-    @Published var selection: Set<PhotoItem.ID> = []
+    @Published var selection: Set<PhotoItem.ID> = [] {
+        didSet {
+            if selection != oldValue {
+                gpsLatitudeInput = ""
+                gpsLongitudeInput = ""
+                gpsAltitudeInput = ""
+            }
+        }
+    }
+    @Published var gpsLatitudeInput = ""
+    @Published var gpsLongitudeInput = ""
+    @Published var gpsAltitudeInput = ""
     @Published var query = "" { didSet { if query != oldValue { scheduleCatalogue(resetPage: true) } } }
     @Published var filter: PhotoFilter = .all { didSet { if filter != oldValue { scheduleCatalogue(resetPage: true) } } }
     @Published var cameraFilter = "" { didSet { if cameraFilter != oldValue { scheduleCatalogue(resetPage: true) } } }
@@ -129,6 +140,12 @@ final class PhotoViewModel: ObservableObject {
     }
     var canRestore: Bool { canInspect && !catalogueUpdating && previewIsCurrent && !scopedItems.isEmpty }
     var selectedItem: PhotoItem? { items.first { selection.contains($0.id) } }
+    var canAddGPSToSelected: Bool {
+        guard !isRunning, !catalogueUpdating, previewIsCurrent, selection.count == 1,
+              let item = selectedItem, item.status == .ready, item.sourceIdentity != nil,
+              !item.publicationUnconfirmed, let metadata = item.metadata else { return false }
+        return !metadata.hasAnyGPS
+    }
     var pageCount: Int { max(1, (filteredItems.count + PhotoCatalogue.pageSize - 1) / PhotoCatalogue.pageSize) }
     var scopedItems: [PhotoItem] {
         switch scope {
@@ -252,7 +269,7 @@ final class PhotoViewModel: ObservableObject {
         replaceOriginals = value
     }
 
-    func chooseOutputDirectory(confirmAfterSelection: Bool = false) {
+    func chooseOutputDirectory(confirmAfterSelection: Bool = false, gpsAfterSelection: GPSCoordinate? = nil) {
         guard !isRunning else { return }
         let panel = NSOpenPanel()
         panel.title = "選擇副本輸出資料夾"
@@ -268,7 +285,11 @@ final class PhotoViewModel: ObservableObject {
                 do {
                     try CopyDestination.validate(selected, roots: self.copySourceRootsForRetry ?? self.inputs)
                     self.outputDirectory = selected.standardizedFileURL
-                    if confirmAfterSelection { self.requestWrite() }
+                    if let gpsAfterSelection {
+                        self.presentGPSConfirmation(gpsAfterSelection)
+                    } else if confirmAfterSelection {
+                        self.requestWrite()
+                    }
                 } catch {
                     self.notice = .error("無法使用這個輸出資料夾", error.localizedDescription)
                 }
@@ -432,6 +453,58 @@ final class PhotoViewModel: ObservableObject {
         }
     }
 
+    func requestAddGPS() {
+        guard canAddGPSToSelected, let item = selectedItem else {
+            notice = .error("無法新增 GPS", "請先完成掃描並只選取一張完全沒有 GPS 資訊的相片。")
+            return
+        }
+        do {
+            let location = try GPSCoordinate.parse(
+                latitude: gpsLatitudeInput,
+                longitude: gpsLongitudeInput,
+                altitude: gpsAltitudeInput
+            )
+            guard item.metadata?.hasAnyGPS == false else {
+                notice = .error("相片已有 GPS", "偵測到 EXIF、內嵌 XMP 或 XMP sidecar GPS；為避免覆寫或衝突，不會新增。")
+                return
+            }
+            if !replaceOriginals && outputDirectory == nil {
+                chooseOutputDirectory(gpsAfterSelection: location)
+                return
+            }
+            presentGPSConfirmation(location)
+        } catch {
+            notice = .error("GPS 座標格式錯誤", error.localizedDescription)
+        }
+    }
+
+    private func presentGPSConfirmation(_ location: GPSCoordinate) {
+        guard canAddGPSToSelected, let item = selectedItem else { return }
+        if let outputDirectory, !replaceOriginals {
+            do {
+                try CopyDestination.validate(outputDirectory, roots: copySourceRootsForRetry ?? inputs)
+            } catch {
+                notice = .error("無法使用這個輸出資料夾", error.localizedDescription)
+                return
+            }
+        }
+        let placement = replaceOriginals
+            ? "替換來源照片；寫入前建立可復原備份"
+            : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
+        notice = .gpsConfirmation(item.url.lastPathComponent, location, replaceOriginals, placement)
+    }
+
+    func confirmAddGPS(_ location: GPSCoordinate) {
+        guard canAddGPSToSelected else { return }
+        let options = WriteOptions(sonyCompatibility: sonyCompatibility)
+        if replaceOriginals {
+            start(.addGPS(location: location, options: options))
+        } else if let outputDirectory {
+            start(.addGPSCopy(location: location, destination: outputDirectory,
+                              sourceRoots: copySourceRootsForRetry ?? inputs, options: options))
+        }
+    }
+
     func requestRestore() {
         refreshCatalogue()
         guard canRestore else { return }
@@ -473,6 +546,15 @@ final class PhotoViewModel: ObservableObject {
         case .inspect:
             jobInputs = inputs
             includeSubfolders = recursive
+        case .addGPS, .addGPSCopy:
+            guard previewIsCurrent, !previewFileURLs.isEmpty, selection.count == 1,
+                  let selected = selectedItem, selected.status == .ready,
+                  selected.sourceIdentity != nil, !selected.publicationUnconfirmed,
+                  selected.metadata?.hasAnyGPS == false else { return }
+            let inspectedPaths = Set(previewFileURLs.map(\.path))
+            guard inspectedPaths.contains(selected.url.path) else { return }
+            jobInputs = [selected.url]
+            includeSubfolders = false
         case .write, .writeCopy, .restore:
             guard previewIsCurrent, !previewFileURLs.isEmpty else { return }
             // Only successfully inspected identities authorize writes. Restore may
@@ -532,6 +614,12 @@ final class PhotoViewModel: ObservableObject {
         case .writeCopy:
             reportTitle = "副本輸出報告"
             phase = "正在準備輸出副本…"
+        case .addGPS:
+            reportTitle = "GPS 寫入報告"
+            phase = "正在安全新增 GPS…"
+        case .addGPSCopy:
+            reportTitle = "GPS 副本輸出報告"
+            phase = "正在建立含 GPS 的副本…"
         case .restore:
             reportTitle = "還原報告"
             phase = "正在尋找原始備份…"
@@ -539,7 +627,10 @@ final class PhotoViewModel: ObservableObject {
         if notificationsEnabled {
             switch operation {
             case .inspect: break
-            default: postNotification(title: "相片時區處理開始", body: "正在處理 \(jobInputs.count) 張；請在 App 查看進度。")
+            case .addGPS, .addGPSCopy:
+                postNotification(title: "GPS 中繼資料處理開始", body: "正在處理 \(jobInputs.count) 張；請在 App 查看進度。")
+            default:
+                postNotification(title: "相片時區處理開始", body: "正在處理 \(jobInputs.count) 張；請在 App 查看進度。")
             }
         }
 
@@ -643,6 +734,9 @@ final class PhotoViewModel: ObservableObject {
         if let summary {
             switch operation {
             case .inspect: break
+            case .addGPS, .addGPSCopy:
+                postNotification(title: "GPS 中繼資料處理完成",
+                                 body: "成功 \(summary.succeeded) 張、失敗 \(summary.failed) 張、略過 \(summary.skipped) 張。")
             default:
                 postNotification(title: "相片時區處理完成",
                                  body: "成功 \(summary.succeeded) 張、失敗 \(summary.failed) 張、略過 \(summary.skipped) 張。")
