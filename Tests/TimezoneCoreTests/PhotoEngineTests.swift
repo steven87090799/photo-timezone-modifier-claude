@@ -194,6 +194,22 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(try Data(contentsOf: sidecarPhoto), photoBytes)
         expectEqual(try Data(contentsOf: sidecar), sidecarBytes)
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: sidecarPhoto).path))
+
+        // If an XMP sidecar is too large to inspect within the bounded
+        // diagnostic budget, GPS absence is unknown. Fail closed rather than
+        // assuming it is safe to add a conflicting EXIF location.
+        _ = try makeDirectory("manual-gps-bundle-unknown-sidecar")
+        let unknownPhoto = try makeSeededPhoto("manual-gps-bundle-unknown-sidecar/photo.jpg")
+        let unknownBytes = try Data(contentsOf: unknownPhoto)
+        _ = try makeFile(
+            "manual-gps-bundle-unknown-sidecar/photo.xmp",
+            contents: Data(repeating: 0x20, count: 8 * 1024 * 1024 + 1)
+        )
+        let unknown = try assertJob(await run([unknownPhoto], operation: .addGPS(location: location)), skipped: 1)
+        expectEqual(try Data(contentsOf: unknownPhoto), unknownBytes)
+        expectTrue(unknown[0].metadata?.gpsSafetyUncertain == true)
+        expectTrue(unknown[0].detail.contains("無法可靠確認"))
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: unknownPhoto).path))
     }
 
     @Test func testBadFirstPhotoDoesNotPreventFollowingJPEGAndTIFFWrites() async throws {
