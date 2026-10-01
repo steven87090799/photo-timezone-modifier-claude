@@ -694,6 +694,9 @@ private struct PhotoMainView: View {
                 } else if metadata.hasAnyGPS {
                     Label("已偵測到 GPS 資訊", systemImage: "location.circle.fill")
                         .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                } else if metadata.gpsSafetyUncertain {
+                    Label("GPS 狀態無法確認", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.orange)
                 } else {
                     Label("未偵測到 GPS，可手動新增", systemImage: "location.slash")
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -706,10 +709,12 @@ private struct PhotoMainView: View {
                 }
             }
 
-            if metadata.hasAnyGPS {
-                Text(metadata.hasCompleteGPSCoordinate
-                     ? "為避免覆寫既有位置，手動新增已停用。"
-                     : "偵測到部分 EXIF GPS、內嵌 XMP GPS 或 XMP sidecar GPS；為避免衝突，不會自動補寫或覆蓋。")
+            if metadata.hasAnyGPS || metadata.gpsSafetyUncertain {
+                Text(metadata.gpsSafetyUncertain
+                     ? "XMP sidecar 無法完整檢查是否含 GPS；為避免建立互相衝突的位置資料，手動新增已停用。"
+                     : (metadata.hasCompleteGPSCoordinate
+                        ? "為避免覆寫既有位置，手動新增已停用。"
+                        : "偵測到部分 EXIF GPS、內嵌 XMP GPS 或 XMP sidecar GPS；為避免衝突，不會自動補寫或覆蓋。"))
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
