@@ -590,10 +590,10 @@ private struct PhotoMainView: View {
                     .init(title: "拍攝時間", spec: "ExifIFD:DateTimeOriginal · 0x9003", value: metadata.dateTimeOriginal),
                     .init(title: "拍攝時區", spec: "ExifIFD:OffsetTimeOriginal · 0x9011", value: metadata.offsetOriginal),
                     .init(title: "拍攝次秒", spec: "ExifIFD:SubSecTimeOriginal · 0x9291", value: metadata.subSecTimeOriginal),
-                    .init(title: "數位化時間", spec: "ExifIFD:CreateDate · 0x9004", value: metadata.createDate),
+                    .init(title: "數位化時間", spec: "ExifIFD:CreateDate · EXIF DateTimeDigitized · 0x9004", value: metadata.createDate),
                     .init(title: "數位化時區", spec: "ExifIFD:OffsetTimeDigitized · 0x9012", value: metadata.offsetDigitized),
                     .init(title: "數位化次秒", spec: "ExifIFD:SubSecTimeDigitized · 0x9292", value: metadata.subSecTimeDigitized),
-                    .init(title: "修改時間", spec: "IFD0:ModifyDate · 0x0132", value: metadata.modifyDate),
+                    .init(title: "修改時間", spec: "IFD0:ModifyDate · EXIF DateTime · 0x0132", value: metadata.modifyDate),
                     .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime),
                     .init(title: "修改次秒", spec: "ExifIFD:SubSecTime · 0x9290", value: metadata.subSecTime)
                 ])
@@ -601,23 +601,23 @@ private struct PhotoMainView: View {
                 metadataSection("相機與鏡頭", fields: [
                     .init(title: "製造商", spec: "IFD0:Make · 0x010F", value: metadata.make),
                     .init(title: "機身型號", spec: "IFD0:Model · 0x0110", value: metadata.cameraModel),
-                    .init(title: "機身序號", spec: "ExifIFD:BodySerialNumber · 0xA431", value: metadata.bodySerialNumber),
+                    .init(title: "機身序號", spec: "ExifIFD:SerialNumber · EXIF BodySerialNumber · 0xA431", value: metadata.bodySerialNumber),
                     .init(title: "鏡頭廠牌", spec: "ExifIFD:LensMake · 0xA433", value: metadata.lensMake),
                     .init(title: "鏡頭型號", spec: lensModelSpec(metadata), value: metadata.lensModel),
-                    .init(title: "鏡頭規格", spec: "ExifIFD:LensInfo · 0xA432", value: metadata.lensInfo),
+                    .init(title: "鏡頭規格", spec: "ExifIFD:LensInfo · EXIF LensSpecification · 0xA432", value: metadata.lensInfo),
                     .init(title: "鏡頭序號", spec: "ExifIFD:LensSerialNumber · 0xA435", value: metadata.lensSerialNumber)
                 ])
 
                 metadataSection("曝光與拍攝參數", fields: [
-                    .init(title: "ISO", spec: "ExifIFD:ISO · 0x8827", value: metadata.iso),
+                    .init(title: "ISO", spec: "ExifIFD:ISO · EXIF PhotographicSensitivity · 0x8827", value: metadata.iso),
                     .init(title: "曝光時間", spec: "ExifIFD:ExposureTime · 0x829A", value: metadata.exposureTime),
                     .init(title: "光圈", spec: "ExifIFD:FNumber · 0x829D", value: metadata.aperture),
                     .init(title: "曝光模式", spec: "ExifIFD:ExposureProgram · 0x8822", value: metadata.exposureProgram),
-                    .init(title: "曝光補償", spec: "ExifIFD:ExposureCompensation · 0x9204", value: metadata.exposureCompensation),
+                    .init(title: "曝光補償", spec: "ExifIFD:ExposureCompensation · EXIF ExposureBiasValue · 0x9204", value: metadata.exposureCompensation),
                     .init(title: "測光模式", spec: "ExifIFD:MeteringMode · 0x9207", value: metadata.meteringMode),
                     .init(title: "閃光燈", spec: "ExifIFD:Flash · 0x9209", value: metadata.flash),
                     .init(title: "焦距", spec: "ExifIFD:FocalLength · 0x920A", value: metadata.focalLength),
-                    .init(title: "35mm 等效焦距", spec: "ExifIFD:FocalLengthIn35mmFormat · 0xA405", value: metadata.focalLength35mm),
+                    .init(title: "35mm 等效焦距", spec: "ExifIFD:FocalLengthIn35mmFormat · EXIF FocalLengthIn35mmFilm · 0xA405", value: metadata.focalLength35mm),
                     .init(title: "白平衡", spec: "ExifIFD:WhiteBalance · 0xA403", value: metadata.whiteBalance),
                     .init(title: "場景類型", spec: "ExifIFD:SceneCaptureType · 0xA406", value: metadata.sceneCaptureType)
                 ])
@@ -625,8 +625,8 @@ private struct PhotoMainView: View {
                 metadataSection("影像與檔案", fields: [
                     .init(title: "方向", spec: "IFD0:Orientation · 0x0112", value: metadata.orientation),
                     .init(title: "色彩空間", spec: "ExifIFD:ColorSpace · 0xA001", value: metadata.colorSpace),
-                    .init(title: "EXIF 寬度", spec: "ExifIFD:ExifImageWidth · 0xA002", value: metadata.imageWidth),
-                    .init(title: "EXIF 高度", spec: "ExifIFD:ExifImageHeight · 0xA003", value: metadata.imageHeight),
+                    .init(title: "EXIF 寬度", spec: "ExifIFD:ExifImageWidth · EXIF PixelXDimension · 0xA002", value: metadata.imageWidth),
+                    .init(title: "EXIF 高度", spec: "ExifIFD:ExifImageHeight · EXIF PixelYDimension · 0xA003", value: metadata.imageHeight),
                     .init(title: "建立軟體", spec: "IFD0:Software · 0x0131", value: metadata.software),
                     .init(title: "檔案格式", spec: "File:FileType · ExifTool", value: metadata.fileType),
                     .init(title: "MIME 類型", spec: "File:MIMEType · ExifTool", value: metadata.mimeType),
