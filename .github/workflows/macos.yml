@@ -13,9 +13,24 @@ permissions:
   contents: read
 
 jobs:
-  test-and-build:
+  portable-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Full portable regression suite
+        env:
+          PHOTO_TIMEZONE_STRESS: '0'
+        run: ./scripts/test.sh
+      - name: Optional thousand-photo stability test
+        if: github.event_name == 'workflow_dispatch' && inputs.stress
+        env:
+          PHOTO_TIMEZONE_STRESS: '1'
+        run: ./scripts/test.sh --filter testThousand
+
+  test-and-build-macos:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -41,8 +56,8 @@ jobs:
           PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh --filter testPinnedExifToolVersionAndPersistentTransportStarts
 
-      - name: Photo write smoke tests
-        timeout-minutes: 6
+      - name: Critical photo write tests
+        timeout-minutes: 7
         env:
           PHOTO_TIMEZONE_STRESS: '0'
         run: |
@@ -50,19 +65,7 @@ jobs:
           ./scripts/test.sh --filter testReplaceAllChangesEveryOffsetButPreservesEveryDate
           ./scripts/test.sh --filter testSubsecondsAndEveryDateSurviveThreeOffsetWrites
           ./scripts/test.sh --filter testNumericSnapshotRejectsSubDisplayGPSMutation
-
-      - name: Remaining photo transaction tests
-        timeout-minutes: 12
-        env:
-          PHOTO_TIMEZONE_STRESS: '0'
-        run: ./scripts/test.sh --filter PhotoEngineTests
-
-      - name: Optional thousand-photo stability test
-        if: github.event_name == 'workflow_dispatch' && inputs.stress
-        timeout-minutes: 15
-        env:
-          PHOTO_TIMEZONE_STRESS: '1'
-        run: ./scripts/test.sh --filter testThousand
+          ./scripts/test.sh --filter testConflictingXMPIsReportedAndNeverRewritten
 
       - name: Build universal app
         timeout-minutes: 8
