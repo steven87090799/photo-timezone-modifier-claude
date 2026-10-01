@@ -72,9 +72,9 @@ jobs:
           ./scripts/test.sh --filter testSubsecondsAndEveryDateSurviveThreeOffsetWrites
           ./scripts/test.sh --filter testNumericSnapshotRejectsSubDisplayGPSMutation
           ./scripts/test.sh --filter testConflictingXMPIsReportedAndNeverRewritten
-          # Run the three manual-GPS tests in one Swift Testing process. Repeated
-          # filtered process launches can leave swiftpm-testing orphaned on macos-15.
-          ./scripts/test.sh --filter testManualGPS
+          # One test function runs all three manual-GPS safety scenarios. This
+          # avoids a macos-15 swiftpm-testing hang seen with multi-match filters.
+          ./scripts/test.sh --filter testManualGPSSafetyBundle
 
       - name: Build universal app
         timeout-minutes: 8
