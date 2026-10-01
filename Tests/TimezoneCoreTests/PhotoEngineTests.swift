@@ -126,6 +126,73 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(metadata.gpsTimeStamp != nil)
     }
 
+    @Test func testManualGPSAdditionPreservesDatesOffsetsAndCreatesBackup() async throws {
+        let photo = try makeSeededPhoto("manual-gps.jpg", original: "+08:00", digitized: "+08:00", time: "+08:00")
+        let originalBytes = try Data(contentsOf: photo)
+        let location = try GPSCoordinate(latitude: 25.033, longitude: 121.5654, altitudeMeters: 12.5)
+
+        let rows = try assertJob(await run([photo], operation: .addGPS(location: location)), succeeded: 1)
+        let snapshot = try tool.snapshot(photo)
+        let metadata = snapshot.metadata
+
+        assertDates(metadata)
+        assertOffsets(metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
+        expectTrue(metadata.hasCompleteGPSCoordinate)
+        expectEqual(metadata.gpsLatitudeRef, "N")
+        expectEqual(metadata.gpsLongitudeRef, "E")
+        expectEqual(try Data(contentsOf: originalBackup(for: photo)), originalBytes)
+        expectEqual(rows[0].status, .success)
+        expectTrue(rows[0].detail.contains("GPS"))
+    }
+
+    @Test func testManualGPSCopyLeavesSourceUntouched() async throws {
+        let photo = try makeSeededPhoto("manual-gps-copy.jpg", original: "+05:45", digitized: "+05:45", time: "+05:45")
+        let sourceBytes = try Data(contentsOf: photo)
+        let output = try makeDirectory("manual-gps-copy-output")
+        let location = try GPSCoordinate(latitude: -33.8688, longitude: 151.2093, altitudeMeters: nil)
+
+        let rows = try assertJob(await run([photo], operation: .addGPSCopy(
+            location: location, destination: output, sourceRoots: [photo]
+        )), succeeded: 1)
+
+        expectEqual(try Data(contentsOf: photo), sourceBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+        let copy = output.appendingPathComponent(photo.lastPathComponent)
+        let metadata = try tool.snapshot(copy).metadata
+        assertDates(metadata)
+        assertOffsets(metadata, original: "+05:45", digitized: "+05:45", time: "+05:45")
+        expectTrue(metadata.hasCompleteGPSCoordinate)
+        expectEqual(metadata.gpsLatitudeRef, "S")
+        expectEqual(metadata.gpsLongitudeRef, "E")
+        expectEqual(rows[0].outputURL, copy)
+    }
+
+    @Test func testManualGPSNeverOverwritesExistingOrSidecarGPS() async throws {
+        let existing = try makeSeededPhoto("existing-gps.jpg")
+        expectEqual(try tool.execute([
+            "-overwrite_original", "-GPSLatitude#=25.03", "-GPSLatitudeRef=N",
+            "-GPSLongitude#=121.56", "-GPSLongitudeRef=E", existing.path
+        ]).status, 0)
+        let existingBytes = try Data(contentsOf: existing)
+        let location = try GPSCoordinate(latitude: 35.0, longitude: 139.0)
+        _ = try assertJob(await run([existing], operation: .addGPS(location: location)), skipped: 1)
+        expectEqual(try Data(contentsOf: existing), existingBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: existing).path))
+
+        let root = try makeDirectory("gps-sidecar")
+        let sidecarPhoto = try makeSeededPhoto("gps-sidecar/photo.jpg")
+        let sidecar = try makeFile("gps-sidecar/photo.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="25,1.98N" exif:GPSLongitude="121,33.6E"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        _ = root
+        let photoBytes = try Data(contentsOf: sidecarPhoto)
+        let sidecarBytes = try Data(contentsOf: sidecar)
+        _ = try assertJob(await run([sidecarPhoto], operation: .addGPS(location: location)), skipped: 1)
+        expectEqual(try Data(contentsOf: sidecarPhoto), photoBytes)
+        expectEqual(try Data(contentsOf: sidecar), sidecarBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: sidecarPhoto).path))
+    }
+
     @Test func testBadFirstPhotoDoesNotPreventFollowingJPEGAndTIFFWrites() async throws {
         let bad = try makeFile("00-corrupt.jpg", contents: Data("plain text, not a JPEG".utf8))
         let badBytes = try Data(contentsOf: bad)
