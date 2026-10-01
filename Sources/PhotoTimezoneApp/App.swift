@@ -61,6 +61,7 @@ enum ProcessingScope: String, CaseIterable {
 
 enum PhotoNotice: Identifiable {
     case writeConfirmation(Int, String, Bool, String)
+    case gpsConfirmation(String, GPSCoordinate, Bool, String)
     case restore
     case busyInput
     case busyClose
@@ -69,6 +70,7 @@ enum PhotoNotice: Identifiable {
     var id: String {
         switch self {
         case .writeConfirmation: return "writeConfirmation"
+        case .gpsConfirmation(let file, let location, _, _): return "gpsConfirmation|" + file + "|" + location.display
         case .restore: return "restore"
         case .busyInput: return "busyInput"
         case .busyClose: return "busyClose"
@@ -634,22 +636,35 @@ private struct PhotoMainView: View {
                 ])
 
                 metadataSection("GPS", fields: [
+                    .init(title: "GPS 版本", spec: "GPS:GPSVersionID · 0x0000", value: metadata.gpsVersionID),
                     .init(title: "緯度", spec: "GPS:GPSLatitude · 0x0002", value: metadata.gpsLatitude),
+                    .init(title: "緯度方向", spec: "GPS:GPSLatitudeRef · 0x0001", value: metadata.gpsLatitudeRef),
                     .init(title: "經度", spec: "GPS:GPSLongitude · 0x0004", value: metadata.gpsLongitude),
+                    .init(title: "經度方向", spec: "GPS:GPSLongitudeRef · 0x0003", value: metadata.gpsLongitudeRef),
                     .init(title: "高度", spec: "GPS:GPSAltitude · 0x0006", value: metadata.gpsAltitude),
+                    .init(title: "高度基準", spec: "GPS:GPSAltitudeRef · 0x0005", value: metadata.gpsAltitudeRef),
                     .init(title: "GPS 日期", spec: "GPS:GPSDateStamp · 0x001D", value: metadata.gpsDateStamp),
                     .init(title: "GPS 時間", spec: "GPS:GPSTimeStamp · 0x0007", value: metadata.gpsTimeStamp)
                 ])
+
+                gpsEditor(item: item, metadata: metadata)
             }
 
             if let output = item.outputURL, let outputMetadata = item.outputMetadata {
                 Divider()
-                Text(item.publicationUnconfirmed ? "已發布，待確認同步或伴隨檔狀態" : (output == item.url ? "原檔已替換；備份保留" : "副本時區 · 來源保持不變"))
+                Text(item.publicationUnconfirmed ? "已發布，待確認同步或伴隨檔狀態" : (output == item.url ? "原檔已替換；備份保留" : "副本輸出 · 來源保持不變"))
                     .font(.caption.weight(.semibold)).foregroundStyle(.green)
                 HStack(alignment: .top, spacing: 18) {
                     metadataField("拍攝時區", tag: "ExifIFD:OffsetTimeOriginal · 0x9011", value: outputMetadata.offsetOriginal)
                     metadataField("數位化時區", tag: "ExifIFD:OffsetTimeDigitized · 0x9012", value: outputMetadata.offsetDigitized)
                     metadataField("修改時區", tag: "ExifIFD:OffsetTime · 0x9010", value: outputMetadata.offsetTime)
+                }
+                if outputMetadata.hasEmbeddedEXIFGPS {
+                    HStack(alignment: .top, spacing: 18) {
+                        metadataField("GPS 緯度", tag: "GPS:GPSLatitude · 0x0002", value: outputMetadata.gpsLatitude)
+                        metadataField("GPS 經度", tag: "GPS:GPSLongitude · 0x0004", value: outputMetadata.gpsLongitude)
+                        metadataField("GPS 高度", tag: "GPS:GPSAltitude · 0x0006", value: outputMetadata.gpsAltitude)
+                    }
                 }
                 Text(output.path).font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(2).truncationMode(.middle).help(output.path).textSelection(.enabled)
@@ -667,6 +682,74 @@ private struct PhotoMainView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityIdentifier("metadataDetails")
         .id(item.id)
+    }
+
+    @ViewBuilder
+    private func gpsEditor(item: PhotoItem, metadata: PhotoMetadata) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                if metadata.hasCompleteGPSCoordinate {
+                    Label("已有 EXIF GPS", systemImage: "location.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.green)
+                } else if metadata.hasAnyGPS {
+                    Label("已偵測到 GPS 資訊", systemImage: "location.circle.fill")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                } else {
+                    Label("未偵測到 GPS，可手動新增", systemImage: "location.slash")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                if metadata.embeddedXMPGPSDetected {
+                    Text("內嵌 XMP").font(.caption2).foregroundStyle(.orange)
+                }
+                if metadata.sidecarGPSDetected {
+                    Text("XMP sidecar").font(.caption2).foregroundStyle(.orange)
+                }
+            }
+
+            if metadata.hasAnyGPS {
+                Text(metadata.hasCompleteGPSCoordinate
+                     ? "為避免覆寫既有位置，手動新增已停用。"
+                     : "偵測到部分 EXIF GPS、內嵌 XMP GPS 或 XMP sidecar GPS；為避免衝突，不會自動補寫或覆蓋。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(spacing: 8) {
+                    TextField("緯度，例如 25.0330", text: $model.gpsLatitudeInput)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("gpsLatitudeField")
+                    TextField("經度，例如 121.5654", text: $model.gpsLongitudeInput)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("gpsLongitudeField")
+                    TextField("高度 m（可留空）", text: $model.gpsAltitudeInput)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("gpsAltitudeField")
+                }
+                .disabled(model.isRunning || model.selection.count != 1)
+
+                HStack {
+                    Text("十進位座標：緯度 -90～90、經度 -180～180；高度可選。只寫 GPS，不修改日期、時區、曝光或鏡頭資訊。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    Button {
+                        model.requestAddGPS()
+                    } label: {
+                        Label(model.replaceOriginals ? "新增 GPS 到原檔…" : "新增 GPS 到副本…",
+                              systemImage: "mappin.and.ellipse")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!model.canAddGPSToSelected)
+                    .accessibilityIdentifier("addGPSButton")
+                }
+                if model.selection.count != 1 {
+                    Text("手動 GPS 一次只允許處理一張照片，請只選取一張。")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func metadataSection(_ title: String, fields: [MetadataSpecField]) -> some View {
@@ -864,6 +947,15 @@ private struct PhotoMainView: View {
                 message: Text("範圍：\(model.scope.rawValue)\n目標：UTC\(offset)\n方式：\(replace ? "覆寫所選時區（包含既有值）" : "只補缺漏，保留既有時區")\n位置：\(placement)\n\n拍攝時間數值不加減，也不轉換 JPEG／ARW／TIFF 格式；寫入 EXIF 時檔案內部可能重排，成品驗證後才提交。失敗檔案會個別列出，不會算入成功數量。\n\n請確認這批照片拍攝時使用相同偏移，並留足磁碟空間及獨立備份。"),
                 primaryButton: .default(Text("確認寫入"), action: model.confirmReplace),
                 secondaryButton: .cancel(Text("返回檢查"))
+            )
+        case .gpsConfirmation(let file, let location, let replaceOriginal, let placement):
+            return Alert(
+                title: Text("確認新增 GPS？"),
+                message: Text("相片：\(file)\n座標：\(location.display)\n位置：\(placement)\n\n只允許新增 EXIF GPSVersionID、Latitude/Longitude 與必要方向欄位，高度只有在你有輸入時才新增。既有日期、三個 EXIF 時區、曝光、鏡頭與其他可讀中繼資料都必須驗證不變；若偵測到任何既有 EXIF/XMP GPS，操作會拒絕，不會覆寫。"),
+                primaryButton: .default(Text(replaceOriginal ? "備份後新增 GPS" : "建立含 GPS 的副本")) {
+                    model.confirmAddGPS(location)
+                },
+                secondaryButton: .cancel(Text("取消"))
             )
         case .restore:
             return Alert(
