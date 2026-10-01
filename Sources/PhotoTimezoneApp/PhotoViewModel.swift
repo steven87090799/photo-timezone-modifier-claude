@@ -464,8 +464,8 @@ final class PhotoViewModel: ObservableObject {
                 longitude: gpsLongitudeInput,
                 altitude: gpsAltitudeInput
             )
-            guard item.metadata?.hasAnyGPS == false else {
-                notice = .error("相片已有 GPS", "偵測到 EXIF、內嵌 XMP 或 XMP sidecar GPS；為避免覆寫或衝突，不會新增。")
+            guard item.metadata?.canSafelyAddGPS == true else {
+                notice = .error("無法安全新增 GPS", "偵測到既有 GPS，或 XMP sidecar 的 GPS 狀態無法可靠確認；為避免覆寫或衝突，不會新增。")
                 return
             }
             if !replaceOriginals && outputDirectory == nil {
@@ -550,7 +550,7 @@ final class PhotoViewModel: ObservableObject {
             guard previewIsCurrent, !previewFileURLs.isEmpty, selection.count == 1,
                   let selected = selectedItem, selected.status == .ready,
                   selected.sourceIdentity != nil, !selected.publicationUnconfirmed,
-                  selected.metadata?.hasAnyGPS == false else { return }
+                  selected.metadata?.canSafelyAddGPS == true else { return }
             let inspectedPaths = Set(previewFileURLs.map(\.path))
             guard inspectedPaths.contains(selected.url.path) else { return }
             jobInputs = [selected.url]
