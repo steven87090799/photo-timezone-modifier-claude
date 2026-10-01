@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// The entire pipeline runs off the main actor. Reads use bounded batches;
 /// writes receive one path at a time and are never interrupted mid-write.
@@ -14,19 +18,20 @@ public struct PhotoEngine: Sendable {
     public func run(
         inputs: [URL], recursive: Bool, operation: JobOperation,
         cancellation: CancellationToken, inspectedFilesOnly: Bool = false,
+        expectedIdentities: [String: FileIdentity] = [:],
         onEvent: @escaping @Sendable (JobEvent) -> Void
     ) async {
         await Task.detached(priority: .userInitiated) {
-            self.runSync(inputs: inputs, recursive: recursive, operation: operation, cancellation: cancellation, inspectedFilesOnly: inspectedFilesOnly, onEvent: onEvent)
+            self.runSync(inputs: inputs, recursive: recursive, operation: operation, cancellation: cancellation, inspectedFilesOnly: inspectedFilesOnly, expectedIdentities: expectedIdentities, onEvent: onEvent)
         }.value
     }
 
     private func runSync(
         inputs: [URL], recursive: Bool, operation: JobOperation,
-        cancellation: CancellationToken, inspectedFilesOnly: Bool, onEvent: @escaping @Sendable (JobEvent) -> Void
+        cancellation: CancellationToken, inspectedFilesOnly: Bool, expectedIdentities: [String: FileIdentity], onEvent: @escaping @Sendable (JobEvent) -> Void
     ) {
         let fm = FileManager.default
-        let tool = ExifTool(url: exiftoolURL)
+        let tool = ExifTool(url: exiftoolURL, persistent: true)
         var items: [PhotoItem] = []
         var journal: Journal?
         var generalError: String?
@@ -43,17 +48,27 @@ public struct PhotoEngine: Sendable {
             switch operation {
             case .write(let offset, _, _), .writeCopy(let offset, _, _, _, _):
                 guard offset.isValid else { throw PhotoError("UTC 偏移必須介於 −12:00 與 +14:00，並以 15 分鐘為單位。") }
-            case .inspect, .restore: break
+            case .addGPS, .addGPSCopy, .inspect, .restore:
+                break
             }
-            if case .writeCopy(_, _, let destination, let roots, _) = operation {
-                try CopyDestination.validate(destination, roots: roots)
+            let plan: DestinationPlan?
+            switch operation {
+            case .writeCopy(_, _, let destination, let roots, _),
+                 .addGPSCopy(_, let destination, let roots, _):
+                plan = try DestinationPlan(destination: destination, roots: roots)
+            default:
+                plan = nil
             }
+            let store = try TransactionStore(directory: (logDirectory ?? support).appendingPathComponent("Transactions"))
+            let pending = try store.unfinished()
+            let blocked = Set(pending.flatMap { [$0.source.path, $0.target.path] })
             journal = try Journal(directory: logDirectory ?? support.appendingPathComponent("Logs"), operation: operation.label)
             onEvent(.phase("掃描檔案與資料夾…"))
             items = FileDiscovery.collect(inputs: inputs, recursive: recursive, cancellation: cancellation,
                                           allowDirectories: !inspectedFilesOnly) { onEvent(.phase($0)) }
             onEvent(.discovered(items))
             var inspectionCache: [String: Result<(PhotoMetadata, String), Error>] = [:]
+            var inspectionIdentities: [String: FileIdentity] = [:]
             for index in items.indices {
                 var item = items[index]
                 let canRecoverMissing: Bool
@@ -69,13 +84,25 @@ public struct PhotoEngine: Sendable {
                     } else {
                         onEvent(.phase("\(operation.label) \(index + 1) / \(items.count)：\(item.url.lastPathComponent)"))
                         do {
-                            if !canRecoverMissing { try FileSafety.ensureRegular(item.url) }
+                            if !canRecoverMissing {
+                                try FileSafety.ensureRegular(item.url)
+                                // A rescan establishes a fresh identity. Only a
+                                // mutation must match the previously approved preview.
+                                if case .inspect = operation {} else {
+                                    try expectedIdentities[item.url.path]?.verify(item.url)
+                                }
+                            }
+                            if case .inspect = operation {} else if blocked.contains(item.url.path) {
+                                item.publicationUnconfirmed = true
+                                throw PhotoError("Unfinished transaction requires review; automatic retry is blocked. See \(store.active.path)")
+                            }
                             switch operation {
                             case .inspect:
                                 if inspectionCache[item.url.path] == nil {
                                     let batch = items[index..<min(index + ExifTool.inspectionBatchSize, items.count)]
                                         .filter { $0.status == .pending }.map(\.url)
                                     do {
+                                        inspectionIdentities = try Dictionary(uniqueKeysWithValues: batch.map { ($0.path, try FileIdentity.read($0)) })
                                         inspectionCache = try autoreleasepool {
                                             try tool.inspectBatch(batch, cancellation: cancellation)
                                         }
@@ -85,30 +112,59 @@ public struct PhotoEngine: Sendable {
                                         // A disappeared/changed file or malformed batch must not
                                         // prevent unrelated photos from being inspected safely.
                                         inspectionCache = [:]
+                                        inspectionIdentities = [:]
                                     }
                                 }
                                 let (metadata, warning): (PhotoMetadata, String)
+                                let identity: FileIdentity
                                 if let cached = inspectionCache.removeValue(forKey: item.url.path) {
                                     (metadata, warning) = try cached.get()
+                                    guard let captured = inspectionIdentities.removeValue(forKey: item.url.path) else {
+                                        throw PhotoError("Inspection identity unavailable; please rescan.")
+                                    }
+                                    identity = captured
                                 } else {
+                                    identity = try FileIdentity.read(item.url)
                                     (metadata, warning) = try autoreleasepool {
                                         try tool.inspect(item.url, cancellation: cancellation)
                                     }
                                 }
-                                item.metadata = metadata
+                                var diagnosed = metadata
+                                for sidecar in try SidecarSupport.find(beside: item.url) where sidecar.pathExtension.lowercased() == "xmp" {
+                                    let read = try tool.readSidecar(sidecar, cancellation: cancellation)
+                                    diagnosed.sidecarGPSDetected = diagnosed.sidecarGPSDetected || read.hasGPS
+                                    diagnosed.gpsSafetyUncertain = diagnosed.gpsSafetyUncertain || !read.gpsCheckReliable
+                                    diagnosed.compatibilityIssues += read.issues(for: metadata)
+                                }
+                                diagnosed.compatibilityIssues = Array(Set(diagnosed.compatibilityIssues)).sorted()
+                                try identity.verify(item.url)
+                                item.metadata = diagnosed
+                                item.sourceIdentity = identity
+                                item.publicationUnconfirmed = blocked.contains(item.url.path)
                                 item.status = .ready
-                                item.detail = metadata.missingCaptureOffset ? "缺少拍攝時區標籤。" : "已有拍攝時區標籤。"
+                                item.detail = metadata.missingOffsets ? "尚有 EXIF 時區欄位缺漏。" : "三個 EXIF 時區欄位已齊。"
+                                if item.publicationUnconfirmed { item.detail += "\nUnfinished transaction requires manual review; do not retry automatically." }
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, destination: nil, roots: [], cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, cancellation: cancellation)
                                 }
-                            case .writeCopy(let offset, let mode, let destination, let roots, let options):
+                            case .writeCopy(let offset, let mode, _, _, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, destination: destination, roots: roots, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, cancellation: cancellation)
+                                }
+                            case .addGPS(let location, let options):
+                                try autoreleasepool {
+                                    try writeGPS(item: &item, tool: tool, location: location, options: options,
+                                                 plan: nil, store: store, cancellation: cancellation)
+                                }
+                            case .addGPSCopy(let location, _, _, let options):
+                                try autoreleasepool {
+                                    try writeGPS(item: &item, tool: tool, location: location, options: options,
+                                                 plan: plan, store: store, cancellation: cancellation)
                                 }
                             case .restore:
-                                try restore(item: &item, tool: tool, cancellation: cancellation)
+                                try restore(item: &item, tool: tool, store: store, cancellation: cancellation)
                             }
                         } catch is CancellationError {
                             item.status = .cancelled
@@ -124,10 +180,10 @@ public struct PhotoEngine: Sendable {
                 // fails, stop all further writes rather than losing the audit.
                 try journal?.append(item)
                 onEvent(.updated(item, completed: index + 1, total: items.count))
-                // Full Sony metadata JSON causes many short-lived allocations.
+                // Full metadata JSON causes many short-lived allocations.
                 // Return empty malloc pages periodically during long jobs;
                 // this does not discard live catalogue data or image files.
-                if index % 16 == 15 { _ = malloc_zone_pressure_relief(nil, 0) }
+                if index % 16 == 15 { releaseUnusedPages() }
             }
         } catch {
             generalError = error.localizedDescription
@@ -158,175 +214,300 @@ public struct PhotoEngine: Sendable {
             total: items.count, succeeded: succeeded, skipped: skipped, failed: failed,
             cancelled: cancelled, logURL: journal?.url, message: message
         )))
-        _ = malloc_zone_pressure_relief(nil, 0)
+        releaseUnusedPages()
     }
 
     private func write(
         item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode, options: WriteOptions,
-        destination: URL?, roots: [URL], cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
+        let sourceIdentity = try FileIdentity.read(item.url)
+        if plan == nil, sourceIdentity.links > 1 {
+            throw PhotoError("Original has hard links. Use copy mode to avoid breaking linked-file semantics.")
+        }
         let originalSnapshot = try tool.snapshot(item.url, cancellation: cancellation)
-        let before = originalSnapshot.metadata
-        let warning = originalSnapshot.warnings
+        var before = originalSnapshot.metadata
         item.metadata = before
+        try sourceIdentity.verify(item.url)
+        try TimeValidation.validateForWrite(before, mode: mode)
         let allFields: [(String, String?)] = [
             ("OffsetTimeOriginal", before.offsetOriginal),
-            ("OffsetTimeDigitized", before.offsetDigitized),
-            ("OffsetTime", before.offsetTime)
+            ("OffsetTimeDigitized", before.offsetDigitized), ("OffsetTime", before.offsetTime)
         ]
-        guard before.dateTimeOriginal != nil else {
-            throw PhotoError("照片沒有可確認的 EXIF 拍攝時間 DateTimeOriginal；不能只補偏移後假裝拍攝時刻已完整。原檔未更動。")
+        let requested = allFields.filter { (mode == .replaceAll || $0.1 == nil) && $0.1 != offset.value }
+        let assignments = requested.map { ($0.0, offset.value) }
+        let sidecars = try SidecarSupport.find(beside: item.url)
+        var notices: [String] = []
+        let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
+            .map { try tool.readSidecar($0, cancellation: cancellation) }
+        before.compatibilityIssues = Array(Set(before.compatibilityIssues + sidecarReads.flatMap { $0.issues(for: before) })).sorted()
+        item.metadata = before
+        if !sidecars.isEmpty {
+            notices.append("Sidecars detected: \(sidecars.map(\.lastPathComponent).joined(separator: ", ")). No sidecar dates are rewritten.")
         }
-        let fields = options.targets == .captureOnly ? Array(allFields.prefix(1)) : allFields
-        let requested = fields.filter { mode == .replaceAll || $0.1 == nil }
-        let willChange = requested.contains(where: { $0.1 != offset.value })
-        guard willChange || destination != nil else {
+        if requested.isEmpty && plan == nil {
+            try sourceIdentity.verify(item.url)
             item.status = .skipped
-            item.detail = "不需要變更；現有時區已保留。" + (warning.isEmpty ? "" : "\n警告：\(warning)")
+            item.detail = "No offset change required; existing values were retained."
+            if !notices.isEmpty || !before.compatibilityIssues.isEmpty { item.detail += "\n" + (notices + before.compatibilityIssues).joined(separator: "\n") }
             return
         }
-        if cancellation.isCancelled {
-            item.status = .cancelled
-            item.detail = "已取消；尚未開始寫入。"
-            return
-        }
-        let target: URL
-        if let destination {
-            target = try CopyDestination.url(for: item.url, in: destination, roots: roots)
-            try CopyDestination.validate(destination, roots: roots)
-            try CopyDestination.prepareOutputParent(target.deletingLastPathComponent(), under: destination)
-            guard !fm.fileExists(atPath: target.path) else {
-                throw PhotoError("輸出目的地已有同名相片；未覆蓋：\(target.path)")
-            }
-            try FileSafety.ensureWriteCapacity(target, fileSize: before.fileSize, copies: 3, sourceMustBeWritable: false)
-        } else {
-            target = item.url
-            try FileSafety.ensureWriteCapacity(item.url, fileSize: before.fileSize)
-        }
-        let sourceHash = try FileSafety.hash(item.url)
-        let beforeTags = willChange ? originalSnapshot.embeddedTags : [:]
+        if cancellation.isCancelled { throw CancellationError() }
+        let target = try plan?.output(for: item.url) ?? item.url
+        let parent = target.deletingLastPathComponent().resolvingSymlinksInPath()
+        let parentIdentity = try DirectoryIdentity.read(parent)
+        if plan != nil, fm.fileExists(atPath: target.path) { throw PhotoError("目的地已有同名檔案，不會覆蓋： \(target.path)") }
+        try FileSafety.ensureWriteCapacity(target, fileSize: sourceIdentity.size,
+                                          copies: plan == nil ? 3 : 2, sourceMustBeWritable: plan == nil)
         let stage = SafeFileTransaction.temporaryPhoto(beside: target)
-        defer { try? fm.removeItem(at: stage) }
-        try SafeFileTransaction.copyAndSync(item.url, to: stage)
-        var stderr = ""
-        if willChange {
-            // A read-only memory-card source is valid in copy mode. Only the
-            // disposable candidate becomes writable; original permissions
-            // are restored and verified before publication.
+        var stagedSidecars: [(source: URL, stage: URL, target: URL, identity: FileIdentity)] = []
+        defer {
+            try? fm.removeItem(at: stage)
+            for sidecar in stagedSidecars { try? fm.removeItem(at: sidecar.stage) }
+        }
+        try SafeFileTransaction.copyCandidate(item.url, to: stage)
+        var writeWarnings = ""
+        if !assignments.isEmpty {
             let attributes = try fm.attributesOfItem(atPath: stage.path)
-            let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
             try fm.setAttributes([.posixPermissions: permissions | 0o200], ofItemAtPath: stage.path)
-            let arguments = ["-charset", "filename=UTF8", "-P", "-overwrite_original_in_place"] +
-                requested.map { "-EXIF:\($0.0)=\(offset.value)" } + [stage.path]
-            let output = try tool.execute(arguments, timeout: 600)
-            guard output.status == 0 else {
-                throw PhotoError("候選副本寫入失敗（\(output.status)）；原檔未更動。\n\(output.text)")
-            }
-            stderr = output.stderr
+            let output = try tool.execute(["-charset", "filename=UTF8", "-P", "-overwrite_original_in_place"] +
+                assignments.map { "-ExifIFD:\($0.0)=\($0.1)" } + [stage.path], timeout: 600,
+                cancellation: cancellation)
+            guard output.status == 0 else { throw PhotoError("Candidate write failed; original not changed. \(output.text)") }
+            writeWarnings = output.stderr
         }
-        let candidateSnapshot = try tool.snapshot(stage)
-        let after = candidateSnapshot.metadata
-        let postWarning = candidateSnapshot.warnings
-        var sonyVerificationNote = ""
-        if willChange {
-            var expectedTags = beforeTags
-            for (tag, _) in requested {
-                let value = try JSONSerialization.data(withJSONObject: offset.value, options: [.fragmentsAllowed])
-                expectedTags["ExifIFD:\(tag)"] = String(decoding: value, as: UTF8.self)
-            }
-            let actualTags = candidateSnapshot.embeddedTags
-            // TIFF's StripOffsets is a byte pointer, not a user-visible photo
-            // property. Expanding EXIF may relocate the unchanged image strips.
-            // All other readable embedded tags must match exactly.
-            if before.fileType == "TIFF" {
-                expectedTags["IFD0:StripOffsets"] = actualTags["IFD0:StripOffsets"]
-            }
-            if before.fileType == "JPEG",
-               let oldThumbnailOffset = beforeTags["IFD1:ThumbnailOffset"],
-               let newThumbnailOffset = actualTags["IFD1:ThumbnailOffset"],
-               oldThumbnailOffset != newThumbnailOffset {
-                guard try tool.thumbnailBytes(item.url) == tool.thumbnailBytes(stage) else {
-                    throw PhotoError("候選副本的內建縮圖內容變動；原檔未更動，未輸出此張。")
-                }
-                expectedTags["IFD1:ThumbnailOffset"] = newThumbnailOffset
-            }
-            var sonyRelocationNote = ""
-            if actualTags != expectedTags {
-                let changed = Set(actualTags.keys).union(expectedTags.keys)
-                    .filter { actualTags[$0] != expectedTags[$0] }.sorted()
-                let sonyPointers: Set<String> = [
-                    "MPImage2:MPImageStart", "IFD0:PreviewImageStart", "IFD1:ThumbnailOffset",
-                    "SR2:SR2SubIFDLength", "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"
-                ]
-                let isSony = before.make?.uppercased() == "SONY"
-                if isSony, !changed.isEmpty, changed.allSatisfy({ sonyPointers.contains($0) }),
-                   options.sonyCompatibility {
-                    guard before.fileType == after.fileType, postWarning.isEmpty else {
-                        throw PhotoError("Sony 候選副本格式改變或 ExifTool 發出警告；未輸出，原檔未更動。")
-                    }
-                    guard try tool.imageDataSHA256(item.url) == tool.imageDataSHA256(stage) else {
-                        throw PhotoError("Sony 候選副本的主影像資料不同；未輸出，原檔未更動。")
-                    }
-                    let linkedImages: [String: String] = [
-                        "MPImage2:MPImageStart": "MPImage2:PreviewImage",
-                        "IFD0:PreviewImageStart": "IFD0:PreviewImage",
-                        "IFD1:ThumbnailOffset": "IFD1:ThumbnailImage"
-                    ]
-                    for pointer in changed {
-                        guard let imageTag = linkedImages[pointer] else { continue }
-                        guard beforeTags[imageTag] != nil, actualTags[imageTag] != nil,
-                              let sourceDigest = try tool.binarySHA256(item.url, tag: imageTag),
-                              let candidateDigest = try tool.binarySHA256(stage, tag: imageTag),
-                              sourceDigest == candidateDigest else {
-                            throw PhotoError("Sony 候選副本的內嵌影像 \(imageTag) 無法驗證為相同；未輸出，原檔未更動。")
-                        }
-                    }
-                    for pointer in changed { expectedTags[pointer] = actualTags[pointer] }
-                    sonyRelocationNote = "Sony 相容模式：影像內容與可讀欄位已核對；內部位置重排（\(changed.joined(separator: "、"))），無法保證未公開的 Sony 私有資料位元組完全不變。"
-                } else if isSony, !changed.isEmpty, changed.allSatisfy({ sonyPointers.contains($0) }) {
-                    throw PhotoError("Sony 檔案寫入後發生內部位址重排（\(changed.joined(separator: "、"))）。為遵守『其他資料不變』，這張未輸出、來源原檔未更動；在相同模式直接重試仍會失敗。")
-                } else {
-                    throw PhotoError("候選副本有非時區中繼資料變動（\(changed.prefix(8).joined(separator: "、"))）；原檔未更動，未輸出此張。")
-                }
-            }
-            guard actualTags == expectedTags else { throw PhotoError("Sony 中繼資料核對失敗；原檔未更動。") }
-            if before.make?.uppercased() == "SONY" {
-                let oldMaker = try tool.binarySHA256(item.url, tag: "MakerNotes")
-                let newMaker = try tool.binarySHA256(stage, tag: "MakerNotes")
-                guard oldMaker == newMaker || options.sonyCompatibility else {
-                    throw PhotoError("Sony MakerNotes 原始位元組發生變動；嚴格模式拒絕輸出，原檔未更動。")
-                }
-                if oldMaker != newMaker {
-                    guard try tool.imageDataSHA256(item.url) == tool.imageDataSHA256(stage),
-                          postWarning.isEmpty else {
-                        throw PhotoError("Sony 私有資料重排時影像雜湊或警告核對失敗；未輸出，原檔未更動。")
-                    }
-                    sonyRelocationNote += (sonyRelocationNote.isEmpty ? "" : "\n") +
-                        "Sony MakerNotes 原始位元組不同；相容模式允許此差異，但仍有未知私有資料風險。"
-                }
-            }
-            sonyVerificationNote = sonyRelocationNote
-        }
-        let actual = ["OffsetTimeOriginal": after.offsetOriginal, "OffsetTimeDigitized": after.offsetDigitized, "OffsetTime": after.offsetTime]
-        for (tag, prior) in allFields {
-            let expected = requested.contains(where: { $0.0 == tag }) ? offset.value : prior
-            guard actual[tag] == expected else { throw PhotoError("候選副本時區驗證失敗：\(tag)；原檔未更動。") }
-        }
-        guard before.fileType == after.fileType, before.dateTimeOriginal == after.dateTimeOriginal,
-              before.createDate == after.createDate,
-              before.modifyDate == after.modifyDate, before.dateTags == after.dateTags else {
-            throw PhotoError("候選副本拍攝／建立／修改時間變動；原檔未更動。")
-        }
+        let candidateSnapshot = try tool.snapshot(stage, cancellation: cancellation)
+        notices += try MetadataVerifier.verify(before: originalSnapshot, after: candidateSnapshot,
+                                               assignments: assignments, options: options)
+        var after = candidateSnapshot.metadata
+        notices += TimeValidation.issues(after)
+        for read in sidecarReads { notices += read.issues(for: after) }
+        after.compatibilityIssues = Array(Set(notices)).sorted()
         try FileSafety.preserveAndVerifyFileAttributes(from: item.url, to: stage)
         try SafeFileTransaction.syncFile(stage)
-        guard try FileSafety.hash(item.url) == sourceHash else {
-            throw PhotoError("處理期間原檔被其他程式改動；未提交此張，請重新掃描。")
+        if let plan, options.copySidecars {
+            for source in sidecars {
+                let output = target.deletingLastPathComponent().appendingPathComponent(source.lastPathComponent)
+                if try plan.hasCopied(sidecar: source, to: output) { continue }
+                guard !fm.fileExists(atPath: output.path) else { throw PhotoError("Sidecar output already exists; photo was not published: \(output.path)") }
+                let identity = try FileIdentity.read(source)
+                try FileSafety.ensureWriteCapacity(output, fileSize: identity.size, copies: 1, sourceMustBeWritable: false)
+                let temporary = output.deletingLastPathComponent().appendingPathComponent(".sidecar-\(UUID().uuidString)")
+                // Register before copying so a failed partial copy is also cleaned.
+                stagedSidecars.append((source, temporary, output, identity))
+                try SafeFileTransaction.copyAndSync(source, to: temporary)
+                try identity.verify(source)
+            }
+        } else if plan != nil && !sidecars.isEmpty {
+            notices.append("Sidecars were not copied because copySidecars is disabled.")
         }
-        var backupName: String?
-        if destination == nil {
+        try sourceIdentity.verify(item.url)
+        try parentIdentity.verify(parent)
+        try plan?.verify()
+        if cancellation.isCancelled { throw CancellationError() }
+        let backup: URL?
+        if plan == nil {
             let oldest = URL(fileURLWithPath: item.url.path + "_original")
-            let backup: URL
+            if fm.fileExists(atPath: oldest.path) {
+                try FileSafety.ensureRegular(oldest)
+                _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
+                backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
+            } else { backup = oldest }
+        } else { backup = nil }
+        var manifest = TransactionManifest(version: 1, id: UUID(), source: item.url, target: target,
+            candidate: stage, backup: backup, sourceIdentity: sourceIdentity,
+            targetIdentityBefore: plan == nil ? sourceIdentity : nil,
+            candidateIdentity: try FileIdentity.read(stage), originalDates: before.dateTags,
+            oldOffsets: Dictionary(uniqueKeysWithValues: allFields.compactMap { tag, value in value.map { (tag, $0) } }),
+            newOffsets: Dictionary(uniqueKeysWithValues: allFields.compactMap { tag, value in
+                let newValue = assignments.first { $0.0 == tag }?.1 ?? value
+                return newValue.map { (tag, $0) }
+            }), sidecarTargets: stagedSidecars.map(\.target), publishedSidecars: [], phase: .prepared, detail: "metadata-only; no content hashes")
+        item.transactionID = manifest.id; item.backupURL = backup
+        try store.save(manifest)
+        var photoPublished = false
+        do {
+            if let backup {
+                let temp = backup.deletingLastPathComponent().appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
+                defer { try? fm.removeItem(at: temp) }
+                try SafeFileTransaction.copyAndSync(item.url, to: temp)
+                try sourceIdentity.verify(item.url)
+                try SafeFileTransaction.publishExclusive(temp, to: backup)
+                manifest.phase = .backupDurable
+            }
+            // No cancellation after this boundary: finish the durable transaction.
+            try sourceIdentity.verify(item.url)
+            try parentIdentity.verify(parent)
+            try plan?.verify()
+            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
+            for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
+            for read in sidecarReads { try read.identity.verify(read.url) }
+            do {
+                if plan == nil { try SafeFileTransaction.replace(stage, at: target) }
+                else { try SafeFileTransaction.publishExclusive(stage, to: target) }
+                photoPublished = true
+            } catch let error as PublicationError {
+                photoPublished = true
+                throw error
+            }
+            item.outputURL = target; item.outputMetadata = after
+            item.metadata = plan == nil ? after : before
+            for sidecar in stagedSidecars {
+                try SafeFileTransaction.publishExclusive(sidecar.stage, to: sidecar.target)
+                manifest.publishedSidecars.append(sidecar.target)
+                try plan?.remember(sidecar: sidecar.source, sourceIdentity: sidecar.identity, output: sidecar.target)
+            }
+            manifest.phase = .committed
+            manifest.detail = "Authorized EXIF offsets verified; all captured date fields unchanged; image bytes not hashed."
+            try store.finish(manifest)
+        } catch {
+            if photoPublished {
+                manifest.phase = .publicationUnconfirmed
+                item.publicationUnconfirmed = true
+                item.outputURL = target; item.outputMetadata = after
+                item.metadata = plan == nil ? after : before
+                manifest.detail = "Photo has been published. Review durability/sidecar completion before retry: \(error.localizedDescription)"
+                try? store.save(manifest)
+                throw PhotoError("Photo already published; NOT safe to retry automatically. \(target.path)\n\(manifest.detail)\nTransaction: \(manifest.id)")
+            }
+            manifest.phase = .aborted; manifest.detail = error.localizedDescription
+            try? store.finish(manifest)
+            throw error
+        }
+        item.status = .success
+        item.detail = plan == nil
+            ? "Offsets written and metadata verified; original dates unchanged. Backup: \(backup?.path ?? "")"
+            : (assignments.isEmpty ? "原樣輸出：\(target.path)" : "Copy written and metadata verified: \(target.path). Source unchanged.")
+        item.detail += "\nValidation: readable metadata only; no image or whole-file HASH."
+        let warnings = [originalSnapshot.warnings, candidateSnapshot.warnings, writeWarnings] + notices
+        let unique = Array(Set(warnings.filter { !$0.isEmpty })).sorted()
+        if !unique.isEmpty { item.detail += "\n" + unique.joined(separator: "\n") }
+    }
+
+    private func writeGPS(
+        item: inout PhotoItem, tool: ExifTool, location: GPSCoordinate, options: WriteOptions,
+        plan: DestinationPlan?, store: TransactionStore, cancellation: CancellationToken
+    ) throws {
+        let fm = FileManager.default
+        let sourceIdentity = try FileIdentity.read(item.url)
+        if plan == nil, sourceIdentity.links > 1 {
+            throw PhotoError("Original has hard links. Use copy mode to avoid breaking linked-file semantics.")
+        }
+
+        let originalSnapshot = try tool.snapshot(item.url, cancellation: cancellation)
+        var before = originalSnapshot.metadata
+        try sourceIdentity.verify(item.url)
+
+        let sidecars = try SidecarSupport.find(beside: item.url)
+        let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
+            .map { try tool.readSidecar($0, cancellation: cancellation) }
+        before.sidecarGPSDetected = sidecarReads.contains { $0.hasGPS }
+        before.gpsSafetyUncertain = sidecarReads.contains { !$0.gpsCheckReliable }
+        before.compatibilityIssues = Array(Set(
+            before.compatibilityIssues + sidecarReads.flatMap { $0.issues(for: before) }
+        )).sorted()
+        item.metadata = before
+
+        guard before.canSafelyAddGPS else {
+            try sourceIdentity.verify(item.url)
+            item.status = .skipped
+            if before.gpsSafetyUncertain {
+                item.detail = "無法可靠確認 XMP sidecar 是否含 GPS；為避免位置衝突，未寫入。"
+            } else if before.sidecarGPSDetected {
+                item.detail = "XMP sidecar 已含 GPS；為避免 EXIF/XMP 位置衝突，未寫入。"
+            } else if before.embeddedXMPGPSDetected {
+                item.detail = "照片內嵌 XMP 已含 GPS；為避免覆寫既有位置資料，未寫入。"
+            } else {
+                item.detail = before.hasCompleteGPSCoordinate
+                    ? "照片已含 EXIF GPS；不覆寫既有位置資料。"
+                    : "照片已有部分 GPS 中繼資料；為避免破壞或覆寫，未自動補寫。"
+            }
+            return
+        }
+        if cancellation.isCancelled { throw CancellationError() }
+
+        let target = try plan?.output(for: item.url) ?? item.url
+        let parent = target.deletingLastPathComponent().resolvingSymlinksInPath()
+        let parentIdentity = try DirectoryIdentity.read(parent)
+        if plan != nil, fm.fileExists(atPath: target.path) {
+            throw PhotoError("目的地已有同名檔案，不會覆蓋： \(target.path)")
+        }
+        try FileSafety.ensureWriteCapacity(target, fileSize: sourceIdentity.size,
+                                          copies: plan == nil ? 3 : 2, sourceMustBeWritable: plan == nil)
+
+        let stage = SafeFileTransaction.temporaryPhoto(beside: target)
+        var stagedSidecars: [(source: URL, stage: URL, target: URL, identity: FileIdentity)] = []
+        defer {
+            try? fm.removeItem(at: stage)
+            for sidecar in stagedSidecars { try? fm.removeItem(at: sidecar.stage) }
+        }
+        try SafeFileTransaction.copyCandidate(item.url, to: stage)
+
+        let attributes = try fm.attributesOfItem(atPath: stage.path)
+        let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o600
+        try fm.setAttributes([.posixPermissions: permissions | 0o200], ofItemAtPath: stage.path)
+
+        var arguments = [
+            "-charset", "filename=UTF8", "-P", "-overwrite_original_in_place",
+            "-GPSVersionID=2.3.0.0",
+            "-GPSLatitude#=\(location.latitudeArgument)",
+            "-GPSLatitudeRef=\(location.latitudeRef)",
+            "-GPSLongitude#=\(location.longitudeArgument)",
+            "-GPSLongitudeRef=\(location.longitudeRef)"
+        ]
+        if let altitude = location.altitudeArgument, let altitudeRef = location.altitudeRef {
+            arguments += ["-GPSAltitude#=\(altitude)", "-GPSAltitudeRef#=\(altitudeRef)"]
+        }
+        arguments.append(stage.path)
+        let output = try tool.execute(arguments, timeout: 600, cancellation: cancellation)
+        guard output.status == 0 else {
+            throw PhotoError("GPS 候選檔寫入失敗；原檔未更動。 \(output.text)")
+        }
+
+        let candidateSnapshot = try tool.snapshot(stage, cancellation: cancellation)
+        var notices = try MetadataVerifier.verifyGPSAddition(
+            before: originalSnapshot, after: candidateSnapshot, location: location, options: options
+        )
+        var after = candidateSnapshot.metadata
+        after.sidecarGPSDetected = before.sidecarGPSDetected
+        after.gpsSafetyUncertain = before.gpsSafetyUncertain
+        notices += TimeValidation.issues(after)
+        for read in sidecarReads { notices += read.issues(for: after) }
+        if !sidecars.isEmpty {
+            notices.append("Sidecars detected: \(sidecars.map(\.lastPathComponent).joined(separator: ", ")). Sidecars were not rewritten.")
+        }
+        after.compatibilityIssues = Array(Set(notices)).sorted()
+
+        try FileSafety.preserveAndVerifyFileAttributes(from: item.url, to: stage)
+        try SafeFileTransaction.syncFile(stage)
+
+        if let plan, options.copySidecars {
+            for source in sidecars {
+                let sidecarTarget = target.deletingLastPathComponent().appendingPathComponent(source.lastPathComponent)
+                if try plan.hasCopied(sidecar: source, to: sidecarTarget) { continue }
+                guard !fm.fileExists(atPath: sidecarTarget.path) else {
+                    throw PhotoError("Sidecar output already exists; photo was not published: \(sidecarTarget.path)")
+                }
+                let identity = try FileIdentity.read(source)
+                try FileSafety.ensureWriteCapacity(sidecarTarget, fileSize: identity.size, copies: 1, sourceMustBeWritable: false)
+                let temporary = sidecarTarget.deletingLastPathComponent()
+                    .appendingPathComponent(".sidecar-\(UUID().uuidString)")
+                stagedSidecars.append((source, temporary, sidecarTarget, identity))
+                try SafeFileTransaction.copyAndSync(source, to: temporary)
+                try identity.verify(source)
+            }
+        }
+
+        try sourceIdentity.verify(item.url)
+        try parentIdentity.verify(parent)
+        try plan?.verify()
+        if cancellation.isCancelled { throw CancellationError() }
+
+        let backup: URL?
+        if plan == nil {
+            let oldest = URL(fileURLWithPath: item.url.path + "_original")
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
@@ -334,103 +515,176 @@ public struct PhotoEngine: Sendable {
             } else {
                 backup = oldest
             }
-            let backupStage = backup.deletingLastPathComponent()
-                .appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
-            defer { try? fm.removeItem(at: backupStage) }
-            try SafeFileTransaction.copyAndSync(item.url, to: backupStage)
-            try SafeFileTransaction.publishExclusive(backupStage, to: backup)
-            backupName = backup.lastPathComponent
-            guard try FileSafety.hash(item.url) == sourceHash else {
-                throw PhotoError("備份完成後原檔被其他程式改動；備份保留，未替換，請重新掃描。")
-            }
-            try SafeFileTransaction.replace(stage, at: item.url)
         } else {
-            try SafeFileTransaction.publishExclusive(stage, to: target)
+            backup = nil
         }
-        if destination == nil {
-            item.metadata = after
-        } else {
-            // The table still describes the unmodified source. Show the
-            // generated result separately instead of claiming its offsets
-            // are now present on the source photo.
-            item.metadata = before
+
+        let allOffsets: [(String, String?)] = [
+            ("OffsetTimeOriginal", before.offsetOriginal),
+            ("OffsetTimeDigitized", before.offsetDigitized),
+            ("OffsetTime", before.offsetTime)
+        ]
+        let preservedOffsets = Dictionary(uniqueKeysWithValues: allOffsets.compactMap { tag, value in
+            value.map { (tag, $0) }
+        })
+
+        var manifest = TransactionManifest(
+            version: 1, id: UUID(), source: item.url, target: target,
+            candidate: stage, backup: backup, sourceIdentity: sourceIdentity,
+            targetIdentityBefore: plan == nil ? sourceIdentity : nil,
+            candidateIdentity: try FileIdentity.read(stage), originalDates: before.dateTags,
+            oldOffsets: preservedOffsets, newOffsets: preservedOffsets,
+            sidecarTargets: stagedSidecars.map(\.target), publishedSidecars: [],
+            phase: .prepared,
+            detail: "GPS-only metadata addition \(location.display); dates and EXIF offsets unchanged; no content hashes"
+        )
+        item.transactionID = manifest.id
+        item.backupURL = backup
+        try store.save(manifest)
+
+        var photoPublished = false
+        do {
+            if let backup {
+                let temp = backup.deletingLastPathComponent()
+                    .appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
+                defer { try? fm.removeItem(at: temp) }
+                try SafeFileTransaction.copyAndSync(item.url, to: temp)
+                try sourceIdentity.verify(item.url)
+                try SafeFileTransaction.publishExclusive(temp, to: backup)
+                manifest.phase = .backupDurable
+            }
+
+            try sourceIdentity.verify(item.url)
+            try parentIdentity.verify(parent)
+            try plan?.verify()
+            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
+            for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
+            for read in sidecarReads { try read.identity.verify(read.url) }
+
+            do {
+                if plan == nil { try SafeFileTransaction.replace(stage, at: target) }
+                else { try SafeFileTransaction.publishExclusive(stage, to: target) }
+                photoPublished = true
+            } catch let error as PublicationError {
+                photoPublished = true
+                throw error
+            }
+
             item.outputURL = target
             item.outputMetadata = after
+            item.metadata = plan == nil ? after : before
+            for sidecar in stagedSidecars {
+                try SafeFileTransaction.publishExclusive(sidecar.stage, to: sidecar.target)
+                manifest.publishedSidecars.append(sidecar.target)
+                try plan?.remember(sidecar: sidecar.source, sourceIdentity: sidecar.identity, output: sidecar.target)
+            }
+            manifest.phase = .committed
+            manifest.detail = "GPS-only metadata addition verified; dates and EXIF offsets unchanged; image bytes not hashed."
+            try store.finish(manifest)
+        } catch {
+            if photoPublished {
+                manifest.phase = .publicationUnconfirmed
+                item.publicationUnconfirmed = true
+                item.outputURL = target
+                item.outputMetadata = after
+                item.metadata = plan == nil ? after : before
+                manifest.detail = "GPS photo has been published. Review durability/sidecar completion before retry: \(error.localizedDescription)"
+                try? store.save(manifest)
+                throw PhotoError("Photo already published; NOT safe to retry automatically. \(target.path)\n\(manifest.detail)\nTransaction: \(manifest.id)")
+            }
+            manifest.phase = .aborted
+            manifest.detail = error.localizedDescription
+            try? store.finish(manifest)
+            throw error
         }
+
         item.status = .success
-        if let backupName {
-            item.detail = "已安全替換並驗證 \(offset.value)；替換前版本保留於 \(backupName)。"
-        } else {
-            item.detail = willChange ? "已輸出並驗證 \(offset.value) 的副本：\(target.path)；原檔未更動。"
-                                     : "原有時區完整，已原樣輸出副本：\(target.path)；原檔未更動。"
-        }
-        if !sonyVerificationNote.isEmpty { item.detail += "\n" + sonyVerificationNote }
-        let warnings = [warning, stderr, postWarning].filter { !$0.isEmpty }.joined(separator: "\n")
-        if !warnings.isEmpty { item.detail += "\n警告：\(warnings)" }
+        item.detail = plan == nil
+            ? "GPS \(location.display) 已新增並驗證；原日期、時間與時區欄位未變。備份：\(backup?.path ?? "")"
+            : "GPS \(location.display) 已寫入副本：\(target.path)。來源照片未修改。"
+        item.detail += "\nValidation: GPS-only readable metadata whitelist; no image or whole-file HASH."
+        let warnings = [originalSnapshot.warnings, candidateSnapshot.warnings, output.stderr] + notices
+        let unique = Array(Set(warnings.filter { !$0.isEmpty })).sorted()
+        if !unique.isEmpty { item.detail += "\n" + unique.joined(separator: "\n") }
     }
 
-    private func restore(item: inout PhotoItem, tool: ExifTool, cancellation: CancellationToken) throws {
+    private func restore(item: inout PhotoItem, tool: ExifTool, store: TransactionStore,
+                         cancellation: CancellationToken) throws {
         let fm = FileManager.default
         let backup = URL(fileURLWithPath: item.url.path + "_original")
         guard fm.fileExists(atPath: backup.path) else {
-            item.status = .skipped
-            item.detail = "沒有 _original 備份，未變更。"
-            return
+            item.status = .skipped; item.detail = "No _original backup; nothing changed."; return
         }
-        try FileSafety.ensureRegular(backup)
-        _ = try tool.inspect(backup, cancellation: cancellation, strictOffsets: false)
-        let digest = try FileSafety.hash(backup)
-        if cancellation.isCancelled {
-            item.status = .cancelled
-            item.detail = "已取消；未復原。"
-            return
-        }
-        let backupSize = Int64(try backup.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-        try FileSafety.ensureWriteCapacity(item.url, fileSize: backupSize, copies: 3, sourceMustBeWritable: false)
+        let backupIdentity = try FileIdentity.read(backup)
+        let before = try tool.snapshot(backup, cancellation: cancellation, strictOffsets: false)
+        let currentIdentity = fm.fileExists(atPath: item.url.path) ? try FileIdentity.read(item.url) : nil
+        if let currentIdentity, currentIdentity.links > 1 { throw PhotoError("Restore would break hard links; use an independent copy.") }
+        try FileSafety.ensureWriteCapacity(item.url, fileSize: max(backupIdentity.size, currentIdentity?.size ?? 0),
+                                          copies: 3, sourceMustBeWritable: false)
         let stage = SafeFileTransaction.temporaryPhoto(beside: item.url)
         defer { try? fm.removeItem(at: stage) }
         try SafeFileTransaction.copyAndSync(backup, to: stage)
-        guard try FileSafety.hash(stage) == digest else {
-            throw PhotoError("原始備份暫存副本 SHA-256 驗證失敗；未復原。")
+        let candidate = try tool.snapshot(stage, cancellation: cancellation, strictOffsets: false)
+        guard before.embeddedTags == candidate.embeddedTags, before.metadata.dateTags == candidate.metadata.dateTags else {
+            throw PhotoError("Restore candidate metadata differs from the backup; no original was changed.")
         }
-        if !fm.fileExists(atPath: item.url.path) {
-            try SafeFileTransaction.publishExclusive(stage, to: item.url)
-            guard try FileSafety.hash(item.url) == digest else {
-                throw PhotoError("遺失檔案重建後驗證失敗；_original 備份仍保留。")
+        try backupIdentity.verify(backup)
+        try currentIdentity?.verify(item.url)
+        if cancellation.isCancelled { throw CancellationError() }
+        let currentCopy = currentIdentity.map { _ in URL(fileURLWithPath: item.url.path + ".before-restore-\(UUID().uuidString).backup") }
+        let parent = item.url.deletingLastPathComponent().resolvingSymlinksInPath()
+        let parentIdentity = try DirectoryIdentity.read(parent)
+        var manifest = TransactionManifest(version: 1, id: UUID(), source: backup, target: item.url,
+            candidate: stage, backup: currentCopy ?? backup, sourceIdentity: backupIdentity,
+            targetIdentityBefore: currentIdentity,
+            candidateIdentity: try FileIdentity.read(stage), originalDates: before.metadata.dateTags,
+            oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [], phase: .prepared,
+            detail: "Whole-file restore, not an offset-only undo. Metadata-only verification.")
+        item.transactionID = manifest.id; item.backupURL = currentCopy ?? backup
+        try store.save(manifest)
+        var published = false
+        do {
+            if let currentCopy {
+                let temp = currentCopy.deletingLastPathComponent().appendingPathComponent(".before-restore-\(UUID().uuidString)")
+                defer { try? fm.removeItem(at: temp) }
+                try SafeFileTransaction.copyAndSync(item.url, to: temp)
+                try currentIdentity?.verify(item.url)
+                try SafeFileTransaction.publishExclusive(temp, to: currentCopy)
             }
-            item.metadata = try tool.inspect(item.url, strictOffsets: false).0
-            item.status = .success
-            item.detail = "已從 _original 重建遺失檔案並驗證；原始備份仍保留。"
-            return
+            try backupIdentity.verify(backup); try currentIdentity?.verify(item.url)
+            try parentIdentity.verify(parent)
+            do {
+                if currentIdentity == nil { try SafeFileTransaction.publishExclusive(stage, to: item.url) }
+                else { try SafeFileTransaction.replace(stage, at: item.url) }
+                published = true
+            } catch let error as PublicationError { published = true; throw error }
+            item.metadata = candidate.metadata; item.outputURL = item.url
+            manifest.phase = .committed
+            try store.finish(manifest)
+        } catch {
+            if published {
+                item.publicationUnconfirmed = true; item.outputURL = item.url
+                item.metadata = candidate.metadata
+                manifest.phase = .publicationUnconfirmed
+                manifest.detail = "Restore was published; durability confirmation incomplete. \(error.localizedDescription)"
+                try? store.save(manifest)
+                throw PhotoError(manifest.detail + " Do not retry automatically; backups retained.")
+            }
+            manifest.phase = .aborted; manifest.detail = error.localizedDescription
+            try? store.finish(manifest)
+            throw error
         }
-        try FileSafety.ensureRegular(item.url)
-        let currentHash = try FileSafety.hash(item.url)
-        // Retain the currently edited photo before the atomic replacement.
-        let currentCopy = URL(fileURLWithPath: item.url.path + ".before-restore-\(UUID().uuidString).backup")
-        let backupStage = currentCopy.deletingLastPathComponent()
-            .appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
-        defer { try? fm.removeItem(at: backupStage) }
-        try SafeFileTransaction.copyAndSync(item.url, to: backupStage)
-        try SafeFileTransaction.publishExclusive(backupStage, to: currentCopy)
-        guard try FileSafety.hash(item.url) == currentHash else {
-            throw PhotoError("復原前原檔被其他程式改動；現況副本保留，未執行復原。")
-        }
-        try SafeFileTransaction.replace(stage, at: item.url)
-        guard try FileSafety.hash(item.url) == digest else {
-            throw PhotoError("復原後 SHA-256 不符，請檢查原檔與 \(currentCopy.lastPathComponent)。")
-        }
-        let (metadata, warning) = try tool.inspect(item.url, strictOffsets: false)
-        item.metadata = metadata
         item.status = .success
-        item.detail = "已從 _original 原子還原並驗證完整檔案；_original 與復原前版本 \(currentCopy.lastPathComponent) 均保留。"
-        if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
+        item.detail = "Whole-file restore completed; backup and previous version retained. Metadata verified without a content hash."
     }
+
 }
 
 private final class Journal {
     let url: URL
     private let handle: FileHandle
     private let encoder = JSONEncoder()
+    private var linesSinceSync = 0
     init(directory: URL, operation: String) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -444,20 +698,21 @@ private final class Journal {
     }
     deinit { try? handle.close() }
     func append(_ item: PhotoItem) throws { try line(item) }
-    func finish(_ message: String) throws { try line(["summary": message, "finishedAt": ISO8601DateFormatter().string(from: Date())]) }
+    func finish(_ message: String) throws { try line(["summary": message, "finishedAt": ISO8601DateFormatter().string(from: Date())]); try handle.synchronize() }
     private func line<T: Encodable>(_ value: T) throws {
         try handle.write(contentsOf: encoder.encode(value) + Data([0x0a]))
-        try handle.synchronize()
+        linesSinceSync += 1
+        if linesSinceSync >= 48 { try handle.synchronize(); linesSinceSync = 0 }
     }
 }
 
-private final class JobLock {
+final class JobLock {
     private var descriptor: Int32
     init(url: URL) throws {
-        descriptor = Darwin.open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        descriptor = open(url.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
         guard descriptor >= 0 else { throw PhotoError("無法建立工作鎖。") }
         if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
-            Darwin.close(descriptor)
+            close(descriptor)
             descriptor = -1
             throw PhotoError("另一個相片時區修改器正在處理；請等候它完成。")
         }
@@ -465,7 +720,7 @@ private final class JobLock {
     func release() {
         if descriptor >= 0 {
             flock(descriptor, LOCK_UN)
-            Darwin.close(descriptor)
+            close(descriptor)
             descriptor = -1
         }
     }

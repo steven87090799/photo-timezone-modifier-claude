@@ -4,6 +4,28 @@ import Testing
 
 @Suite(.serialized)
 final class FileDiscoveryTests: TemporaryDirectoryTestCase {
+    @Test func testReviewCopyDestinationTerminatesAtFilesystemRoot() throws {
+        let photo = try makeFile("source/photo.jpg")
+        let output = try makeDirectory("destination")
+        let individual = try DestinationPlan(destination: output, roots: [photo])
+        #expect(try individual.output(for: photo).path == output.appendingPathComponent("photo.jpg").path)
+        let root = photo.deletingLastPathComponent()
+        let directory = try DestinationPlan(destination: output, roots: [root])
+        #expect(try directory.output(for: photo).path == output.appendingPathComponent("source/photo.jpg").path)
+    }
+
+    @Test func testReviewSidecarSetChangesRequireRescan() throws {
+        let photo = try makeFile("review.jpg")
+        let original = try SidecarSupport.find(beside: photo)
+        try SidecarSupport.verifyUnchanged(original, beside: photo)
+        let sidecar = try makeFile("review.xmp")
+        #expect(throws: PhotoError.self) { try SidecarSupport.verifyUnchanged(original, beside: photo) }
+        let rescanned = try SidecarSupport.find(beside: photo)
+        try SidecarSupport.verifyUnchanged(rescanned, beside: photo)
+        try FileManager.default.removeItem(at: sidecar)
+        #expect(throws: PhotoError.self) { try SidecarSupport.verifyUnchanged(rescanned, beside: photo) }
+    }
+
     @Test func testNonrecursiveDiscoveryIncludesOnlySupportedVisibleTopLevelFiles() throws {
         let root = try makeDirectory("photos")
         let expected = try ["one.jpg", "two.JPEG", "three.tif", "four.TIFF", "five.ARW"]

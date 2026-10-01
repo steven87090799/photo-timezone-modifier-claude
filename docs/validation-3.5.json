@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-01",
+  "version": "3.5.0",
+  "host": "Linux x86_64",
+  "swift": "6.2.1",
+  "tests": 78,
+  "suites": 6,
+  "passed": 78,
+  "skipped": 0,
+  "suite_seconds": 119.639,
+  "write_stress": {
+    "valid": 1000,
+    "corrupt_rejected": 1,
+    "scan_seconds": 3.334595203399658,
+    "write_seconds": 39.42870581150055,
+    "backup_byte_checks": 1000,
+    "restores": 10,
+    "unexpected_failures": 0
+  },
+  "copy_stress": {
+    "valid": 1000,
+    "copy_seconds": 39.24287557601929,
+    "unchanged_source_byte_checks": 1000,
+    "unexpected_failures": 0,
+    "retries": 0
+  },
+  "runtime": {
+    "vendor_bytes": 34985439,
+    "runtime_bytes": 20812510,
+    "png_bytes": 1292382,
+    "trimmed_runtime_read_write": "passed; dates unchanged; all three offsets present",
+    "parent_sigkill_child_exit_seconds": 0.0114,
+    "stdin_closed_child_exit_seconds": 0.0032,
+    "resource_bytes_removed": 14172929
+  },
+  "native_macOS": "not executable on development host; native CI required",
+  "target_apps": "ON1, Lightroom, Immich and Google Photos end-to-end not executed",
+  "interpretation": "Tiny synthetic JPEG/TIFF timings, not real-camera RAW or a same-host baseline speedup. No photo content hashes in production."
+}

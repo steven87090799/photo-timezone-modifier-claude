@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 /// Every candidate and backup is made in its final directory. The source is
 /// never handed to ExifTool: only a validated, durable candidate is published.
@@ -11,28 +15,50 @@ enum SafeFileTransaction {
             .appendingPathExtension(ext)
     }
 
-    static func copyAndSync(_ source: URL, to destination: URL) throws {
-        try FileSafety.ensureRegular(source)
-        try FileManager.default.copyItem(at: source, to: destination)
-        try syncFile(destination)
-        guard try FileSafety.hash(source) == FileSafety.hash(destination) else {
-            throw PhotoError("暫存副本 SHA-256 不符；原檔未更動。")
+    /// A disposable candidate needs no durability flush before modification.
+    /// APFS clone avoids copying image bytes; fallback preserves file attributes.
+    static func copyCandidate(_ source: URL, to destination: URL) throws {
+        let identity = try FileIdentity.read(source)
+        #if canImport(Darwin)
+        if clonefile(source.path, destination.path, 0) != 0 {
+            if errno == EEXIST { throw PhotoError("Candidate path already exists; not overwritten.") }
+            try FileManager.default.copyItem(at: source, to: destination)
         }
-        try syncDirectory(destination.deletingLastPathComponent())
+        #else
+        try FileManager.default.copyItem(at: source, to: destination)
+        try FileSafety.copyExtendedAttributes(from: source, to: destination)
+        #endif
+        try identity.verify(source)
+        guard try FileIdentity.read(destination).size == identity.size else {
+            throw PhotoError("Candidate size mismatch; original not changed.")
+        }
+    }
+
+    static func copyAndSync(_ source: URL, to destination: URL) throws {
+        try copyCandidate(source, to: destination)
+        try FileSafety.preserveAndVerifyFileAttributes(from: source, to: destination)
+        try syncFile(destination)
     }
 
     static func publishExclusive(_ temporary: URL, to destination: URL) throws {
+        #if canImport(Darwin)
         let result = temporary.path.withCString { from in
             destination.path.withCString { to in
                 renameatx_np(AT_FDCWD, from, AT_FDCWD, to, UInt32(RENAME_EXCL))
             }
         }
+        #else
+        // link() publishes without replacing an existing name on Linux. The
+        // shipping macOS implementation above uses RENAME_EXCL.
+        let result = link(temporary.path, destination.path)
+        if result == 0 { _ = unlink(temporary.path) }
+        #endif
         guard result == 0 else {
             if errno == EEXIST { throw PhotoError("目的地已有同名檔案，未覆蓋：\(destination.path)") }
             throw PhotoError("無法安全建立檔案 \(destination.lastPathComponent)：\(String(cString: strerror(errno)))")
         }
         do { try syncDirectory(destination.deletingLastPathComponent()) }
-        catch { throw PhotoError("檔案已建立，但無法確認磁碟已保存目錄更新；請檢查 \(destination.path)。\(error.localizedDescription)") }
+        catch { throw PublicationError(destination: destination, message: "檔案已建立，但無法確認磁碟已保存目錄更新；請檢查 \(destination.path)。\(error.localizedDescription)") }
     }
 
     static func replace(_ temporary: URL, at destination: URL) throws {
@@ -43,16 +69,17 @@ enum SafeFileTransaction {
             throw PhotoError("無法替換原檔；備份仍保留。\(String(cString: strerror(errno)))")
         }
         do { try syncDirectory(destination.deletingLastPathComponent()) }
-        catch { throw PhotoError("原檔已替換，但無法確認磁碟已保存目錄更新；備份仍保留，請先檢查 \(destination.path)。\(error.localizedDescription)") }
+        catch { throw PublicationError(destination: destination, message: "原檔已替換，但無法確認磁碟已保存目錄更新；備份仍保留，請先檢查 \(destination.path)。\(error.localizedDescription)") }
     }
 
     static func syncFile(_ url: URL) throws {
         let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw PhotoError("無法同步檔案到磁碟：\(url.lastPathComponent)") }
         defer { close(fd) }
-        // F_FULLFSYNC requests that macOS flush drive caches as well. Some
-        // external filesystems don't implement it; regular fsync is required.
-        if fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0 {
+        // fsync provides the transaction's filesystem durability without the
+        // large per-photo latency of macOS F_FULLFSYNC. The durable backup and
+        // transaction manifest remain in place before an original is replaced.
+        if fsync(fd) != 0 {
             throw PhotoError("磁碟同步失敗：\(url.lastPathComponent)（\(String(cString: strerror(errno)))）")
         }
     }
@@ -141,7 +168,14 @@ public enum CopyDestination {
         return destination.appendingPathComponent(source.lastPathComponent)
     }
 
-    private static func contains(_ directory: URL, _ child: URL) -> Bool {
+    static func contains(_ directory: URL, _ child: URL) -> Bool {
         child.path == directory.path || child.path.hasPrefix(directory.path + "/")
     }
+}
+
+/// A failure AFTER publication is not an ordinary retryable write failure.
+struct PublicationError: LocalizedError {
+    let destination: URL
+    let message: String
+    var errorDescription: String? { message }
 }

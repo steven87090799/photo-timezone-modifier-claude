@@ -1,8 +1,10 @@
+import Foundation
+#if canImport(CoreGraphics)
 import CoreGraphics
 import CryptoKit
-import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+#endif
 import Testing
 @testable import TimezoneCore
 
@@ -42,14 +44,17 @@ class TemporaryDirectoryTestCase {
     enum ImageFormat {
         case jpeg, tiff
 
+        #if canImport(CoreGraphics)
         var identifier: CFString {
             (self == .jpeg ? UTType.jpeg.identifier : UTType.tiff.identifier) as CFString
         }
+        #endif
     }
 
     func makePhoto(_ name: String, format: ImageFormat = .jpeg) throws -> URL {
         let url = temporaryDirectory.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        #if canImport(CoreGraphics)
         let context = try requireValue(CGContext(
             data: nil, width: 3, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
@@ -62,6 +67,11 @@ class TemporaryDirectoryTestCase {
         guard CGImageDestinationFinalize(destination) else {
             throw PhotoError("Could not encode generated test image at \(url.path)")
         }
+        #else
+        let jpeg = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAACAAMDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCjRRRX1p8uf//Z"
+        let tiff = "SUkqAAgAAAAKAAABBAABAAAAAwAAAAEBBAABAAAAAgAAAAIBAwADAAAAhgAAAAMBAwABAAAAAQAAAAYBAwABAAAAAgAAABEBBAABAAAAjAAAABUBAwABAAAAAwAAABYBBAABAAAAAgAAABcBBAABAAAAEgAAABwBAwABAAAAAQAAAAAAAAAIAAgACAAzgMwzgMwzgMwzgMwzgMwzgMw="
+        try Data(base64Encoded: format == .jpeg ? jpeg : tiff)!.write(to: url)
+        #endif
         return url
     }
 
@@ -69,9 +79,13 @@ class TemporaryDirectoryTestCase {
         URL(fileURLWithPath: photo.path + "_original")
     }
 
-    /// Independent, whole-file digest for verifying the engine's streaming hash.
+    /// Independent test oracle only. Production never computes photo hashes.
     func digest(of url: URL) throws -> String {
-        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+        #if canImport(CryptoKit)
+        return SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
+        #else
+        return try Data(contentsOf: url).base64EncodedString()
+        #endif
     }
 }
 
@@ -132,3 +146,22 @@ final class JobEventCollector: @unchecked Sendable {
         return RecordedJob(events: events)
     }
 }
+
+// Independent test oracle ONLY. The application never calls ImageDataHash.
+extension ExifTool {
+    func imageDataSHA256(_ url: URL) throws -> String {
+        let result = try execute(["-api", "ImageHashType=SHA256", "-s3", "-ImageDataHash", url.path])
+        guard result.status == 0 else { throw PhotoError(result.text) }
+        return String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+#if os(Linux)
+@_silgen_name("setxattr") private func linuxTestSet(_ path: UnsafePointer<CChar>, _ name: UnsafePointer<CChar>, _ data: UnsafeRawPointer?, _ size: Int, _ flags: Int32) -> Int32
+@_silgen_name("getxattr") private func linuxTestGet(_ path: UnsafePointer<CChar>, _ name: UnsafePointer<CChar>, _ data: UnsafeMutableRawPointer?, _ size: Int) -> Int
+func setxattr(_ path: String, _ name: String, _ data: UnsafeRawPointer?, _ size: Int, _ position: Int, _ flags: Int32) -> Int32 {
+    path.withCString { p in ("user." + name).withCString { linuxTestSet(p, $0, data, size, flags) } }
+}
+func getxattr(_ path: String, _ name: String, _ data: UnsafeMutableRawPointer?, _ size: Int, _ position: Int, _ flags: Int32) -> Int {
+    path.withCString { p in ("user." + name).withCString { linuxTestGet(p, $0, data, size) } }
+}
+#endif

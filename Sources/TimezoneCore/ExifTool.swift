@@ -1,20 +1,31 @@
 import Foundation
-import CryptoKit
+import CoreFoundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 
 struct ProcessOutput {
     let status: Int32
     let stdout: Data
     let stderr: String
     var text: String {
-        [String(data: stdout, encoding: .utf8) ?? "", stderr].filter { !$0.isEmpty }.joined(separator: "\n")
+        [String(data: stdout.prefix(16384), encoding: .utf8) ?? "", stderr].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 }
 
 /// A bounded command handles one photo. Outputs go to separate temporary files,
 /// so neither a full pipe nor an argument-list size limit can deadlock a job.
-struct ExifTool {
+final class ExifTool {
     let url: URL
+    static let outputLimit = 16 * 1024 * 1024
+    static let errorLimit = 256 * 1024
+    private let session: ExifToolSession?
+    init(url: URL, persistent: Bool = false) {
+        self.url = url
+        self.session = persistent ? ExifToolSession(url: url) : nil
+    }
     static let inspectionBatchSize = 48
     struct Snapshot {
         let metadata: PhotoMetadata
@@ -22,17 +33,20 @@ struct ExifTool {
         let embeddedTags: [String: String]
     }
     func execute(_ arguments: [String], timeout: TimeInterval? = nil, cancellation: CancellationToken? = nil) throws -> ProcessOutput {
+        if let session, !arguments.contains(where: { $0.contains("\n") || $0.contains("\r") || $0.contains("\0") }) {
+            return try session.execute(arguments, timeout: timeout ?? 120, cancellation: cancellation)
+        }
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: "/usr/bin/perl") else {
             throw PhotoError("此 macOS 缺少 /usr/bin/perl；無法啟動內建的 ExifTool。")
         }
         let temp = fm.temporaryDirectory.appendingPathComponent("PhotoTimezone-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: temp, withIntermediateDirectories: false)
+        try fm.createDirectory(at: temp, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: temp) }
         let outURL = temp.appendingPathComponent("stdout")
         let errURL = temp.appendingPathComponent("stderr")
-        guard fm.createFile(atPath: outURL.path, contents: nil),
-              fm.createFile(atPath: errURL.path, contents: nil) else {
+        guard fm.createFile(atPath: outURL.path, contents: nil, attributes: [.posixPermissions: 0o600]),
+              fm.createFile(atPath: errURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
             throw PhotoError("無法建立 ExifTool 暫存輸出。")
         }
         let out = try FileHandle(forWritingTo: outURL)
@@ -43,7 +57,7 @@ struct ExifTool {
         // -config must be first. Disable external user config and Perl injection
         // environment variables to keep the bundled engine reproducible.
         process.arguments = [url.path, "-config", ""] + arguments
-        process.environment = ["PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"]
+        process.environment = ["PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = out
         process.standardError = err
@@ -51,10 +65,21 @@ struct ExifTool {
         process.terminationHandler = { _ in finished.signal() }
         if cancellation?.isCancelled == true { throw CancellationError() }
         try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+                if finished.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+                process.waitUntilExit()
+            }
+        }
         let started = ProcessInfo.processInfo.systemUptime
         while finished.wait(timeout: .now() + 0.05) == .timedOut {
             let expired = timeout.map { ProcessInfo.processInfo.systemUptime - started >= $0 } ?? false
-            if expired || cancellation?.isCancelled == true {
+            let outputBytes = try out.offset(), errorBytes = try err.offset()
+            let tooLarge = outputBytes > UInt64(Self.outputLimit) || errorBytes > UInt64(Self.errorLimit)
+            if expired || tooLarge || cancellation?.isCancelled == true {
                 // A timeout/cancellation is safe only for read-only commands
                 // or writes to disposable candidates, never an original.
                 process.terminate()
@@ -62,12 +87,17 @@ struct ExifTool {
                     kill(process.processIdentifier, SIGKILL)
                     _ = finished.wait(timeout: .now() + 1)
                 }
+                process.waitUntilExit()
                 if cancellation?.isCancelled == true { throw CancellationError() }
+                if tooLarge { throw PhotoError("ExifTool output exceeds the metadata budget; no result was accepted.") }
                 throw PhotoError("ExifTool 執行逾時，已停止這張照片的候選處理；原檔未更動。")
             }
         }
-        try out.synchronize()
-        try err.synchronize()
+        let stdoutSize = try out.offset()
+        let stderrSize = try err.offset()
+        guard stdoutSize <= UInt64(Self.outputLimit), stderrSize <= UInt64(Self.errorLimit) else {
+            throw PhotoError("ExifTool output exceeds the bounded metadata budget; original not changed.")
+        }
         return ProcessOutput(
             status: process.terminationStatus,
             stdout: try Data(contentsOf: outURL),
@@ -86,12 +116,31 @@ struct ExifTool {
     private var inspectionArguments: [String] {
         [
             "-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s",
+
+            // EXIF date/time and timezone triplets.
             "-EXIF:DateTimeOriginal", "-EXIF:CreateDate", "-EXIF:ModifyDate",
             "-EXIF:OffsetTimeOriginal", "-EXIF:OffsetTimeDigitized", "-EXIF:OffsetTime",
-            "-Make", "-Model", "-SerialNumber", "-LensModel", "-LensSpec", "-Lens", "-LensID", "-LensInfo",
-            "-ISO", "-ExposureTime", "-FNumber", "-FocalLength",
-            "-ExifImageWidth", "-ExifImageHeight", "-ImageWidth", "-ImageHeight", "-FileSize#",
-            "-FileType", "-Error", "-Warning"
+            "-EXIF:SubSecTimeOriginal", "-EXIF:SubSecTimeDigitized", "-EXIF:SubSecTime",
+            "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
+
+            // Camera and lens identity. Keep vendor fallbacks for display only.
+            "-EXIF:Make", "-EXIF:Model", "-EXIF:SerialNumber", "-SerialNumber",
+            "-EXIF:LensMake", "-EXIF:LensModel", "-EXIF:LensInfo", "-EXIF:LensSerialNumber",
+            "-LensSpec", "-Lens", "-LensID", "-LensType",
+
+            // Core exposure/capture parameters from the EXIF specification.
+            "-EXIF:ISO", "-EXIF:ExposureTime", "-EXIF:FNumber", "-EXIF:ExposureProgram",
+            "-EXIF:ExposureCompensation", "-EXIF:MeteringMode", "-EXIF:Flash",
+            "-EXIF:FocalLength", "-EXIF:FocalLengthIn35mmFormat",
+            "-EXIF:WhiteBalance", "-EXIF:SceneCaptureType",
+
+            // Image/file identity and GPS diagnostics.
+            "-EXIF:Orientation", "-EXIF:ColorSpace", "-EXIF:ExifImageWidth", "-EXIF:ExifImageHeight",
+            "-EXIF:Software", "-ImageWidth", "-ImageHeight", "-FileSize#", "-FileType", "-MIMEType",
+            // Any partial GPS record blocks manual insertion, not just coordinates.
+            // Include IPTC XMP location structures as well as XMP-exif tags.
+            "-GPS:all", "-XMP:*GPS*",
+            "-Error", "-Warning"
         ]
     }
 
@@ -154,8 +203,8 @@ struct ExifTool {
     /// One complete read supplies both the preview fields and the invariant
     /// check. This removes two ExifTool launches per changed photo without
     /// weakening the per-photo comparison or transactional write path.
-    func snapshot(_ file: URL, cancellation: CancellationToken? = nil) throws -> Snapshot {
-        let output = try execute(["-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s", "-U", "-struct", file.path],
+    func snapshot(_ file: URL, cancellation: CancellationToken? = nil, strictOffsets: Bool = true) throws -> Snapshot {
+        let output = try execute(["-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s", "-n", "-U", "-struct", file.path],
                                  timeout: 120, cancellation: cancellation)
         guard output.status == 0,
               let entries = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
@@ -163,7 +212,7 @@ struct ExifTool {
             throw PhotoError("無法完整讀取內嵌中繼資料：\(output.text)")
         }
         if let error = record["ExifTool:Error"] { throw PhotoError("中繼資料讀取失敗：\(error)") }
-        var (metadata, warnings) = try decode(record, stderr: output.stderr, strictOffsets: true)
+        var (metadata, warnings) = try decode(record, stderr: output.stderr, strictOffsets: strictOffsets)
         metadata.fileSize = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init)
         var result: [String: String] = [:]
         for (key, value) in record {
@@ -175,40 +224,68 @@ struct ExifTool {
         return Snapshot(metadata: metadata, warnings: warnings, embeddedTags: result)
     }
 
-    /// JPEG EXIF thumbnail offsets are pointers that may move when the EXIF
-    /// block grows. Only treat that relocation as harmless after comparing the
-    /// thumbnail's original binary payload byte-for-byte. `-m` permits older
-    /// cameras' nonstandard thumbnails to be extracted for this comparison.
-    func thumbnailBytes(_ file: URL) throws -> Data {
-        let output = try execute(["-m", "-b", "-ThumbnailImage", file.path], timeout: 120)
-        guard output.status == 0, !output.stdout.isEmpty else {
-            throw PhotoError("無法驗證內建縮圖內容；原檔未更動。\n\(output.text)")
+    struct SidecarSnapshot {
+        let url: URL
+        let identity: FileIdentity
+        let dates: [String: String]
+        let hasGPS: Bool
+        let gpsCheckReliable: Bool
+        let warning: String
+        func issues(for photo: PhotoMetadata) -> [String] {
+            var result = TimeValidation.issues(photo, dates: dates).map { "\(url.lastPathComponent): \($0)" }
+            if hasGPS {
+                result.append("\(url.lastPathComponent): XMP sidecar contains GPS metadata; it was left unchanged.")
+            }
+            if !warning.isEmpty { result.append(warning) }
+            return result
         }
-        return output.stdout
     }
 
-    /// ExifTool hashes the actual image stream without including rewritten EXIF.
-    /// An absent or unsupported hash is a failed verification, never a pass.
-    func imageDataSHA256(_ file: URL) throws -> String {
-        let output = try execute(["-api", "ImageHashType=SHA256", "-s3", "-ImageDataHash", file.path], timeout: 120)
-        let digest = String(data: output.stdout, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        guard output.status == 0, digest.count == 64,
-              digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
-            throw PhotoError("無法取得主影像 SHA-256，Sony 候選副本未輸出。\n\(output.text)")
+    func readSidecar(_ file: URL, cancellation: CancellationToken? = nil) throws -> SidecarSnapshot {
+        let identity = try FileIdentity.read(file)
+        guard identity.size <= 8 * 1024 * 1024 else {
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
+                warning: "XMP sidecar exceeds the 8 MiB diagnostic budget; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
-        return digest
+        let output = try execute(["-charset", "filename=UTF8", "-j", "-G1:4", "-s",
+            "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
+            "-XMP:*GPS*", "-FileType", "-Warning", "-Error",
+            file.path], timeout: 120, cancellation: cancellation)
+        try identity.verify(file)
+        guard output.status == 0,
+              let records = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
+              records.count == 1, let record = records.first,
+              record["File:FileType"] as? String == "XMP",
+              output.stderr.isEmpty,
+              !record.keys.contains(where: {
+                  $0.hasPrefix("ExifTool:") && ["Error", "Warning"].contains(String($0.split(separator: ":").last ?? ""))
+              }) else {
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
+                warning: "XMP sidecar could not be diagnosed; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
+        }
+        let dates = record.filter { key, _ in
+            key.hasPrefix("XMP") && ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated"]
+                .contains(String(key.split(separator: ":").last ?? ""))
+        }.mapValues { String(describing: $0) }
+        return SidecarSnapshot(url: file, identity: identity, dates: dates,
+            hasGPS: Self.containsXMPGPS(record), gpsCheckReliable: true, warning: "")
     }
 
-    /// Nil means the binary tag is absent on both sides; required preview tags
-    /// are separately checked by the caller before accepting a relocation.
-    func binarySHA256(_ file: URL, tag: String) throws -> String? {
-        let output = try execute(["-b", "-\(tag)", file.path], timeout: 120)
-        guard output.status == 0 else {
-            throw PhotoError("無法讀取 \(tag) 進行驗證；原檔未更動。\n\(output.text)")
+    /// Snapshots use -struct while previews flatten structured XMP. Cover both,
+    /// including partial/empty tags and group-instance identifiers from -G1:4.
+    static func containsXMPGPS(_ record: [String: Any]) -> Bool {
+        func containsGPSField(_ value: Any) -> Bool {
+            if let fields = value as? [String: Any] {
+                return fields.contains { $0.key.contains("GPS") || containsGPSField($0.value) }
+            }
+            if let array = value as? [Any] { return array.contains(where: containsGPSField) }
+            return false
         }
-        guard !output.stdout.isEmpty else { return nil }
-        return SHA256.hash(data: output.stdout).map { String(format: "%02x", $0) }.joined()
+        return record.contains { key, value in
+            let parts = key.split(separator: ":")
+            guard parts.first?.hasPrefix("XMP") == true else { return false }
+            return parts.last?.contains("GPS") == true || containsGPSField(value)
+        }
     }
 
     private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
@@ -230,12 +307,27 @@ struct ExifTool {
             guard let value = record[name] as? String, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
             return value
         }
-        func tag(_ name: String) -> String? {
+        func grouped(_ key: String) -> String? {
+            guard let value = record[key] else { return nil }
+            let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.isEmpty ? nil : result
+        }
+        func tagWithKey(_ name: String) -> (key: String, value: String)? {
             let key = record.keys.filter { $0.split(separator: ":").last == Substring(name) }.sorted().first
             guard let key, let value = record[key] else { return nil }
-            let result = String(describing: value)
-            return result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : result
+            let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.isEmpty ? nil : (key, result)
         }
+        func tag(in group: String, _ name: String) -> String? {
+            let key = record.keys.filter {
+                let parts = $0.split(separator: ":")
+                return parts.first == Substring(group) && parts.last == Substring(name)
+            }.sorted().first
+            guard let key, let value = record[key] else { return nil }
+            let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.isEmpty ? nil : result
+        }
+        func tag(_ name: String) -> String? { tagWithKey(name)?.value }
         var metadata = PhotoMetadata(
             dateTimeOriginal: text("ExifIFD:DateTimeOriginal"),
             offsetOriginal: text("ExifIFD:OffsetTimeOriginal"),
@@ -245,112 +337,71 @@ struct ExifTool {
             createDate: text("ExifIFD:CreateDate"),
             modifyDate: text("IFD0:ModifyDate"),
             dateTags: record.filter { key, _ in
-                ["DateTimeOriginal", "CreateDate", "ModifyDate"].contains(String(key.split(separator: ":").last ?? ""))
+                ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated", "SubSecTimeOriginal", "SubSecTimeDigitized", "SubSecTime"].contains(String(key.split(separator: ":").last ?? ""))
             }.mapValues { String(describing: $0) }
         )
-        metadata.make = tag("Make")
-        metadata.cameraModel = tag("Model")
-        metadata.cameraSerialNumber = tag("SerialNumber")
-        // Prefer the recorded model/specification over a derived LensID.
-        // These display-only fallbacks never become tags to write.
-        for name in ["LensModel", "LensSpec", "Lens", "LensID"] {
-            if let value = tag(name) {
-                metadata.lensModel = value
-                metadata.lensModelSource = name == "LensID" ? "LensID（ExifTool 辨識）" : name
-                break
+        metadata.make = grouped("IFD0:Make") ?? tag("Make")
+        metadata.cameraModel = grouped("IFD0:Model") ?? tag("Model")
+        // ExifTool calls tag 0xA431 SerialNumber; the EXIF specification calls
+        // the same field BodySerialNumber.
+        metadata.bodySerialNumber = grouped("ExifIFD:SerialNumber") ?? tag(in: "ExifIFD", "SerialNumber")
+        metadata.cameraSerialNumber = metadata.bodySerialNumber ?? tag("SerialNumber")
+        metadata.lensMake = grouped("ExifIFD:LensMake")
+
+        // Prefer the standard EXIF LensModel. Vendor/ExifTool-derived lens IDs
+        // remain useful for preview, but their exact source is shown in the UI.
+        if let standardLens = grouped("ExifIFD:LensModel") {
+            metadata.lensModel = standardLens
+            metadata.lensModelSource = "ExifIFD:LensModel"
+        } else {
+            for name in ["LensModel", "LensSpec", "Lens", "LensID", "LensType"] {
+                if let found = tagWithKey(name) {
+                    metadata.lensModel = found.value
+                    metadata.lensModelSource = found.key
+                    break
+                }
             }
         }
-        metadata.lensInfo = tag("LensInfo")
-        metadata.iso = tag("ISO")
-        metadata.exposureTime = tag("ExposureTime")
-        metadata.aperture = tag("FNumber")
-        metadata.focalLength = tag("FocalLength")
-        metadata.imageWidth = tag("ExifImageWidth") ?? tag("ImageWidth")
-        metadata.imageHeight = tag("ExifImageHeight") ?? tag("ImageHeight")
+        metadata.lensInfo = grouped("ExifIFD:LensInfo") ?? tag("LensInfo")
+        metadata.lensSerialNumber = grouped("ExifIFD:LensSerialNumber")
+
+        metadata.subSecTimeOriginal = grouped("ExifIFD:SubSecTimeOriginal")
+        metadata.subSecTimeDigitized = grouped("ExifIFD:SubSecTimeDigitized")
+        metadata.subSecTime = grouped("ExifIFD:SubSecTime")
+        metadata.iso = grouped("ExifIFD:ISO") ?? tag("ISO")
+        metadata.exposureTime = grouped("ExifIFD:ExposureTime") ?? tag("ExposureTime")
+        metadata.aperture = grouped("ExifIFD:FNumber") ?? tag("FNumber")
+        metadata.exposureProgram = grouped("ExifIFD:ExposureProgram")
+        metadata.exposureCompensation = grouped("ExifIFD:ExposureCompensation")
+        metadata.meteringMode = grouped("ExifIFD:MeteringMode")
+        metadata.flash = grouped("ExifIFD:Flash")
+        metadata.focalLength = grouped("ExifIFD:FocalLength") ?? tag("FocalLength")
+        metadata.focalLength35mm = grouped("ExifIFD:FocalLengthIn35mmFormat")
+        metadata.whiteBalance = grouped("ExifIFD:WhiteBalance")
+        metadata.sceneCaptureType = grouped("ExifIFD:SceneCaptureType")
+
+        metadata.orientation = grouped("IFD0:Orientation") ?? tag("Orientation")
+        metadata.colorSpace = grouped("ExifIFD:ColorSpace")
+        metadata.software = grouped("IFD0:Software") ?? tag("Software")
+        metadata.mimeType = grouped("File:MIMEType")
+        metadata.gpsVersionID = grouped("GPS:GPSVersionID") ?? tag(in: "GPS", "GPSVersionID")
+        metadata.gpsLatitude = grouped("GPS:GPSLatitude") ?? tag(in: "GPS", "GPSLatitude")
+        metadata.gpsLatitudeRef = grouped("GPS:GPSLatitudeRef") ?? tag(in: "GPS", "GPSLatitudeRef")
+        metadata.gpsLongitude = grouped("GPS:GPSLongitude") ?? tag(in: "GPS", "GPSLongitude")
+        metadata.gpsLongitudeRef = grouped("GPS:GPSLongitudeRef") ?? tag(in: "GPS", "GPSLongitudeRef")
+        metadata.gpsAltitude = grouped("GPS:GPSAltitude") ?? tag(in: "GPS", "GPSAltitude")
+        metadata.gpsAltitudeRef = grouped("GPS:GPSAltitudeRef") ?? tag(in: "GPS", "GPSAltitudeRef")
+        metadata.gpsDateStamp = grouped("GPS:GPSDateStamp") ?? tag(in: "GPS", "GPSDateStamp")
+        metadata.gpsTimeStamp = grouped("GPS:GPSTimeStamp") ?? tag(in: "GPS", "GPSTimeStamp")
+        metadata.embeddedEXIFGPSDetected = record.keys.contains { $0.split(separator: ":").first == "GPS" }
+        metadata.embeddedXMPGPSDetected = Self.containsXMPGPS(record)
+        metadata.imageWidth = grouped("ExifIFD:ExifImageWidth") ?? tag("ExifImageWidth") ?? tag("ImageWidth")
+        metadata.imageHeight = grouped("ExifIFD:ExifImageHeight") ?? tag("ExifImageHeight") ?? tag("ImageHeight")
         metadata.fileSize = tag("FileSize").flatMap(Int64.init)
         guard ["JPEG", "TIFF", "ARW"].contains(metadata.fileType ?? "") else {
             throw PhotoError("實際檔案格式不是支援的 JPEG／TIFF／ARW，已略過寫入。")
         }
+        metadata.compatibilityIssues = TimeValidation.issues(metadata)
         return (metadata, warnings)
-    }
-}
-
-enum FileSafety {
-    static func ensureWriteCapacity(_ url: URL, fileSize: Int64?, copies: Int64 = 4, sourceMustBeWritable: Bool = true) throws {
-        let parent = url.deletingLastPathComponent()
-        guard FileManager.default.isWritableFile(atPath: parent.path),
-              (!sourceMustBeWritable || FileManager.default.isWritableFile(atPath: url.path)) else {
-            throw PhotoError(sourceMustBeWritable
-                             ? "原檔或所在資料夾唯讀；替換模式需要可寫入的工作磁碟，請改用副本輸出或先複製照片。"
-                             : "輸出資料夾唯讀；請選擇可寫入的目的地。")
-        }
-        let size = try fileSize ?? Int64(url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
-        let available = try parent.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity
-        let (requiredCopies, overflow) = max(size, 0).multipliedReportingOverflow(by: copies)
-        guard !overflow else { throw PhotoError("相片尺寸超出安全容量計算範圍；未寫入。") }
-        let (required, overheadOverflow) = requiredCopies.addingReportingOverflow(32 * 1024 * 1024)
-        guard !overheadOverflow else { throw PhotoError("相片尺寸超出安全容量計算範圍；未寫入。") }
-        if let available, Int64(available) < required {
-            throw PhotoError("磁碟可用空間不足以安全建立備份與暫存；未開始寫入此相片。")
-        }
-    }
-
-    static func preserveAndVerifyFileAttributes(from source: URL, to candidate: URL) throws {
-        let manager = FileManager.default
-        let before = try manager.attributesOfItem(atPath: source.path)
-        let candidateBefore = try manager.attributesOfItem(atPath: candidate.path)
-        var requested: [FileAttributeKey: Any] = [:]
-        for key: FileAttributeKey in [.creationDate, .modificationDate, .posixPermissions] {
-            // Avoid rewriting attributes that the candidate already inherited
-            // exactly; that can itself introduce filesystem timestamp rounding.
-            if String(describing: before[key]) != String(describing: candidateBefore[key]) {
-                requested[key] = before[key]
-            }
-        }
-        if !requested.isEmpty { try manager.setAttributes(requested, ofItemAtPath: candidate.path) }
-        let after = try manager.attributesOfItem(atPath: candidate.path)
-        for key: FileAttributeKey in [.creationDate, .modificationDate, .posixPermissions] {
-            guard String(describing: before[key]) == String(describing: after[key]) else {
-                throw PhotoError("檔案屬性 \(key.rawValue) 無法保留；原檔未更動。")
-            }
-        }
-        guard try extendedAttributes(source) == extendedAttributes(candidate) else {
-            throw PhotoError("Finder／延伸屬性無法完整保留；原檔未更動。")
-        }
-    }
-
-    private static func extendedAttributes(_ url: URL) throws -> [String: Data] {
-        let length = listxattr(url.path, nil, 0, 0)
-        guard length >= 0 else { throw PhotoError("無法讀取延伸屬性：\(url.lastPathComponent)") }
-        if length == 0 { return [:] }
-        var names = [CChar](repeating: 0, count: length)
-        let actual = names.withUnsafeMutableBufferPointer { listxattr(url.path, $0.baseAddress, length, 0) }
-        guard actual >= 0 else { throw PhotoError("延伸屬性清單已變動，請重試。") }
-        var result: [String: Data] = [:]
-        for raw in names.prefix(actual).split(separator: 0) {
-            let name = String(decoding: raw.map { UInt8(bitPattern: $0) }, as: UTF8.self)
-            let size = getxattr(url.path, name, nil, 0, 0, 0)
-            guard size >= 0 else { throw PhotoError("無法讀取延伸屬性 \(name)。") }
-            var bytes = [UInt8](repeating: 0, count: size)
-            let read = bytes.withUnsafeMutableBufferPointer { getxattr(url.path, name, $0.baseAddress, size, 0, 0) }
-            guard read == size else { throw PhotoError("延伸屬性 \(name) 讀取中改變，請重試。") }
-            result[name] = Data(bytes)
-        }
-        return result
-    }
-
-    static func ensureRegular(_ url: URL) throws {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else {
-            throw PhotoError("項目不是一般檔案，或是符號連結：\(url.lastPathComponent)")
-        }
-    }
-
-    static func hash(_ url: URL) throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var hash = SHA256()
-        while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty { hash.update(data: data) }
-        return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

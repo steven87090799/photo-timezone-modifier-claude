@@ -12,25 +12,49 @@ on:
 permissions:
   contents: read
 
+# Keep only the newest run for each PR/ref. Without this, slower stale commits can
+# finish after a newer successful commit and leave misleading red runs in Actions.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test-and-build:
-    runs-on: macos-15
-    timeout-minutes: 30
+  portable-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Test generated JPEG and TIFF fixtures
+      - name: Full portable regression suite
+        env:
+          PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh
       - name: Optional thousand-photo stability test
         if: github.event_name == 'workflow_dispatch' && inputs.stress
         env:
           PHOTO_TIMEZONE_STRESS: '1'
         run: ./scripts/test.sh --filter testThousand
+
+  test-and-build-macos:
+    runs-on: macos-15
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Full native regression suite
+        timeout-minutes: 10
+        env:
+          PHOTO_TIMEZONE_STRESS: '0'
+        run: ./scripts/test.sh
+
       - name: Build universal app
+        timeout-minutes: 8
         run: ./build.sh --universal
+
       - name: Package app preserving executable modes
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-3.4.2-macOS.zip
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-3.5.0-macOS.zip
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PhotoTimezone-macOS
-          path: dist/PhotoTimezone-3.4.2-macOS.zip
+          path: dist/PhotoTimezone-3.5.0-macOS.zip
           if-no-files-found: error

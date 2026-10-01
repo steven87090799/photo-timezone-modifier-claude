@@ -10,8 +10,10 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
 fi
 mkdir -p "$PROJECT_DIR/.build"
 ENGINE_STAGE="$(mktemp -d "$PROJECT_DIR/.build/exiftool-stage.XXXXXX")"
-# Full, unmodified upstream source and license are retained in the bundle.
+# Verify the vendored supply chain (not photo contents). Full upstream source
+# stays in the build tree for tests; stage-runtime.sh creates the app subset.
 /usr/bin/tar -xzf "$ARCHIVE" --strip-components=1 -C "$ENGINE_STAGE"
+/usr/bin/perl "$PROJECT_DIR/scripts/patch-worker-eof.pl" "$ENGINE_STAGE/exiftool"
 ENGINE_VERSION="$(/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/perl "$ENGINE_STAGE/exiftool" -config '' -ver)"
 if [[ "$ENGINE_VERSION" != "13.59" ]]; then
   echo "ExifTool 版本不符；停止建置。暫存保留於 $ENGINE_STAGE" >&2

@@ -1,0 +1,178 @@
+[0/1] Planning build
+Building for debugging...
+[0/2] Write swift-version--1BA0962812E73E12.txt
+Build complete! (0.13s)
+◇ Test run started.
+↳ Testing Library Version: 6.2.1 (c9d57c83568b06d)
+↳ Target Platform: x86_64-unknown-linux-gnu
+◇ Suite PhotoEngineTests started.
+◇ Suite OffsetGuideTests started.
+◇ Suite FileDiscoveryTests started.
+◇ Suite UTCOffsetTests started.
+◇ Suite PhotoCatalogueTests started.
+◇ Suite CoreRegressionTests started.
+◇ Test quarterHourExamplesAreClearlyLabeled() started.
+◇ Test wholeHourChoicesAreCompactAndComplete() started.
+◇ Test testThousandRowsHaveFiveBoundedPagesAndStableNaturalOrdering() started.
+◇ Test testSelectionCannotExpandBeyondExplicitIDsAndAllPagesCanBeSelected() started.
+◇ Test testCameraLensDateSearchAndFilterAreCombined() started.
+◇ Test testRetryFilterExcludesSuccessfulAndSkippedPhotos() started.
+◇ Test legacyJournalRowsDecodeWithoutNewFields() started.
+◇ Test testEveryQuarterHourFromMinusTwelveThroughPlusFourteenAppearsExactlyOnce() started.
+✔ Test quarterHourExamplesAreClearlyLabeled() passed after 0.001 seconds.
+✔ Test wholeHourChoicesAreCompactAndComplete() passed after 0.001 seconds.
+◇ Test testNonrecursiveDiscoveryIncludesOnlySupportedVisibleTopLevelFiles() started.
+◇ Test testAppAndCoreDefaultsUseAllThreeWithMetadataCompatibility() started.
+✔ Test testRetryFilterExcludesSuccessfulAndSkippedPhotos() passed after 0.003 seconds.
+✔ Test testCameraLensDateSearchAndFilterAreCombined() passed after 0.003 seconds.
+✔ Suite OffsetGuideTests passed after 0.003 seconds.
+✔ Test legacyJournalRowsDecodeWithoutNewFields() passed after 0.002 seconds.
+✔ Test testEveryQuarterHourFromMinusTwelveThroughPlusFourteenAppearsExactlyOnce() passed after 0.002 seconds.
+◇ Test extremeOffsetsFormatWithoutIntegerOverflow() started.
+◇ Test testValidityRejectsOutOfRangeAndNonQuarterHourValuesWithoutRounding() started.
+✔ Test extremeOffsetsFormatWithoutIntegerOverflow() passed after 0.001 seconds.
+✔ Test testValidityRejectsOutOfRangeAndNonQuarterHourValuesWithoutRounding() passed after 0.001 seconds.
+◇ Test strictCalendarAndOffsetValidation() started.
+◇ Test testLabelsIncludeSignAndZeroPaddingForWholeHalfAndQuarterHours() started.
+✔ Test strictCalendarAndOffsetValidation() passed after 0.001 seconds.
+✔ Test testLabelsIncludeSignAndZeroPaddingForWholeHalfAndQuarterHours() passed after 0.001 seconds.
+◇ Test defaultScopeAndRetryAreConsistent() started.
+◇ Test testEveryFormattedOffsetRoundTripsToItsExactMinutes() started.
+✔ Test defaultScopeAndRetryAreConsistent() passed after 0.001 seconds.
+✔ Test testEveryFormattedOffsetRoundTripsToItsExactMinutes() passed after 0.001 seconds.
+✔ Suite UTCOffsetTests passed after 0.007 seconds.
+◇ Test boundedEventsDeliverEveryResultInOrder() started.
+✔ Test testNonrecursiveDiscoveryIncludesOnlySupportedVisibleTopLevelFiles() passed after 0.007 seconds.
+◇ Test testRecursiveDiscoveryIncludesNestedFilesButNotHiddenFilesOrBackups() started.
+✔ Test testSelectionCannotExpandBeyondExplicitIDsAndAllPagesCanBeSelected() passed after 0.010 seconds.
+✔ Test testRecursiveDiscoveryIncludesNestedFilesButNotHiddenFilesOrBackups() passed after 0.002 seconds.
+◇ Test testOverlappingDirectoriesRepeatedFilesAndStandardizedPathsAreDeduplicated() started.
+✔ Test testOverlappingDirectoriesRepeatedFilesAndStandardizedPathsAreDeduplicated() passed after 0.004 seconds.
+✔ Test testThousandRowsHaveFiveBoundedPagesAndStableNaturalOrdering() passed after 0.016 seconds.
+◇ Test testEnumerationExcludesFileLinksDirectoryLinksAndSymlinkCycles() started.
+✔ Test testEnumerationExcludesFileLinksDirectoryLinksAndSymlinkCycles() passed after 0.001 seconds.
+◇ Test testExplicitSymlinksAreReportedAsSkippedAndNeverResolvedIntoPhotos() started.
+✔ Test testExplicitSymlinksAreReportedAsSkippedAndNeverResolvedIntoPhotos() passed after 0.001 seconds.
+◇ Test testExplicitUnsupportedAndMissingFilesHaveDistinctDiscoveryOutcomes() started.
+✔ Test testExplicitUnsupportedAndMissingFilesHaveDistinctDiscoveryOutcomes() passed after 0.001 seconds.
+◇ Test testAlreadyCancelledDiscoveryDoesNotVisitAnyInputOrEmitProgress() started.
+✔ Test testAlreadyCancelledDiscoveryDoesNotVisitAnyInputOrEmitProgress() passed after 0.001 seconds.
+◇ Test testCancellationFromDiscoveryProgressStopsEnumerationAndLaterInputs() started.
+✔ Suite PhotoCatalogueTests passed after 0.020 seconds.
+✔ Test boundedEventsDeliverEveryResultInOrder() passed after 0.028 seconds.
+◇ Test closedChannelReleasesBlockedProducer() started.
+✔ Test testAppAndCoreDefaultsUseAllThreeWithMetadataCompatibility() passed after 0.082 seconds.
+◇ Test testBadFirstPhotoDoesNotPreventFollowingJPEGAndTIFFWrites() started.
+✔ Test testCancellationFromDiscoveryProgressStopsEnumerationAndLaterInputs() passed after 0.104 seconds.
+◇ Test testEmptyDirectoryProducesNoItems() started.
+✔ Test testEmptyDirectoryProducesNoItems() passed after 0.001 seconds.
+✔ Suite FileDiscoveryTests passed after 0.124 seconds.
+✔ Test closedChannelReleasesBlockedProducer() passed after 0.150 seconds.
+◇ Test progressOnlyChangesReuseNaturalSort() started.
+✔ Test progressOnlyChangesReuseNaturalSort() passed after 0.039 seconds.
+◇ Test metadataOnlyPolicyRejectsArbitraryTagChanges() started.
+✔ Test metadataOnlyPolicyRejectsArbitraryTagChanges() passed after 0.002 seconds.
+◇ Test xmpISOFormattingDoesNotInventAClockConflict() started.
+✔ Test xmpISOFormattingDoesNotInventAClockConflict() passed after 0.001 seconds.
+✔ Suite CoreRegressionTests passed after 0.228 seconds.
+✔ Test testBadFirstPhotoDoesNotPreventFollowingJPEGAndTIFFWrites() passed after 1.239 seconds.
+◇ Test testFillMissingPreservesExistingOriginalOffsetAndFillsOtherTwoTags() started.
+✔ Test testFillMissingPreservesExistingOriginalOffsetAndFillsOtherTwoTags() passed after 1.226 seconds.
+◇ Test testReplaceAllChangesEveryOffsetButPreservesEveryDate() started.
+✔ Test testReplaceAllChangesEveryOffsetButPreservesEveryDate() passed after 1.226 seconds.
+◇ Test testCaptureOnlyEmbedsStandardOffsetWithoutShiftingDatesOrOtherOffsets() started.
+✔ Test testCaptureOnlyEmbedsStandardOffsetWithoutShiftingDatesOrOtherOffsets() passed after 0.844 seconds.
+◇ Test testRepeatedWritesPreserveExactFirstOriginalAndRestoreKeepsEditedCopy() started.
+✔ Test testRepeatedWritesPreserveExactFirstOriginalAndRestoreKeepsEditedCopy() passed after 1.061 seconds.
+◇ Test testCancellationInFirstUpdatedCallbackLeavesRemainingPhotosByteIdentical() started.
+✔ Test testCancellationInFirstUpdatedCallbackLeavesRemainingPhotosByteIdentical() passed after 1.366 seconds.
+◇ Test testQuotesWhitespaceNewlineDollarAndUnicodePathSurvivesWriteJournalAndRestore() started.
+✔ Test testQuotesWhitespaceNewlineDollarAndUnicodePathSurvivesWriteJournalAndRestore() passed after 0.868 seconds.
+◇ Test testEmptyInputsAndEmptyDirectoryNeverReportSuccess() started.
+✔ Test testEmptyInputsAndEmptyDirectoryNeverReportSuccess() passed after 0.218 seconds.
+◇ Test testFillMissingWithAllOffsetsPresentSkipsWithoutCreatingBackupsOrChangingBytes() started.
+✔ Test testFillMissingWithAllOffsetsPresentSkipsWithoutCreatingBackupsOrChangingBytes() passed after 0.891 seconds.
+◇ Test testReplaceAllWithMatchingOffsetsIsANoop() started.
+✔ Test testReplaceAllWithMatchingOffsetsIsANoop() passed after 0.449 seconds.
+◇ Test testFakeJPEGTextIsReportedAsFailedAndNeverBackedUp() started.
+✔ Test testFakeJPEGTextIsReportedAsFailedAndNeverBackedUp() passed after 0.200 seconds.
+◇ Test testExplicitUnsupportedExtensionIsReportedAsSkipped() started.
+✔ Test testExplicitUnsupportedExtensionIsReportedAsSkipped() passed after 0.143 seconds.
+◇ Test testInspectReadsBothFormatsWithoutMutatingOrBackingUpPhotos() started.
+✔ Test testInspectReadsBothFormatsWithoutMutatingOrBackingUpPhotos() passed after 0.811 seconds.
+◇ Test testRestoreWithoutOriginalIsSkippedAndLeavesPhotoUnchanged() started.
+✔ Test testRestoreWithoutOriginalIsSkippedAndLeavesPhotoUnchanged() passed after 0.426 seconds.
+◇ Test testInvalidExistingBackupPreventsWriteAndRestoreFromChangingEitherFile() started.
+✔ Test testInvalidExistingBackupPreventsWriteAndRestoreFromChangingEitherFile() passed after 0.650 seconds.
+◇ Test testNonstandardOffsetIsNeverMistakenForMissing() started.
+✔ Test testNonstandardOffsetIsNeverMistakenForMissing() passed after 0.556 seconds.
+◇ Test testMissingPhotoCanBeDiscoveredAndRecoveredFromBackup() started.
+✔ Test testMissingPhotoCanBeDiscoveredAndRecoveredFromBackup() passed after 0.553 seconds.
+◇ Test testBackupFileCanBeSelectedDirectlyForMissingPhotoRecovery() started.
+✔ Test testBackupFileCanBeSelectedDirectlyForMissingPhotoRecovery() passed after 0.450 seconds.
+◇ Test testReadTimeoutTerminatesAnUnresponsiveChild() started.
+✔ Test testReadTimeoutTerminatesAnUnresponsiveChild() passed after 1.214 seconds.
+◇ Test testInspectedFilesCannotExpandIntoNewDirectoryContents() started.
+✔ Test testInspectedFilesCannotExpandIntoNewDirectoryContents() passed after 0.447 seconds.
+◇ Test testReadCanBeCancelledBeforeStarting() started.
+✔ Test testReadCanBeCancelledBeforeStarting() passed after 0.346 seconds.
+◇ Test testCameraMetadataSurvivesWriteAndBatchRead() started.
+✔ Test testCameraMetadataSurvivesWriteAndBatchRead() passed after 0.982 seconds.
+◇ Test testCopyOutputPreservesSourceTreeBytesAndNonTimezoneMetadata() started.
+✔ Test testCopyOutputPreservesSourceTreeBytesAndNonTimezoneMetadata() passed after 1.591 seconds.
+◇ Test testCopyCollisionFailsClosedAndAnotherPhotoStillCompletes() started.
+✔ Test testCopyCollisionFailsClosedAndAnotherPhotoStillCompletes() passed after 1.159 seconds.
+◇ Test testCopyIncludesAlreadyCompletePhotosWithoutChangingTheirBytes() started.
+✔ Test testCopyIncludesAlreadyCompletePhotosWithoutChangingTheirBytes() passed after 0.448 seconds.
+◇ Test testSonyJPEGStrictRejectsMakerNotesButCompatiblePreservesThumbnailBytes() started.
+✔ Test testSonyJPEGStrictRejectsMakerNotesButCompatiblePreservesThumbnailBytes() passed after 1.158 seconds.
+◇ Test testCopyCancellationLeavesUnprocessedSourcesAndOutputsUntouched() started.
+✔ Test testCopyCancellationLeavesUnprocessedSourcesAndOutputsUntouched() passed after 1.057 seconds.
+◇ Test testCopyDestinationInsideSourceIsRejectedBeforeAnyMutation() started.
+✔ Test testCopyDestinationInsideSourceIsRejectedBeforeAnyMutation() passed after 0.406 seconds.
+◇ Test testCopyFromReadOnlySourceNeverNeedsToWriteAtSource() started.
+✔ Test testCopyFromReadOnlySourceNeverNeedsToWriteAtSource() passed after 0.606 seconds.
+◇ Test testCopyOutputSymlinkCannotEscapeChosenDestination() started.
+✔ Test testCopyOutputSymlinkCannotEscapeChosenDestination() passed after 0.421 seconds.
+◇ Test testPreparedBackupWithoutReplacementLeavesOriginalIntact() started.
+✔ Test testPreparedBackupWithoutReplacementLeavesOriginalIntact() passed after 0.314 seconds.
+◇ Test testBatchedScanContinuesAcrossCorruptAndSpecialNamesWithoutMutation() started.
+✔ Test testBatchedScanContinuesAcrossCorruptAndSpecialNamesWithoutMutation() passed after 1.061 seconds.
+◇ Test testReadOnlyPhotoFailsBeforeAnyBackupOrMutation() started.
+✔ Test testReadOnlyPhotoFailsBeforeAnyBackupOrMutation() passed after 0.434 seconds.
+◇ Test testThousandPhotoScanWriteAndBackupIntegrity() started.
+STRESS_RESULT photos=1000 corrupt=1 scan_seconds=3.334595203399658 write_seconds=39.42870581150055 verified_backups=1000 restored=10
+✔ Test testThousandPhotoScanWriteAndBackupIntegrity() passed after 43.863 seconds.
+◇ Test testThousandCopyOutputsPreserveEverySource() started.
+STRESS_COPY_RESULT photos=1000 copy_seconds=39.24287557601929 sources_unchanged=1000 first_pass_failures=0 retried=0
+✔ Test testThousandCopyOutputsPreserveEverySource() passed after 39.651 seconds.
+◇ Test testSubsecondsAndEveryDateSurviveThreeOffsetWrites() started.
+✔ Test testSubsecondsAndEveryDateSurviveThreeOffsetWrites() passed after 0.856 seconds.
+◇ Test testNumericSnapshotRejectsSubDisplayGPSMutation() started.
+✔ Test testNumericSnapshotRejectsSubDisplayGPSMutation() passed after 0.882 seconds.
+◇ Test testConflictingXMPIsReportedAndNeverRewritten() started.
+✔ Test testConflictingXMPIsReportedAndNeverRewritten() passed after 0.896 seconds.
+◇ Test testSharedXMPAndON1SidecarsAreCopiedOnceAndUnchanged() started.
+✔ Test testSharedXMPAndON1SidecarsAreCopiedOnceAndUnchanged() passed after 0.906 seconds.
+◇ Test testSidecarCollisionDoesNotPublishThePhoto() started.
+✔ Test testSidecarCollisionDoesNotPublishThePhoto() passed after 0.552 seconds.
+◇ Test testInspectedIdentityRejectsAReplacementAtTheSamePath() started.
+✔ Test testInspectedIdentityRejectsAReplacementAtTheSamePath() passed after 0.538 seconds.
+◇ Test testExtremeInvalidOffsetDoesNotCrashOrChangePhoto() started.
+✔ Test testExtremeInvalidOffsetDoesNotCrashOrChangePhoto() passed after 0.444 seconds.
+◇ Test testMissingAssociatedDatesAreNotInvented() started.
+✔ Test testMissingAssociatedDatesAreNotInvented() passed after 0.780 seconds.
+◇ Test testInvalidCalendarDateIsNotSilentlyRepaired() started.
+✔ Test testInvalidCalendarDateIsNotSilentlyRepaired() passed after 0.641 seconds.
+◇ Test testRecoveryBeforePublicationArchivesOnlyTheManifest() started.
+✔ Test testRecoveryBeforePublicationArchivesOnlyTheManifest() passed after 0.337 seconds.
+◇ Test testRecoveryAfterRenameBlocksAutomaticRetry() started.
+✔ Test testRecoveryAfterRenameBlocksAutomaticRetry() passed after 0.581 seconds.
+◇ Test testHardlinksAreDeduplicatedAndOriginalReplacementRejected() started.
+✔ Test testHardlinksAreDeduplicatedAndOriginalReplacementRejected() passed after 0.657 seconds.
+◇ Test testSessionFramesErrorsAndRestartsWithoutStaleOutput() started.
+✔ Test testSessionFramesErrorsAndRestartsWithoutStaleOutput() passed after 1.934 seconds.
+◇ Test testSessionTimeoutAndOversizedOutputFailClosed() started.
+✔ Test testSessionTimeoutAndOversizedOutputFailClosed() passed after 1.183 seconds.
+✔ Suite PhotoEngineTests passed after 119.638 seconds.
+✔ Test run with 78 tests in 6 suites passed after 119.639 seconds.
