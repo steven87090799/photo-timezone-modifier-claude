@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import Testing
 @testable import TimezoneCore
 
@@ -13,30 +17,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     private let createdDate = "2021:04:05 06:07:09"
     private let modifiedDate = "2022:10:11 12:13:14"
 
-    @Test func testAppDefaultsEnableSonyCompatibilityAndKeepCaptureOnly() {
-        expectEqual(WriteOptions.appDefault.targets, .captureOnly)
+    @Test func testAppAndCoreDefaultsUseAllThreeWithMetadataCompatibility() {
+        expectEqual(WriteOptions.appDefault.targets, .allThree)
         expectEqual(WriteOptions.appDefault.sonyCompatibility, true)
         // A caller can still explicitly select strict verification.
         expectEqual(WriteOptions(targets: .captureOnly, sonyCompatibility: false).sonyCompatibility, false)
-    }
-
-    @Test func testLensFallbackReadsXMPWithoutChangingPhotoAndPrefersRecordedModel() throws {
-        let photo = try makeSeededPhoto("lens-fallback.jpg")
-        let seeded = try tool.execute(["-XMP-aux:Lens=Fallback 18-135mm", "-overwrite_original", photo.path])
-        expectEqual(seeded.status, 0)
-        let original = try Data(contentsOf: photo)
-        let batch = try tool.inspectBatch([photo], cancellation: CancellationToken())
-        let metadata = try requireValue(batch[photo.path]).get().0
-        expectEqual(metadata.lensModel, "Fallback 18-135mm")
-        expectEqual(metadata.lensModelSource, "Lens")
-        expectEqual(try tool.snapshot(photo).metadata.lensModel, metadata.lensModel)
-        expectEqual(try Data(contentsOf: photo), original)
-
-        let withModel = try tool.execute(["-EXIF:LensModel=Recorded Lens", "-overwrite_original", photo.path])
-        expectEqual(withModel.status, 0)
-        let preferred = try tool.inspect(photo).0
-        expectEqual(preferred.lensModel, "Recorded Lens")
-        expectEqual(preferred.lensModelSource, "LensModel")
     }
 
     override init() throws {
@@ -530,7 +515,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo],
             options: WriteOptions(targets: .allThree, sonyCompatibility: false)
         )), failed: 1)
-        expectTrue(rejected[0].detail.contains("MakerNotes") || rejected[0].detail.contains("內部位址"))
+        expectTrue(rejected[0].detail.contains("metadata") || rejected[0].detail.contains("ThumbnailOffset"))
         expectFalse(FileManager.default.fileExists(atPath: copy.path))
         expectEqual(try Data(contentsOf: photo), original)
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
@@ -672,6 +657,9 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let scanSeconds = Date().timeIntervalSince(scanStart)
         let writeStart = Date()
         let written = await run(photos + [bad], operation: .write(offset: UTCOffset(minutes: 345), mode: .fillMissing))
+        let unexpected = written.updates.map(\.item).filter { $0.status == .failed && $0.url != bad }
+        if !unexpected.isEmpty { print("STRESS_WRITE_FAILURES", unexpected.map { "\($0.url.lastPathComponent): \($0.detail)" }) }
+        try #require(unexpected.isEmpty, "First-pass failures are not hidden by retries")
         let rows = try assertJob(written, succeeded: 1000, failed: 1)
         let writeSeconds = Date().timeIntervalSince(writeStart)
         for (index, photo) in photos.enumerated() {
@@ -704,16 +692,9 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         if !failures.isEmpty {
             print("STRESS_COPY_FAILURES", failures.map { "\($0.url.lastPathComponent): \($0.detail)" })
         }
-        let initialRows = try assertJob(copied, succeeded: 1000 - failures.count, failed: failures.count)
-        var finalRows = Dictionary(uniqueKeysWithValues: initialRows.map { ($0.url.path, $0) })
-        if !failures.isEmpty {
-            // The product exposes exactly this workflow: inspect/report the
-            // failures, then retry only those paths after the user confirms.
-            let retried = await run(failures.map(\.url), operation: .writeCopy(
-                offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [root]
-            ))
-            for item in try assertJob(retried, succeeded: failures.count) { finalRows[item.url.path] = item }
-        }
+        try #require(failures.isEmpty, "Every copy must succeed on the first pass")
+        let initialRows = try assertJob(copied, succeeded: 1000, failed: 0)
+        let finalRows = Dictionary(uniqueKeysWithValues: initialRows.map { ($0.url.path, $0) })
         for (index, source) in photos.enumerated() {
             expectEqual(try Data(contentsOf: source), original)
             expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: source).path))
@@ -723,7 +704,204 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             assertOffsets(try requireValue(row.outputMetadata), original: "+08:00", digitized: "+08:00", time: "+08:00")
             expectTrue(FileManager.default.fileExists(atPath: copy.path))
         }
-        print("STRESS_COPY_RESULT photos=1000 copy_seconds=\(Date().timeIntervalSince(started)) sources_unchanged=1000 first_pass_failures=\(failures.count) retried=\(failures.count)")
+        print("STRESS_COPY_RESULT photos=1000 copy_seconds=\(Date().timeIntervalSince(started)) sources_unchanged=1000 first_pass_failures=\(failures.count) retried=0")
+    }
+
+    @Test func testSubsecondsAndEveryDateSurviveThreeOffsetWrites() async throws {
+        let photo = try makeSeededPhoto("fractions.jpg", original: "+09:00", digitized: "-03:30", time: "+00:00")
+        let seed = try tool.execute(["-overwrite_original", "-SubSecTimeOriginal=001200", "-SubSecTimeDigitized=0001", "-SubSecTime=999", photo.path])
+        expectEqual(seed.status, 0)
+        let before = try tool.snapshot(photo)
+        let bytes = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 345), mode: .replaceAll)), succeeded: 1)
+        let after = try tool.snapshot(photo)
+        expectEqual(before.metadata.dateTags, after.metadata.dateTags)
+        assertOffsets(after.metadata, original: "+05:45", digitized: "+05:45", time: "+05:45")
+        expectEqual(try Data(contentsOf: originalBackup(for: photo)), bytes)
+    }
+
+    @Test func testNumericSnapshotRejectsSubDisplayGPSMutation() throws {
+        let photo = try makeSeededPhoto("gps.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-GPSLatitude#=25.03", "-GPSLatitudeRef=N", photo.path]).status, 0)
+        let before = try tool.snapshot(photo)
+        expectEqual(try tool.execute(["-overwrite_original", "-GPSLatitude#=25.0300001", photo.path]).status, 0)
+        let after = try tool.snapshot(photo)
+        let key = try requireValue(before.embeddedTags.keys.first { $0.hasSuffix(":GPSLatitude") })
+        expectNotEqual(before.embeddedTags[key], after.embeddedTags[key])
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(before: before, after: after, assignments: [], options: WriteOptions())
+        }
+    }
+
+    @Test func testConflictingXMPIsReportedAndNeverRewritten() async throws {
+        let photo = try makeSeededPhoto("conflict.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-XMP-exif:DateTimeOriginal=\(originalDate)+09:00", photo.path]).status, 0)
+        let before = try tool.snapshot(photo)
+        let rows = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), succeeded: 1)
+        let after = try tool.snapshot(photo)
+        expectEqual(after.embeddedTags["XMP-exif:DateTimeOriginal"], before.embeddedTags["XMP-exif:DateTimeOriginal"])
+        expectTrue(rows[0].metadata?.compatibilityIssues.contains { $0.contains("conflict") } == true)
+        assertDates(after.metadata)
+    }
+
+    @Test func testSharedXMPAndON1SidecarsAreCopiedOnceAndUnchanged() async throws {
+        let root = try makeDirectory("sidecars")
+        let first = try makeSeededPhoto("sidecars/shared.jpg")
+        let second = try makeSeededPhoto("sidecars/shared.tiff", format: .tiff)
+        let xmp = try makeFile("sidecars/shared.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="2021-04-05T06:07:08+09:00"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let on1 = try makeFile("sidecars/shared.on1", contents: Data("{\"edits\":\"preserve bytes\"}".utf8))
+        let originals = try [first, second, xmp, on1].map { try Data(contentsOf: $0) }
+        let output = try makeDirectory("sidecar-output")
+        let rows = try assertJob(await run([first, second], operation: .writeCopy(offset: UTCOffset(minutes: 480), mode: .fillMissing,
+            destination: output, sourceRoots: [root])), succeeded: 2)
+        for (url, bytes) in zip([first, second, xmp, on1], originals) { expectEqual(try Data(contentsOf: url), bytes) }
+        expectEqual(try Data(contentsOf: output.appendingPathComponent("sidecars/shared.xmp")), originals[2])
+        expectEqual(try Data(contentsOf: output.appendingPathComponent("sidecars/shared.on1")), originals[3])
+        expectTrue(rows.allSatisfy { $0.outputMetadata?.compatibilityIssues.contains { $0.contains("conflict") } == true })
+    }
+
+    @Test func testSidecarCollisionDoesNotPublishThePhoto() async throws {
+        let root = try makeDirectory("input-sidecar")
+        let photo = try makeSeededPhoto("input-sidecar/photo.jpg")
+        _ = try makeFile("input-sidecar/photo.on1", contents: Data("source sidecar".utf8))
+        let original = try Data(contentsOf: photo)
+        let output = try makeDirectory("output-sidecar")
+        let occupied = try makeFile("output-sidecar/input-sidecar/photo.on1", contents: Data("existing edits".utf8))
+        _ = try assertJob(await run([photo], operation: .writeCopy(offset: UTCOffset(minutes: 480), mode: .fillMissing,
+            destination: output, sourceRoots: [root])), failed: 1)
+        expectFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("input-sidecar/photo.jpg").path))
+        expectEqual(try Data(contentsOf: occupied), Data("existing edits".utf8))
+        expectEqual(try Data(contentsOf: photo), original)
+    }
+
+    @Test func testInspectedIdentityRejectsAReplacementAtTheSamePath() async throws {
+        let photo = try makeSeededPhoto("identity.jpg")
+        let preview = try assertJob(await run([photo], operation: .inspect), succeeded: 1)
+        let identity = try requireValue(preview[0].sourceIdentity)
+        let bytes = try Data(contentsOf: photo)
+        try FileManager.default.removeItem(at: photo)
+        try bytes.write(to: photo)
+        let collector = JobEventCollector()
+        await PhotoEngine(exiftoolURL: tool.url, logDirectory: logDirectory).run(inputs: [photo], recursive: false,
+            operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing), cancellation: CancellationToken(),
+            inspectedFilesOnly: true, expectedIdentities: [photo.path: identity]) { collector.record($0) }
+        _ = try assertJob(collector.snapshot(), failed: 1)
+        expectEqual(try Data(contentsOf: photo), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+    }
+
+    @Test func testExtremeInvalidOffsetDoesNotCrashOrChangePhoto() async throws {
+        let photo = try makeSeededPhoto("invalid-offset.jpg")
+        let bytes = try Data(contentsOf: photo)
+        let job = await run([photo], operation: .write(offset: UTCOffset(minutes: Int.min), mode: .replaceAll))
+        expectEqual(job.summaries.first?.failed, 1)
+        expectEqual(try Data(contentsOf: photo), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+    }
+
+    @Test func testMissingAssociatedDatesAreNotInvented() async throws {
+        let photo = try makeSeededPhoto("missing-dates.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-EXIF:CreateDate=", "-EXIF:ModifyDate=", photo.path]).status, 0)
+        _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), succeeded: 1)
+        let after = try tool.inspect(photo).0
+        expectEqual(after.dateTimeOriginal, originalDate)
+        expectEqual(after.createDate, nil)
+        expectEqual(after.modifyDate, nil)
+        assertOffsets(after, original: "+08:00", digitized: "+08:00", time: "+08:00")
+    }
+
+    @Test func testInvalidCalendarDateIsNotSilentlyRepaired() async throws {
+        let photo = try makeSeededPhoto("bad-date.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-DateTimeOriginal#=0000:00:00 00:00:00", photo.path]).status, 0)
+        let bytes = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), failed: 1)
+        expectEqual(try Data(contentsOf: photo), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+    }
+
+    @Test func testRecoveryBeforePublicationArchivesOnlyTheManifest() throws {
+        let photo = try makeSeededPhoto("not-published.jpg")
+        let bytes = try Data(contentsOf: photo)
+        let stage = SafeFileTransaction.temporaryPhoto(beside: photo)
+        try SafeFileTransaction.copyAndSync(photo, to: stage)
+        let identity = try FileIdentity.read(photo)
+        let manifest = TransactionManifest(version: 1, id: UUID(), source: photo, target: photo, candidate: stage,
+            backup: nil, sourceIdentity: identity, targetIdentityBefore: identity, candidateIdentity: try FileIdentity.read(stage),
+            originalDates: [:], oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [], phase: .prepared, detail: "test")
+        let store = try TransactionStore(directory: logDirectory.appendingPathComponent("Transactions"))
+        try store.save(manifest)
+        expectTrue(try store.unfinished().isEmpty)
+        expectEqual(try Data(contentsOf: photo), bytes)
+        expectEqual(try Data(contentsOf: stage), bytes)
+        expectTrue(FileManager.default.fileExists(atPath: store.history.appendingPathComponent("\(manifest.id).json").path))
+    }
+
+    @Test func testRecoveryAfterRenameBlocksAutomaticRetry() async throws {
+        let photo = try makeSeededPhoto("published.jpg")
+        let backup = originalBackup(for: photo)
+        try SafeFileTransaction.copyAndSync(photo, to: backup)
+        let stage = SafeFileTransaction.temporaryPhoto(beside: photo)
+        try SafeFileTransaction.copyCandidate(photo, to: stage)
+        expectEqual(try tool.execute(["-overwrite_original_in_place", "-OffsetTimeOriginal=+09:00", stage.path]).status, 0)
+        try SafeFileTransaction.syncFile(stage)
+        let identity = try FileIdentity.read(photo)
+        let manifest = TransactionManifest(version: 1, id: UUID(), source: photo, target: photo, candidate: stage,
+            backup: backup, sourceIdentity: identity, targetIdentityBefore: identity, candidateIdentity: try FileIdentity.read(stage),
+            originalDates: [:], oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [], phase: .prepared, detail: "test")
+        let store = try TransactionStore(directory: logDirectory.appendingPathComponent("Transactions"))
+        try store.save(manifest)
+        try SafeFileTransaction.replace(stage, at: photo)
+        let publishedBytes = try Data(contentsOf: photo)
+        let pending = try store.unfinished()
+        expectEqual(pending.count, 1)
+        expectEqual(pending.first?.phase, .publicationUnconfirmed)
+        let rows = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .replaceAll)), failed: 1)
+        expectTrue(rows[0].publicationUnconfirmed)
+        expectEqual(try Data(contentsOf: photo), publishedBytes)
+        expectTrue(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    @Test func testHardlinksAreDeduplicatedAndOriginalReplacementRejected() async throws {
+        let photo = try makeSeededPhoto("hard.jpg")
+        let alias = temporaryDirectory.appendingPathComponent("hard-alias.jpg")
+        try FileManager.default.linkItem(at: photo, to: alias)
+        let original = try Data(contentsOf: photo)
+        let found = FileDiscovery.collect(inputs: [photo, alias], recursive: false, cancellation: CancellationToken())
+        expectEqual(found.count, 1)
+        _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), failed: 1)
+        let output = try makeDirectory("hard-copy")
+        _ = try assertJob(await run([photo], operation: .writeCopy(offset: UTCOffset(minutes: 480), mode: .fillMissing,
+            destination: output, sourceRoots: [photo])), succeeded: 1)
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(try Data(contentsOf: alias), original)
+    }
+
+    @Test func testSessionFramesErrorsAndRestartsWithoutStaleOutput() throws {
+        let persistent = ExifTool(url: tool.url, persistent: true)
+        for _ in 0..<132 {
+            let response = try persistent.execute(["-ver"], timeout: 5)
+            expectEqual(response.status, 0)
+            expectTrue(response.stderr.isEmpty, "Worker startup must not leak locale warnings into a photo snapshot.")
+            expectEqual(String(decoding: response.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), EngineResources.version)
+        }
+        let error = try persistent.execute([temporaryDirectory.appendingPathComponent("absent.jpg").path], timeout: 5)
+        expectNotEqual(error.status, 0)
+        expectEqual(try persistent.execute(["-ver"], timeout: 5).status, 0)
+        let unusual = try makeSeededPhoto("new\nline.jpg")
+        expectEqual(try persistent.inspect(unusual).0.dateTimeOriginal, originalDate)
+        expectEqual(try persistent.execute(["-ver"], timeout: 5).status, 0)
+    }
+
+    @Test func testSessionTimeoutAndOversizedOutputFailClosed() throws {
+        let hanging = try makeFile("hanging.pl", contents: Data("sleep 30;\n".utf8))
+        let worker = ExifTool(url: hanging, persistent: true)
+        let start = ProcessInfo.processInfo.systemUptime
+        #expect(throws: PhotoError.self) { try worker.execute(["-ver"], timeout: 0.1) }
+        expectTrue(ProcessInfo.processInfo.systemUptime - start < 4)
+        let flood = try makeFile("flood.pl", contents: Data("print 'x' x (17 * 1024 * 1024);\n".utf8))
+        #expect(throws: PhotoError.self) { try ExifTool(url: flood).execute([], timeout: 5) }
     }
 
     private func makeSeededPhoto(

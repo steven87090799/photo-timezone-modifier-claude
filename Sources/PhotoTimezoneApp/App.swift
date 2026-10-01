@@ -17,6 +17,7 @@ struct PhotoTimezoneApp: App {
                 .onOpenURL { model.addInputs([$0]) }
                 .frame(minWidth: 1100, minHeight: 760)
                 .preferredColorScheme(.dark)
+                .sheet(isPresented: $model.showingRecovery) { RecoveryView() }
         }
         .defaultSize(width: 1320, height: 900)
         .windowToolbarStyle(.unified)
@@ -43,6 +44,7 @@ struct PhotoTimezoneApp: App {
             }
             CommandMenu("資訊") {
                 Button("版本與診斷") { model.activePage = .diagnostics }
+                Button("交易復原與人工確認") { model.showingRecovery = true }.disabled(model.isRunning)
             }
         }
     }
@@ -56,638 +58,6 @@ enum ProcessingScope: String, CaseIterable {
     case all = "全部預覽", filtered = "篩選結果", selected = "手動選取"
 }
 
-@MainActor
-final class PhotoViewModel: ObservableObject {
-    @Published private(set) var inputs: [URL] = []
-    @Published private(set) var items: [PhotoItem] = []
-    @Published private(set) var recursive = true
-    @Published private(set) var offset = UTCOffset(minutes: 480)
-    @Published private(set) var mode: WriteMode = .fillMissing
-    @Published private(set) var offsetTargets: OffsetTargets = WriteOptions.appDefault.targets
-    @Published private(set) var sonyCompatibility = WriteOptions.appDefault.sonyCompatibility
-    @Published private(set) var replaceOriginals = false
-    @Published private(set) var notificationsEnabled = false
-    @Published private(set) var outputDirectory: URL?
-    @Published private(set) var isRunning = false
-    @Published private(set) var isCancelling = false
-    @Published private(set) var phase = "加入相片，開始檢查時區"
-    @Published private(set) var completed = 0
-    @Published private(set) var total = 0
-    @Published private(set) var progressSucceeded = 0
-    @Published private(set) var progressFailed = 0
-    @Published private(set) var progressSkipped = 0
-    @Published private(set) var summary: JobSummary?
-    @Published private(set) var reportTitle = "處理報告"
-    @Published var selection: Set<PhotoItem.ID> = []
-    @Published var query = "" { didSet { if query != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var filter: PhotoFilter = .all { didSet { if filter != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var cameraFilter = "" { didSet { if cameraFilter != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var sort: PhotoSort = .filename { didSet { if sort != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var scope: ProcessingScope = .all
-    @Published var activePage: AppPage = .photos
-    @Published var showingOffsetChooser = false
-    @Published private(set) var filteredItems: [PhotoItem] = []
-    @Published private(set) var pageItems: [PhotoItem] = []
-    @Published private(set) var cameras: [(name: String, count: Int)] = []
-    @Published private(set) var pageIndex = 0
-    @Published private(set) var totalBytes: Int64 = 0
-    @Published private(set) var missingOffsetCount = 0
-    @Published private(set) var elapsedSeconds: TimeInterval = 0
-    @Published private(set) var activeScopeCount = 0
-    @Published var notice: PhotoNotice?
-    @Published var dropTargeted = false
-
-    init() {
-        notificationsEnabled = UserDefaults.standard.bool(forKey: "PhotoTimezoneCompletionNotifications")
-    }
-
-    func setNotificationsEnabled(_ value: Bool) {
-        guard value else {
-            notificationsEnabled = false
-            UserDefaults.standard.set(false, forKey: "PhotoTimezoneCompletionNotifications")
-            return
-        }
-        Task { @MainActor in
-            do {
-                let granted = try await UNUserNotificationCenter.current()
-                    .requestAuthorization(options: [.alert, .sound])
-                notificationsEnabled = granted
-                UserDefaults.standard.set(granted, forKey: "PhotoTimezoneCompletionNotifications")
-                if !granted {
-                    notice = .error("無法開啟完成通知", "系統未授權通知；仍可在 App 的進度與報告查看結果。")
-                }
-            } catch {
-                notificationsEnabled = false
-                notice = .error("無法開啟完成通知", error.localizedDescription)
-            }
-        }
-    }
-
-    private func postNotification(title: String, body: String) {
-        guard notificationsEnabled else { return }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        Task { try? await UNUserNotificationCenter.current().add(request) }
-    }
-
-    private struct ScanSignature: Equatable {
-        let paths: [String]
-        let recursive: Bool
-    }
-
-    private var previewSignature: ScanSignature?
-    private var previewFileURLs: [URL] = []
-    private var itemIndices: [UUID: Int] = [:]
-    private var cancellation: CancellationToken?
-    private var activeRunID: UUID?
-    private var jobTask: Task<Void, Never>?
-    private var catalogueTask: Task<Void, Never>?
-    private var clockTask: Task<Void, Never>?
-    private var catalogueNeedsPageReset = false
-    private var importTask: Task<Void, Never>?
-    // Core events may arrive much faster than the UI can render. Only publish
-    // an immutable snapshot at the display cadence, never once per photo.
-    private var bufferedItems: [PhotoItem] = []
-    private var bufferDirty = false
-    private var pendingPhase: String?
-    private var pendingCompleted: Int?
-    private var pendingTotal: Int?
-    private var bufferedSucceeded = 0
-    private var bufferedFailed = 0
-    private var bufferedSkipped = 0
-    private var copySourceRootsForRetry: [URL]?
-
-    private var currentSignature: ScanSignature {
-        ScanSignature(paths: inputs.map(\.path).sorted(), recursive: recursive)
-    }
-
-    var canInspect: Bool { !isRunning && !inputs.isEmpty }
-    var previewIsCurrent: Bool { previewSignature == currentSignature }
-    var canWrite: Bool {
-        canInspect && previewIsCurrent && scopedItems.contains { $0.status == .ready }
-    }
-    var canRestore: Bool { canInspect && previewIsCurrent && !scopedItems.isEmpty }
-    var selectedItem: PhotoItem? { items.first { selection.contains($0.id) } }
-    var pageCount: Int { max(1, (filteredItems.count + PhotoCatalogue.pageSize - 1) / PhotoCatalogue.pageSize) }
-    var scopedItems: [PhotoItem] {
-        switch scope {
-        case .all: return items
-        case .filtered: return filteredItems
-        case .selected: return PhotoCatalogue.selected(items, ids: selection)
-        }
-    }
-    var retryCount: Int { items.filter { PhotoFilter.unfinished.matches($0) }.count }
-    var processingCount: Int { isRunning ? activeScopeCount : scopedItems.count }
-    var estimateText: String {
-        let elapsed = Int(elapsedSeconds)
-        let time = String(format: "%02d:%02d", elapsed / 60, elapsed % 60)
-        guard completed >= 10, total > completed, elapsedSeconds >= 2 else { return "已用 \(time)" }
-        let remaining = Int(elapsedSeconds / Double(completed) * Double(total - completed))
-        return "已用 \(time) · 約剩 \(max(1, (remaining + 59) / 60)) 分鐘"
-    }
-
-    func setPage(_ index: Int) {
-        pageIndex = min(max(index, 0), pageCount - 1)
-        pageItems = PhotoCatalogue.page(filteredItems, index: pageIndex)
-    }
-
-    func selectFiltered() { refreshCatalogue(); selection = Set(filteredItems.map(\.id)); scope = .selected }
-
-    func showFailures() {
-        filter = .failed
-        if let first = items.first(where: { $0.status == .failed }) { selection = [first.id] }
-    }
-
-    func retryUnfinished() {
-        guard !isRunning else { return }
-        let urls = items.filter { PhotoFilter.unfinished.matches($0) }.map(\.url)
-        guard !urls.isEmpty else { return }
-        copySourceRootsForRetry = copySourceRootsForRetry ?? inputs
-        inputs = urls
-        query = ""; filter = .all; cameraFilter = ""; scope = .all
-        invalidatePreview()
-        inspect()
-    }
-
-    private func scheduleCatalogue(resetPage: Bool = false) {
-        catalogueNeedsPageReset = catalogueNeedsPageReset || resetPage
-        guard catalogueTask == nil else { return }
-        catalogueTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            guard !Task.isCancelled, let self else { return }
-            self.refreshCatalogue()
-        }
-    }
-
-    private func refreshCatalogue() {
-        catalogueTask?.cancel(); catalogueTask = nil
-        if bufferDirty {
-            items = bufferedItems
-            bufferDirty = false
-        }
-        if let pendingPhase, !isCancelling { phase = pendingPhase }
-        if let pendingCompleted { completed = pendingCompleted }
-        if let pendingTotal { total = pendingTotal; activeScopeCount = pendingTotal }
-        if progressSucceeded != bufferedSucceeded { progressSucceeded = bufferedSucceeded }
-        if progressFailed != bufferedFailed { progressFailed = bufferedFailed }
-        if progressSkipped != bufferedSkipped { progressSkipped = bufferedSkipped }
-        pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
-        filteredItems = PhotoCatalogue.filtered(items, query: query, filter: filter,
-                                                camera: cameraFilter.isEmpty ? nil : cameraFilter, sort: sort)
-        let counts = Dictionary(grouping: items.compactMap { $0.metadata?.camera }, by: { $0 }).mapValues(\.count)
-        cameras = counts.map { (name: $0.key, count: $0.value) }.sorted { $0.name < $1.name }
-        missingOffsetCount = items.filter { $0.metadata?.missingCaptureOffset == true }.count
-        totalBytes = items.reduce(0) { $0 + ($1.metadata?.fileSize ?? 0) }
-        setPage(catalogueNeedsPageReset ? 0 : pageIndex)
-        catalogueNeedsPageReset = false
-    }
-
-    func setRecursive(_ value: Bool) {
-        guard !isRunning, recursive != value else { return }
-        recursive = value
-        invalidatePreview()
-        if canInspect { inspect() }
-    }
-
-    func setOffset(_ value: UTCOffset) {
-        guard !isRunning, offset != value else { return }
-        offset = value
-    }
-
-    func setMode(_ value: WriteMode) {
-        guard !isRunning, mode != value else { return }
-        mode = value
-    }
-
-    func setOffsetTargets(_ value: OffsetTargets) {
-        guard !isRunning else { return }
-        offsetTargets = value
-    }
-
-    func setSonyCompatibility(_ value: Bool) {
-        guard !isRunning else { return }
-        sonyCompatibility = value
-    }
-
-    func setReplaceOriginals(_ value: Bool) {
-        guard !isRunning else { return }
-        replaceOriginals = value
-    }
-
-    func chooseOutputDirectory(confirmAfterSelection: Bool = false) {
-        guard !isRunning else { return }
-        let panel = NSOpenPanel()
-        panel.title = "選擇副本輸出資料夾"
-        panel.message = "請選獨立於來源的資料夾；不會覆蓋目的地已有的同名檔案。"
-        panel.prompt = "使用此資料夾"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.begin { [weak self] response in
-            Task { @MainActor in
-                guard response == .OK, let selected = panel.url, let self else { return }
-                do {
-                    try CopyDestination.validate(selected, roots: self.copySourceRootsForRetry ?? self.inputs)
-                    self.outputDirectory = selected.standardizedFileURL
-                    if confirmAfterSelection { self.requestWrite() }
-                } catch {
-                    self.notice = .error("無法使用這個輸出資料夾", error.localizedDescription)
-                }
-            }
-        }
-    }
-
-    func addInputs(_ urls: [URL]) {
-        var known = Set(inputs.map(\.path))
-        let additions = urls.filter(\.isFileURL).map(\.standardizedFileURL).filter {
-            known.insert($0.path).inserted
-        }
-        guard !additions.isEmpty else { return }
-        guard !isRunning else { notice = .busyInput; return }
-        copySourceRootsForRetry = nil
-        inputs.append(contentsOf: additions)
-        scope = .all
-        query = ""; filter = .all; cameraFilter = ""
-        invalidatePreview()
-        // Import is read-only: automatically reveal metadata, never write.
-        // Coalesce multiple open-URL events from one Finder drag before starting.
-        importTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            guard !Task.isCancelled else { return }
-            self?.inspect()
-        }
-    }
-
-    func removeInput(_ url: URL) {
-        guard !isRunning else { return }
-        copySourceRootsForRetry = nil
-        inputs.removeAll { $0 == url }
-        invalidatePreview()
-    }
-
-    func clearInputs() {
-        guard !isRunning else { return }
-        copySourceRootsForRetry = nil
-        inputs.removeAll()
-        invalidatePreview()
-    }
-
-    private func invalidatePreview() {
-        importTask?.cancel(); importTask = nil
-        previewSignature = nil
-        previewFileURLs = []
-        items = []
-        bufferedItems = []; bufferDirty = false
-        itemIndices = [:]
-        selection = []
-        bufferedSucceeded = 0
-        bufferedFailed = 0
-        bufferedSkipped = 0
-        refreshCatalogue()
-        // Keep the last report available for export until the next job starts.
-        phase = inputs.isEmpty ? "加入相片，開始檢查時區" : "來源已更新，請先掃描預覽"
-        completed = 0
-        total = 0
-        progressSucceeded = 0
-        progressFailed = 0
-        progressSkipped = 0
-    }
-
-    func chooseInputs() {
-        guard !isRunning else { notice = .busyInput; return }
-        // Resolve the document window before constructing a panel: keyWindow
-        // can refer to a panel instead of the SwiftUI window during transitions.
-        let sourceWindow = NSApp.windows.first { $0.identifier?.rawValue == "main" }
-            ?? NSApp.mainWindow ?? NSApp.keyWindow
-        let panel = NSOpenPanel()
-        panel.title = "加入相片或資料夾"
-        panel.message = "可同時選取多張相片與多個資料夾。加入後自動讀取資訊，不會修改相片。"
-        panel.prompt = "加入"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.canCreateDirectories = false
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            Task { @MainActor in
-                sourceWindow?.makeKeyAndOrderFront(nil)
-                NSApp.activate(ignoringOtherApps: true)
-                if response == .OK { self?.addInputs(panel.urls) }
-            }
-        }
-        // As a sheet, this mixed file/directory chooser can leave "Add"
-        // disabled despite a selected file on current macOS. A standalone
-        // panel validates the same selection correctly.
-        panel.begin(completionHandler: completion)
-    }
-
-    func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard !isRunning else { notice = .busyInput; return true }
-        let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
-        guard !files.isEmpty else { return false }
-        Task { @MainActor [weak self] in
-            var urls: [URL] = []
-            for provider in files {
-                let url: URL? = await withCheckedContinuation { continuation in
-                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                        if let url = item as? URL {
-                            continuation.resume(returning: url)
-                        } else if let data = item as? Data {
-                            continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil))
-                        } else if let string = item as? String {
-                            continuation.resume(returning: URL(string: string))
-                        } else {
-                            continuation.resume(returning: nil)
-                        }
-                    }
-                }
-                if let url, url.isFileURL { urls.append(url) }
-            }
-            guard let self else { return }
-            if self.isRunning {
-                self.notice = .busyInput
-            } else if urls.isEmpty {
-                self.notice = .error("無法讀取拖入的項目", "請拖入本機相片或資料夾，或使用「加入項目」選取。")
-            } else {
-                self.addInputs(urls)
-            }
-        }
-        return true
-    }
-
-    func inspect() {
-        guard canInspect else { return }
-        start(.inspect)
-    }
-
-    func requestWrite() {
-        refreshCatalogue()
-        guard canWrite else { return }
-        if !replaceOriginals && outputDirectory == nil {
-            chooseOutputDirectory(confirmAfterSelection: true)
-            return
-        }
-        if let outputDirectory, !replaceOriginals {
-            do { try CopyDestination.validate(outputDirectory, roots: copySourceRootsForRetry ?? inputs) }
-            catch { notice = .error("無法使用這個輸出資料夾", error.localizedDescription); return }
-        }
-        var placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
-        placement += "\n欄位：\(offsetTargets == .captureOnly ? "只寫 EXIF 拍攝時區 OffsetTimeOriginal" : "寫入三個 EXIF OffsetTime 欄位")。"
-        if sonyCompatibility {
-            placement += "\nSony 相容模式已開啟：允許已驗證的內部位置重排，但無法保證 MakerNotes 私有位元組完全不變。"
-        }
-        notice = .writeConfirmation(scopedItems.count, offset.value, mode == .replaceAll, placement)
-    }
-
-    func confirmReplace() {
-        guard canWrite else { return }
-        let options = WriteOptions(targets: offsetTargets, sonyCompatibility: sonyCompatibility)
-        if replaceOriginals {
-            start(.write(offset: offset, mode: mode, options: options))
-        } else if let outputDirectory {
-            start(.writeCopy(offset: offset, mode: mode, destination: outputDirectory,
-                             sourceRoots: copySourceRootsForRetry ?? inputs, options: options))
-        }
-    }
-
-    func requestRestore() {
-        refreshCatalogue()
-        guard canRestore else { return }
-        notice = .restore
-    }
-
-    func confirmRestore() {
-        guard canRestore else { return }
-        start(.restore)
-    }
-
-    func cancel() {
-        guard isRunning, !isCancelling else { return }
-        isCancelling = true
-        cancellation?.cancel()
-        // Never cancel the task or terminate ExifTool; the engine finishes the current photo.
-        phase = "正在完成目前相片，之後取消剩餘工作…"
-    }
-
-    func requestClose() {
-        notice = .busyClose
-    }
-
-    private func start(_ operation: JobOperation) {
-        guard !isRunning, !inputs.isEmpty else { return }
-        let engineURL: URL
-        do {
-            engineURL = try EngineResources.exiftoolURL()
-        } catch {
-            notice = .error("無法啟動相片處理工具", "找不到或無法使用 App 內附的 ExifTool。請確認 App 已完整安裝。\n\n\(error.localizedDescription)")
-            return
-        }
-
-        let runID = UUID()
-        let signature = currentSignature
-        let jobInputs: [URL]
-        let includeSubfolders: Bool
-        switch operation {
-        case .inspect:
-            jobInputs = inputs
-            includeSubfolders = recursive
-        case .write, .writeCopy, .restore:
-            guard previewIsCurrent, !previewFileURLs.isEmpty else { return }
-            // Freeze the exact inspected files, including failed files for per-file reporting.
-            // Never rescan the originally selected folders during a mutating operation.
-            let inspectedPaths = Set(previewFileURLs.map(\.path))
-            jobInputs = scopedItems.map(\.url).filter { inspectedPaths.contains($0.path) }
-            guard !jobInputs.isEmpty else { return }
-            includeSubfolders = false
-        }
-        let token = CancellationToken()
-        activeRunID = runID
-        cancellation = token
-        previewSignature = nil
-        previewFileURLs = []
-        summary = nil
-        items = []
-        bufferedItems = []; bufferDirty = false
-        pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
-        itemIndices = [:]
-        selection = []
-        bufferedSucceeded = 0
-        bufferedFailed = 0
-        bufferedSkipped = 0
-        refreshCatalogue()
-        completed = 0
-        total = 0
-        progressSucceeded = 0
-        progressFailed = 0
-        progressSkipped = 0
-        isCancelling = false
-        isRunning = true
-        activeScopeCount = jobInputs.count
-        elapsedSeconds = 0
-        let startedAt = Date()
-        clockTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard !Task.isCancelled else { break }
-                self?.elapsedSeconds = Date().timeIntervalSince(startedAt)
-            }
-        }
-        switch operation {
-        case .inspect:
-            reportTitle = "掃描報告"
-            phase = "正在尋找相片並讀取 EXIF…"
-        case .write:
-            reportTitle = "替換原檔報告"
-            phase = "正在準備替換原檔…"
-        case .writeCopy:
-            reportTitle = "副本輸出報告"
-            phase = "正在準備輸出副本…"
-        case .restore:
-            reportTitle = "還原報告"
-            phase = "正在尋找原始備份…"
-        }
-        if notificationsEnabled {
-            switch operation {
-            case .inspect: break
-            default: postNotification(title: "相片時區處理開始", body: "正在處理 \(jobInputs.count) 張；請在 App 查看進度。")
-            }
-        }
-
-        // A single ordered stream keeps discovery, row updates and the final report in order.
-        let (events, continuation) = AsyncStream<JobEvent>.makeStream()
-        let worker = Task.detached(priority: .userInitiated) {
-            await PhotoEngine(exiftoolURL: engineURL).run(
-                inputs: jobInputs,
-                recursive: includeSubfolders,
-                operation: operation,
-                cancellation: token,
-                inspectedFilesOnly: { if case .inspect = operation { return false }; return true }(),
-                onEvent: { continuation.yield($0) }
-            )
-            continuation.finish()
-        }
-        jobTask = Task { @MainActor [weak self] in
-            for await event in events {
-                self?.receive(event, runID: runID)
-            }
-            await worker.value
-            self?.finish(operation, signature: signature, runID: runID, token: token)
-        }
-    }
-
-    private func receive(_ event: JobEvent, runID: UUID) {
-        guard activeRunID == runID else { return }
-        switch event {
-        case .discovered(let photos):
-            // Upsert also tolerates engines that discover in batches.
-            for photo in photos { upsert(photo) }
-            pendingTotal = bufferedItems.count
-        case .updated(let photo, let done, let count):
-            upsert(photo)
-            pendingCompleted = done
-            pendingTotal = count
-            switch photo.status {
-            case .ready, .success: bufferedSucceeded += 1
-            case .failed: bufferedFailed += 1
-            case .skipped: bufferedSkipped += 1
-            case .pending, .cancelled: break
-            }
-        case .phase(let text):
-            if !isCancelling { pendingPhase = text; scheduleCatalogue() }
-        case .finished(let result):
-            refreshCatalogue()
-            summary = result
-            total = result.total
-            bufferedSucceeded = result.succeeded
-            bufferedFailed = result.failed
-            bufferedSkipped = result.skipped
-            progressSucceeded = result.succeeded
-            progressFailed = result.failed
-            progressSkipped = result.skipped
-        }
-    }
-
-    private func upsert(_ photo: PhotoItem) {
-        if let index = itemIndices[photo.id] {
-            bufferedItems[index] = photo
-        } else {
-            itemIndices[photo.id] = bufferedItems.count
-            bufferedItems.append(photo)
-        }
-        bufferDirty = true
-        scheduleCatalogue()
-    }
-
-    private func finish(_ operation: JobOperation, signature: ScanSignature, runID: UUID, token: CancellationToken) {
-        guard activeRunID == runID else { return }
-        let wasCancelled = token.isCancelled || (summary?.cancelled ?? 0) > 0
-        if case .inspect = operation, !wasCancelled, let summary,
-           completed >= summary.total, signature == currentSignature, !items.isEmpty,
-           !items.contains(where: { $0.status == .pending }) {
-            previewSignature = signature
-            // Directory rows can report discovery failures; they are not file inputs.
-            previewFileURLs = items.filter { !$0.url.hasDirectoryPath }.map(\.url)
-        }
-        isRunning = false
-        clockTask?.cancel(); clockTask = nil
-        refreshCatalogue()
-        if selection.isEmpty, let first = pageItems.first { selection = [first.id] }
-        isCancelling = false
-        cancellation = nil
-        activeRunID = nil
-        jobTask = nil
-        if summary == nil {
-            phase = "工作已結束，但未收到完整報告"
-            notice = .error("未收到處理報告", "請重新掃描相片，確認狀態後再繼續。")
-        } else if wasCancelled {
-            phase = "已取消剩餘工作；已完成的相片不會回復"
-        } else if previewIsCurrent {
-            phase = "預覽完成，請確認時區與寫入方式"
-        } else {
-            phase = "工作完成；再次寫入前請重新掃描預覽"
-        }
-        if let summary {
-            switch operation {
-            case .inspect: break
-            default:
-                postNotification(title: "相片時區處理完成",
-                                 body: "成功 \(summary.succeeded) 張、失敗 \(summary.failed) 張、略過 \(summary.skipped) 張。")
-            }
-        }
-    }
-
-    func exportLog() {
-        guard !isRunning, let source = summary?.logURL else { return }
-        let panel = NSSavePanel()
-        panel.title = "匯出處理記錄"
-        panel.prompt = "匯出"
-        panel.nameFieldStringValue = source.lastPathComponent
-        panel.canCreateDirectories = true
-        if let type = UTType(filenameExtension: source.pathExtension) {
-            panel.allowedContentTypes = [type]
-        }
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard response == .OK, let destination = panel.url else { return }
-            Task { @MainActor in
-                do {
-                    guard source.standardizedFileURL != destination.standardizedFileURL else { return }
-                    // Atomic copying preserves an existing destination if writing fails.
-                    try Data(contentsOf: source).write(to: destination, options: .atomic)
-                } catch {
-                    self?.notice = .error("無法匯出記錄", error.localizedDescription)
-                }
-            }
-        }
-        if let window = NSApp.keyWindow {
-            panel.beginSheetModal(for: window, completionHandler: completion)
-        } else {
-            panel.begin(completionHandler: completion)
-        }
-    }
-}
 
 enum PhotoNotice: Identifiable {
     case writeConfirmation(Int, String, Bool, String)
@@ -715,8 +85,6 @@ private struct PhotoMainView: View {
             header
             Divider()
             if model.activePage == .photos {
-                sonyModeBanner
-                Divider()
                 HStack(alignment: .top, spacing: 0) {
                     settings
                         .frame(width: 290)
@@ -765,7 +133,7 @@ private struct PhotoMainView: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("相片時區修改器").font(.title2.bold())
-                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.4.2")
+                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.5.0")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
                 Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
@@ -794,30 +162,6 @@ private struct PhotoMainView: View {
         .controlSize(.large)
         .padding(.horizontal, 24)
         .padding(.vertical, 18)
-    }
-
-    private var sonyModeBanner: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Label(model.sonyCompatibility ? "Sony 相容模式：已開啟（預設）" : "Sony 嚴格模式：相容模式已關閉",
-                      systemImage: model.sonyCompatibility ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                    .font(.headline)
-                    .foregroundStyle(model.sonyCompatibility ? Color.green : Color.orange)
-                    .accessibilityIdentifier("sonyModeStatus")
-                Text(model.sonyCompatibility
-                     ? "允許已知內部位置重排；仍核對影像、拍攝時間與可讀資訊。未知 MakerNotes 位元組可能變動。"
-                     : "Sony 照片即使只補時區，也可能因內部位置或 MakerNotes 變動而被拒絕。需要相容模式可開啟右側開關。")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            Toggle("Sony 相容模式", isOn: Binding(get: { model.sonyCompatibility }, set: model.setSonyCompatibility))
-                .toggleStyle(.switch).tint(.green)
-                .disabled(model.isRunning)
-                .accessibilityIdentifier("sonyCompatibilityPrimaryToggle")
-        }
-        .padding(.horizontal, 24).padding(.vertical, 12)
-        .background((model.sonyCompatibility ? Color.green : Color.orange).opacity(0.09))
     }
 
     private var settings: some View {
@@ -852,13 +196,13 @@ private struct PhotoMainView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeading("03", "選擇寫入方式")
                     Picker("寫入欄位", selection: Binding(get: { model.offsetTargets }, set: model.setOffsetTargets)) {
-                        Text("只寫拍攝時區（建議）").tag(OffsetTargets.captureOnly)
-                        Text("三個時區欄位（進階）").tag(OffsetTargets.allThree)
+                        Text("只寫拍攝時區（進階）").tag(OffsetTargets.captureOnly)
+                        Text("三個 EXIF 時區欄位（預設）").tag(OffsetTargets.allThree)
                     }
                     .pickerStyle(.radioGroup)
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("offsetTargetsPicker")
-                    Text("預設只補 EXIF OffsetTimeOriginal；DateTimeOriginal 的鐘點不加減。三個欄位各有不同用途，只有確認其時間都適用同一偏移時才選進階。")
+                    Text("預設處理 OffsetTimeOriginal、OffsetTimeDigitized、OffsetTime；對應的拍攝、數位化、修改日期與次秒全部保留。不會補造原本不存在的日期。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Picker("寫入方式", selection: Binding(get: { model.mode }, set: model.setMode)) {
@@ -881,7 +225,7 @@ private struct PhotoMainView: View {
                     ))
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("sonyCompatibilityToggle")
-                    Text("只在 Sony 候選副本中容許已知的內部位置重排；仍逐張核對主影像、相關預覽／縮圖和可讀欄位。MakerNotes 原始位元組可能變動，無法保證私有資料逐位元不變。關閉可使用嚴格模式；建議先選副本輸出測試。")
+                    Text("僅核對可讀中繼資料，不執行影像或整檔 HASH。Sony 相容模式只容許白名單中的位置指標調整；無法保證影像或 MakerNotes 私有位元組完全不變。備份與安全提交仍保留。")
                         .font(.caption)
                         .foregroundStyle(model.sonyCompatibility ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1163,13 +507,6 @@ private struct PhotoMainView: View {
                     .help(item.metadata?.camera ?? "")
             }
             .width(min: 85, ideal: 125, max: 160)
-            TableColumn("鏡頭") { item in
-                Text(item.metadata?.lensModel ?? "未記錄／無法辨識")
-                    .font(.caption).lineLimit(1).truncationMode(.middle)
-                    .help([item.metadata?.lensModel, item.metadata?.lensInfo, item.metadata?.lensModelSource]
-                        .compactMap { $0 }.joined(separator: " · "))
-            }
-            .width(min: 100, ideal: 175, max: 250)
             TableColumn("原始拍攝時間") { item in
                 Text(display(item.metadata?.dateTimeOriginal))
                     .font(.system(.caption, design: .monospaced))
@@ -1210,19 +547,19 @@ private struct PhotoMainView: View {
                 Text(item.metadata?.fileType ?? "格式待確認").font(.caption).foregroundStyle(.secondary)
             }
             HStack(alignment: .top, spacing: 14) {
-                PhotoThumbnail(url: item.url)
+                PhotoThumbnail(url: item.url, revision: item.transactionID, allowDecode: !model.isRunning)
                     .frame(width: 140, height: 105)
                 VStack(alignment: .leading, spacing: 7) {
                     Text(item.metadata?.camera ?? "未知相機").font(.headline)
                     if let serial = item.metadata?.cameraSerialNumber {
                         Text("相機序號：\(serial)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
-                    Text("鏡頭：\(item.metadata?.lensModel ?? "未記錄／無法辨識")")
-                        .font(.callout.weight(.medium)).textSelection(.enabled)
-                        .accessibilityIdentifier("photoLensModel")
+                    Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄").font(.caption).foregroundStyle(.secondary)
                     if let source = item.metadata?.lensModelSource {
-                        Text("鏡頭資訊來源：\(source)\(item.metadata?.lensInfo.map { " · \($0)" } ?? "")")
-                            .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text("鏡頭資訊來源：\(source)").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let info = item.metadata?.lensInfo {
+                        Text(info).font(.caption2).foregroundStyle(.secondary)
                     }
                     Text("ISO \(item.metadata?.iso ?? "—")  ·  \(item.metadata?.exposureTime ?? "—") 秒  ·  f/\(item.metadata?.aperture ?? "—")  ·  \(item.metadata?.focalLength ?? "焦距未記錄")")
                         .font(.caption).textSelection(.enabled)
@@ -1232,8 +569,12 @@ private struct PhotoMainView: View {
                         .font(.caption.monospaced()).textSelection(.enabled)
                 }
                 Spacer(minLength: 0)
-                Button("快速查看") { NSWorkspace.shared.open(item.url) }
-                    .controlSize(.small).help("用系統預設程式開啟原檔；本 App 不會修改它。")
+                Button("以預設程式開啟") { NSWorkspace.shared.open(item.url) }
+                    .controlSize(.small).disabled(model.isRunning)
+                    .help("外部編輯器可能修改原檔或伴隨檔；這不是唯讀預覽。")
+            }
+            if let issues = item.metadata?.compatibilityIssues, !issues.isEmpty {
+                Text(issues.joined(separator: "\n")).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
             }
             HStack(alignment: .top, spacing: 18) {
                 metadataField("拍攝時區", tag: "OffsetTimeOriginal", value: item.metadata?.offsetOriginal)
@@ -1242,7 +583,7 @@ private struct PhotoMainView: View {
             }
             if let output = item.outputURL, let outputMetadata = item.outputMetadata {
                 Divider()
-                Text("輸出副本的時區 · 來源保持不變")
+                Text(item.publicationUnconfirmed ? "已發布，待確認同步或伴隨檔狀態" : (output == item.url ? "原檔已替換；備份保留" : "副本時區 · 來源保持不變"))
                     .font(.caption.weight(.semibold)).foregroundStyle(.green)
                 HStack(alignment: .top, spacing: 18) {
                     metadataField("拍攝時區", tag: "OffsetTimeOriginal", value: outputMetadata.offsetOriginal)

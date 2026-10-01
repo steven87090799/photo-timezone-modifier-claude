@@ -19,6 +19,7 @@ public struct PhotoMetadata: Codable, Sendable {
     public var lensModel: String? = nil
     public var lensModelSource: String? = nil
     public var lensInfo: String? = nil
+    public var compatibilityIssues: [String] = []
     public var iso: String? = nil
     public var exposureTime: String? = nil
     public var aperture: String? = nil
@@ -32,9 +33,9 @@ public struct PhotoMetadata: Codable, Sendable {
         return "\(imageWidth) × \(imageHeight)"
     }
     public var missingOffsets: Bool {
-        offsetOriginal == nil || offsetDigitized == nil || offsetTime == nil
+        !TimeValidation.isOffset(offsetOriginal) || !TimeValidation.isOffset(offsetDigitized) || !TimeValidation.isOffset(offsetTime)
     }
-    public var missingCaptureOffset: Bool { offsetOriginal == nil }
+    public var missingCaptureOffset: Bool { !TimeValidation.isOffset(offsetOriginal) }
 }
 
 public struct PhotoItem: Identifiable, Codable, Sendable {
@@ -45,6 +46,10 @@ public struct PhotoItem: Identifiable, Codable, Sendable {
     public var metadata: PhotoMetadata?
     public var outputURL: URL? = nil
     public var outputMetadata: PhotoMetadata? = nil
+    public var sourceIdentity: FileIdentity? = nil
+    public var transactionID: UUID? = nil
+    public var publicationUnconfirmed: Bool = false
+    public var backupURL: URL? = nil
 
     public init(url: URL, status: PhotoStatus = .pending, detail: String = "") {
         self.id = UUID()
@@ -66,14 +71,16 @@ public struct WriteOptions: Sendable {
     public let targets: OffsetTargets
     public let sonyCompatibility: Bool
 
-    /// User-facing defaults; legacy programmatic callers remain unchanged.
-    public static let appDefault = WriteOptions(targets: .captureOnly, sonyCompatibility: true)
+    /// The GUI and API share exactly the same policy. Existing values are
+    /// retained by fillMissing; replaceAll changes offsets, never timestamps.
+    public static let appDefault = WriteOptions()
 
-    // Existing programmatic callers retain their three-tag behavior. The App
-    // explicitly selects captureOnly by default for new user-facing jobs.
-    public init(targets: OffsetTargets = .allThree, sonyCompatibility: Bool = false) {
+    public let copySidecars: Bool
+    public init(targets: OffsetTargets = .allThree, sonyCompatibility: Bool = true,
+                copySidecars: Bool = true) {
         self.targets = targets
         self.sonyCompatibility = sonyCompatibility
+        self.copySidecars = copySidecars
     }
 }
 
@@ -83,7 +90,7 @@ public struct UTCOffset: Identifiable, Hashable, Sendable {
     public init(minutes: Int) { self.minutes = minutes }
     public var isValid: Bool { (-720...840).contains(minutes) && minutes % 15 == 0 }
     public var value: String {
-        String(format: "%@%02d:%02d", minutes < 0 ? "-" : "+", abs(minutes) / 60, abs(minutes) % 60)
+        String(format: "%@%02llu:%02llu", minutes < 0 ? "-" : "+", UInt64(minutes.magnitude / 60), UInt64(minutes.magnitude % 60))
     }
     public var label: String { "UTC\(value)" }
     // Every quarter hour, including half-hour and 45-minute offsets.

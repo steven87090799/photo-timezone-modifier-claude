@@ -60,7 +60,7 @@ struct DiagnosticsView: View {
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
                     detail("可處理格式", "JPEG、TIFF、Sony ARW；僅補寫時區，不轉換原格式")
-                    Text("3.4.2：頂部常駐 Sony 模式狀態與開關、清單直接顯示鏡頭、鏡頭欄位回退與資訊來源。\n3.4.1：Sony 相容模式預設開啟，保留嚴格模式開關與逐張驗證。\n3.4：預設只補 EXIF 拍攝時區，不加減拍攝鐘點。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
+                    Text("3.5：三欄時區、中繼資料驗證、有界記憶體與交易復原記錄。\n3.4.1：Sony 相容模式預設開啟，保留嚴格模式開關與逐張驗證。\n3.4：預設只補 EXIF 拍攝時區，不加減拍攝鐘點。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -69,7 +69,7 @@ struct DiagnosticsView: View {
                     detail("目前狀態", model.isRunning ? model.phase : "閒置；沒有正在執行的寫入")
                     detail("已加入來源", "\(model.inputs.count) 個；目前清單 \(model.items.count) 張")
                     detail("輸出方式", model.replaceOriginals ? "替換原檔（先留備份）" : "輸出副本（保留來源）")
-                    detail("Sony 驗證模式", model.sonyCompatibility ? "相容模式（預設）；允許已知位置重排與 MakerNotes 位元組差異" : "嚴格模式；拒絕不允許的位置或 MakerNotes 變動")
+                    detail("Sony 驗證模式", model.sonyCompatibility ? "相容模式（預設）；僅允許已知位置指標重排；不做影像 HASH" : "嚴格模式；拒絕 Sony 特例位置調整；僅核對可讀欄位")
                     if let summary = model.summary {
                         detail("最近報告", "完成 \(summary.succeeded)、略過 \(summary.skipped)、失敗 \(summary.failed)、取消 \(summary.cancelled)")
                     }
@@ -86,7 +86,7 @@ struct DiagnosticsView: View {
                 }
 
                 section("安全界線", symbol: "checkmark.shield") {
-                    Text("寫入前先製作候選檔並核對可讀中繼資料與檔案屬性。Sony 相容模式會核對主影像與涉及重排的預覽／縮圖，容許已知位置重排及 MakerNotes 位元組差異；關閉時採嚴格模式。核對失敗仍拒絕該張。替換原檔模式先保留備份，再原子提交。")
+                    Text("三個 EXIF 時區欄位為預設處理對象，不改日期或次秒。僅比對可讀中繼資料與檔案屬性；不計算照片 HASH，不宣稱影像或私有位元組全同。備份、候選副本與提交前交易記錄仍保留。")
                     Text("ExifTool 可能重排檔案內部位址；軟體無法保證磁碟故障、突然斷電或未知相機私有資料下絕對零風險。正式處理前請保留另一份獨立備份。")
                         .foregroundStyle(.secondary)
                 }

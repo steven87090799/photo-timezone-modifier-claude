@@ -11,11 +11,15 @@ public enum FileDiscovery {
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .isPackageKey]
         var items: [PhotoItem] = []
         var seen = Set<String>()
+        var fileIdentities = Set<String>()
         var visited = 0
 
         func add(_ url: URL, status: PhotoStatus = .pending, detail: String = "") {
             let normalized = url.standardizedFileURL
             guard seen.insert(normalized.path).inserted else { return }
+            if status == .pending, let identity = try? FileIdentity.read(normalized) {
+                guard fileIdentities.insert("\(identity.device):\(identity.inode)").inserted else { return }
+            }
             items.append(PhotoItem(url: normalized, status: status, detail: detail))
         }
 
@@ -52,9 +56,13 @@ public enum FileDiscovery {
             let input = input.standardizedFileURL
             do {
                 let values = try input.resourceValues(forKeys: keys)
-                if values.isDirectory == true && values.isSymbolicLink != true && values.isPackage != true {
+                if values.isDirectory == true && values.isSymbolicLink != true {
                     guard allowDirectories else {
                         add(input, status: .failed, detail: "掃描後檔案已變成資料夾；請重新掃描預覽。")
+                        continue
+                    }
+                    if values.isPackage == true {
+                        add(input, status: .skipped, detail: "Package directories are not supported.")
                         continue
                     }
                     var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
