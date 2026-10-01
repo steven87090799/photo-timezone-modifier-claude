@@ -12,6 +12,12 @@ on:
 permissions:
   contents: read
 
+# Keep only the newest run for each PR/ref. Without this, slower stale commits can
+# finish after a newer successful commit and leave misleading red runs in Actions.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   portable-tests:
     runs-on: ubuntu-latest
