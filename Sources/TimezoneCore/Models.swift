@@ -16,14 +16,39 @@ public struct PhotoMetadata: Codable, Sendable {
     public var make: String? = nil
     public var cameraModel: String? = nil
     public var cameraSerialNumber: String? = nil
+    public var bodySerialNumber: String? = nil
+    public var lensMake: String? = nil
     public var lensModel: String? = nil
     public var lensModelSource: String? = nil
     public var lensInfo: String? = nil
+    public var lensSerialNumber: String? = nil
     public var compatibilityIssues: [String] = []
+
+    // Important EXIF preview fields. These are read-only display values; the
+    // write pipeline still authorizes only the three OffsetTime* tags.
+    public var subSecTimeOriginal: String? = nil
+    public var subSecTimeDigitized: String? = nil
+    public var subSecTime: String? = nil
     public var iso: String? = nil
     public var exposureTime: String? = nil
     public var aperture: String? = nil
+    public var exposureProgram: String? = nil
+    public var exposureCompensation: String? = nil
+    public var meteringMode: String? = nil
+    public var flash: String? = nil
     public var focalLength: String? = nil
+    public var focalLength35mm: String? = nil
+    public var whiteBalance: String? = nil
+    public var sceneCaptureType: String? = nil
+    public var orientation: String? = nil
+    public var colorSpace: String? = nil
+    public var software: String? = nil
+    public var mimeType: String? = nil
+    public var gpsLatitude: String? = nil
+    public var gpsLongitude: String? = nil
+    public var gpsAltitude: String? = nil
+    public var gpsDateStamp: String? = nil
+    public var gpsTimeStamp: String? = nil
     public var imageWidth: String? = nil
     public var imageHeight: String? = nil
     public var fileSize: Int64? = nil
