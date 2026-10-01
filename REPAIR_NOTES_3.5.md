@@ -99,3 +99,47 @@ was rejected. Scan: 3.335 s; writing: 39.429 s. A separate 1,000-copy run took
 39.243 s with all 1,000 sources byte-checked unchanged and no retries. These
 fixtures are tiny; the numbers do not predict RAW throughput on a Mac.
 See docs/validation-3.5.json and docs/tests-linux-3.5.log.
+
+## PR #2 review follow-up (native macOS, 2026-10-01)
+
+Review reproduced these defects and corrected them:
+
+- **P1, macOS copy hangs:** Darwin directory URLs can produce `/..` after deleting
+  the last path component of `/`. DestinationPlan only compared parent equality,
+  causing an unbounded loop and a saturated CPU in both timezone and GPS copy
+  output. A sampled live test runner located the loop in DestinationPlan.output.
+  Stop explicitly at filesystem root. Direct file/directory mapping and the
+  existing end-to-end copy/GPS tests now pass. The earlier assumption that this
+  was a SwiftPM runner problem was incorrect. CI now runs the full native suite.
+- **P1, incomplete GPS detection:** partial EXIF/XMP GPS tags (for example speed
+  or image direction) and structured IPTC XMP location fields also count as
+  existing GPS. Detect the complete EXIF GPS group and flattened/structured XMP
+  GPS fields. Regressions prove insertion is skipped without changing photo or
+  sidecar bytes or creating an original backup.
+- **P1, unreliable XMP diagnosis:** a JPEG renamed `.xmp` previously returned
+  successful empty selected-tag JSON and could permit GPS insertion. Require
+  actual XMP file type and warning/error-free parsing to establish GPS absence.
+- **P2, rescan:** inspection establishes a new file identity after external edits;
+  mutations still reject a changed identity from the approved preview.
+- **P2, journal compatibility:** persist the unknown-GPS flag and complete EXIF
+  GPS-presence flag; old reports without these fields remain decodable.
+- **P2, sidecar races:** re-enumerate the recognized sidecar set immediately before
+  publication, rejecting additions/removals as well as the existing source identity
+  checks. This narrows the race; it does not certify hostile concurrent writers.
+- **Build compatibility:** RecoveryView uses the project's existing StateObject /
+  ObservableObject pattern. Bare State attributes failed with the macOS 27 CLT
+  toolchain because it lacks SwiftUIMacros; the replacement compiles natively.
+
+Local macOS 27 / Swift 6.4 full regression result: 88 discovered tests in six
+suites, 86 passed and two opt-in thousand-photo stress tests skipped, 21.409 s.
+This includes five new review regressions and real pinned ExifTool fixture I/O.
+All photos used here were generated fixtures or bundled vendor test samples;
+user photos were not modified. Build/test artifacts were staged outside the
+FileProvider-managed Documents directory to avoid its injected FinderInfo xattr
+breaking ad-hoc signature validation. This is a local build-environment limitation.
+
+The three-offset contract, no clock/date changes, metadata-only production
+verification, copy defaults and backup/publication safeguards are preserved.
+Real camera RAW/application acceptance, power-loss behavior and Intel hardware
+execution remain unverified by these fixture tests. Prior Linux stress results
+above are historical and were not rerun for this follow-up.

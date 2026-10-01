@@ -40,43 +40,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Core unit tests
-        timeout-minutes: 5
+      - name: Full native regression suite
+        timeout-minutes: 10
         env:
           PHOTO_TIMEZONE_STRESS: '0'
-        run: |
-          ./scripts/test.sh --filter UTCOffsetTests
-          ./scripts/test.sh --filter OffsetGuideTests
-          ./scripts/test.sh --filter PhotoCatalogueTests
-          ./scripts/test.sh --filter CoreRegressionTests
-
-      - name: File discovery tests
-        timeout-minutes: 5
-        env:
-          PHOTO_TIMEZONE_STRESS: '0'
-        run: ./scripts/test.sh --filter FileDiscoveryTests
-
-      - name: ExifTool persistent transport smoke test
-        timeout-minutes: 3
-        env:
-          PHOTO_TIMEZONE_STRESS: '0'
-        run: ./scripts/test.sh --filter testPinnedExifToolVersionAndPersistentTransportStarts
-
-      - name: Critical photo write tests
-        timeout-minutes: 8
-        env:
-          PHOTO_TIMEZONE_STRESS: '0'
-        run: |
-          ./scripts/test.sh --filter testFillMissingPreservesExistingOriginalOffsetAndFillsOtherTwoTags
-          ./scripts/test.sh --filter testReplaceAllChangesEveryOffsetButPreservesEveryDate
-          ./scripts/test.sh --filter testSubsecondsAndEveryDateSurviveThreeOffsetWrites
-          ./scripts/test.sh --filter testNumericSnapshotRejectsSubDisplayGPSMutation
-          ./scripts/test.sh --filter testConflictingXMPIsReportedAndNeverRewritten
-          # The full manual-GPS transaction bundle is covered by portable-tests.
-          # macOS validates the production code path via the same core build,
-          # critical write tests, and the universal app build below. A separate
-          # filtered GPS job is intentionally avoided because current macOS
-          # SwiftPM runners can leave swiftpm-testing orphaned after Build complete.
+        run: ./scripts/test.sh
 
       - name: Build universal app
         timeout-minutes: 8

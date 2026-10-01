@@ -13,7 +13,7 @@ extension PhotoMetadata {
         case orientation, colorSpace, software, mimeType
         case gpsVersionID, gpsLatitude, gpsLatitudeRef, gpsLongitude, gpsLongitudeRef
         case gpsAltitude, gpsAltitudeRef, gpsDateStamp, gpsTimeStamp
-        case embeddedXMPGPSDetected, sidecarGPSDetected
+        case embeddedEXIFGPSDetected, embeddedXMPGPSDetected, sidecarGPSDetected, gpsSafetyUncertain
         case imageWidth, imageHeight, fileSize
     }
 
@@ -67,8 +67,10 @@ extension PhotoMetadata {
         gpsAltitudeRef = try values.decodeIfPresent(String.self, forKey: .gpsAltitudeRef)
         gpsDateStamp = try values.decodeIfPresent(String.self, forKey: .gpsDateStamp)
         gpsTimeStamp = try values.decodeIfPresent(String.self, forKey: .gpsTimeStamp)
+        embeddedEXIFGPSDetected = try values.decodeIfPresent(Bool.self, forKey: .embeddedEXIFGPSDetected) ?? false
         embeddedXMPGPSDetected = try values.decodeIfPresent(Bool.self, forKey: .embeddedXMPGPSDetected) ?? false
         sidecarGPSDetected = try values.decodeIfPresent(Bool.self, forKey: .sidecarGPSDetected) ?? false
+        gpsSafetyUncertain = try values.decodeIfPresent(Bool.self, forKey: .gpsSafetyUncertain) ?? false
 
         imageWidth = try values.decodeIfPresent(String.self, forKey: .imageWidth)
         imageHeight = try values.decodeIfPresent(String.self, forKey: .imageHeight)

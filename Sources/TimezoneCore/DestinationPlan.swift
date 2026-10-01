@@ -29,6 +29,10 @@ final class DestinationPlan {
                 try identity.verify(cursor)
                 match = cursor
             }
+            // Darwin Foundation may append /.. when deleting the last
+            // component of a directory URL at root. Stop before that call;
+            // comparing parent == cursor alone can loop forever on macOS.
+            if cursor.path == "/" { break }
             let parent = cursor.deletingLastPathComponent()
             if cursor.path == parent.path { break }
             cursor = parent
@@ -59,6 +63,12 @@ final class DestinationPlan {
 }
 
 enum SidecarSupport {
+    static func verifyUnchanged(_ inspected: [URL], beside photo: URL) throws {
+        guard Set(try find(beside: photo).map(\.path)) == Set(inspected.map(\.path)) else {
+            throw PhotoError("Sidecar set changed during processing; photo was not published. Rescan before retrying.")
+        }
+    }
+
     static func find(beside photo: URL) throws -> [URL] {
         let stem = photo.deletingPathExtension(), fm = FileManager.default
         var seen = Set<String>(), seenFiles = Set<String>(), result: [URL] = []

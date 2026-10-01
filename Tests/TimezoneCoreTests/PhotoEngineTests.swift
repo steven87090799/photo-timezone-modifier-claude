@@ -132,6 +132,58 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try await verifyManualGPSNeverOverwritesExistingOrSidecarGPS()
     }
 
+    @Test func testReviewGPSRejectsPartialXMPAndUnreadableSidecarState() async throws {
+        let location = try GPSCoordinate(latitude: 25.033, longitude: 121.5654)
+        // Direction/speed without latitude or longitude are still existing GPS.
+        let embedded = try makeSeededPhoto("review-embedded.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-XMP-exif:GPSImgDirection=123.5", embedded.path]).status, 0)
+        let exifPartial = try makeSeededPhoto("review-exif-partial.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-EXIF:GPSSpeed=0", exifPartial.path]).status, 0)
+        let structured = try makeSeededPhoto("review-structured.jpg")
+        expectEqual(try tool.execute(["-overwrite_original", "-XMP-iptcExt:LocationShownGPSLatitude=25.033", structured.path]).status, 0)
+        let sidecarPhoto = try makeSeededPhoto("review-sidecar.jpg")
+        let sidecar = try makeFile("review-sidecar.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSSpeed="0"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let sidecarBytes = try Data(contentsOf: sidecar)
+        for photo in [embedded, exifPartial, structured, sidecarPhoto] {
+            let bytes = try Data(contentsOf: photo)
+            let preview = try assertJob(await run([photo], operation: .inspect), succeeded: 1)
+            expectTrue(preview[0].metadata?.hasAnyGPS == true)
+            expectFalse(preview[0].metadata?.canSafelyAddGPS == true)
+            _ = try assertJob(await run([photo], operation: .addGPS(location: location)), skipped: 1)
+            expectEqual(try Data(contentsOf: photo), bytes)
+            expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
+        }
+        expectEqual(try Data(contentsOf: sidecar), sidecarBytes)
+
+        // A renamed JPEG can yield successful empty selected-tag JSON. That
+        // does not establish the absence of GPS in a readable XMP sidecar.
+        let unknown = try makeSeededPhoto("review-wrong-sidecar-type.jpg")
+        let unknownBytes = try Data(contentsOf: unknown)
+        _ = try makeFile("review-wrong-sidecar-type.xmp", contents: unknownBytes)
+        let preview = try assertJob(await run([unknown], operation: .inspect), succeeded: 1)
+        expectTrue(preview[0].metadata?.gpsSafetyUncertain == true)
+        _ = try assertJob(await run([unknown], operation: .addGPS(location: location)), skipped: 1)
+        expectEqual(try Data(contentsOf: unknown), unknownBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: unknown).path))
+    }
+
+    @Test func testReviewRescanRefreshesChangedFileIdentity() async throws {
+        let photo = try makeSeededPhoto("review-rescan.jpg")
+        let old = try FileIdentity.read(photo)
+        expectEqual(try tool.execute(["-overwrite_original", "-EXIF:ISO=400", photo.path]).status, 0)
+        let bytes = try Data(contentsOf: photo)
+        let collector = JobEventCollector()
+        await PhotoEngine(exiftoolURL: tool.url, logDirectory: logDirectory).run(
+            inputs: [photo], recursive: false, operation: .inspect, cancellation: CancellationToken(),
+            expectedIdentities: [photo.path: old]) { collector.record($0) }
+        let preview = try assertJob(collector.snapshot(), succeeded: 1)
+        expectEqual(preview[0].sourceIdentity, try FileIdentity.read(photo))
+        expectEqual(preview[0].metadata?.iso, "400")
+        expectEqual(try Data(contentsOf: photo), bytes)
+    }
+
     private func verifyManualGPSAdditionPreservesDatesOffsetsAndCreatesBackup() async throws {
         let photo = try makeSeededPhoto("manual-gps-bundle-original.jpg", original: "+08:00", digitized: "+08:00", time: "+08:00")
         let originalBytes = try Data(contentsOf: photo)

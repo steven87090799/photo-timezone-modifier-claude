@@ -137,9 +137,9 @@ final class ExifTool {
             // Image/file identity and GPS diagnostics.
             "-EXIF:Orientation", "-EXIF:ColorSpace", "-EXIF:ExifImageWidth", "-EXIF:ExifImageHeight",
             "-EXIF:Software", "-ImageWidth", "-ImageHeight", "-FileSize#", "-FileType", "-MIMEType",
-            "-GPSVersionID", "-GPSLatitude", "-GPSLatitudeRef", "-GPSLongitude", "-GPSLongitudeRef",
-            "-GPSAltitude", "-GPSAltitudeRef", "-GPSDateStamp", "-GPSTimeStamp",
-            "-XMP-exif:GPSLatitude", "-XMP-exif:GPSLongitude", "-XMP-exif:GPSAltitude",
+            // Any partial GPS record blocks manual insertion, not just coordinates.
+            // Include IPTC XMP location structures as well as XMP-exif tags.
+            "-GPS:all", "-XMP:*GPS*",
             "-Error", "-Warning"
         ]
     }
@@ -247,14 +247,19 @@ final class ExifTool {
             return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
                 warning: "XMP sidecar exceeds the 8 MiB diagnostic budget; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
-        let output = try execute(["-j", "-G1:4", "-s",
+        let output = try execute(["-charset", "filename=UTF8", "-j", "-G1:4", "-s",
             "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
-            "-XMP-exif:GPSLatitude", "-XMP-exif:GPSLongitude", "-XMP-exif:GPSAltitude",
+            "-XMP:*GPS*", "-FileType", "-Warning", "-Error",
             file.path], timeout: 120, cancellation: cancellation)
         try identity.verify(file)
         guard output.status == 0,
               let records = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
-              records.count == 1, let record = records.first else {
+              records.count == 1, let record = records.first,
+              record["File:FileType"] as? String == "XMP",
+              output.stderr.isEmpty,
+              !record.keys.contains(where: {
+                  $0.hasPrefix("ExifTool:") && ["Error", "Warning"].contains(String($0.split(separator: ":").last ?? ""))
+              }) else {
             return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
                 warning: "XMP sidecar could not be diagnosed; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
@@ -262,12 +267,25 @@ final class ExifTool {
             key.hasPrefix("XMP") && ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated"]
                 .contains(String(key.split(separator: ":").last ?? ""))
         }.mapValues { String(describing: $0) }
-        let gpsNames: Set<String> = ["GPSLatitude", "GPSLongitude", "GPSAltitude"]
-        let hasGPS = record.contains { key, value in
-            key.hasPrefix("XMP") && gpsNames.contains(String(key.split(separator: ":").last ?? ""))
-                && !String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return SidecarSnapshot(url: file, identity: identity, dates: dates,
+            hasGPS: Self.containsXMPGPS(record), gpsCheckReliable: true, warning: "")
+    }
+
+    /// Snapshots use -struct while previews flatten structured XMP. Cover both,
+    /// including partial/empty tags and group-instance identifiers from -G1:4.
+    static func containsXMPGPS(_ record: [String: Any]) -> Bool {
+        func containsGPSField(_ value: Any) -> Bool {
+            if let fields = value as? [String: Any] {
+                return fields.contains { $0.key.contains("GPS") || containsGPSField($0.value) }
+            }
+            if let array = value as? [Any] { return array.contains(where: containsGPSField) }
+            return false
         }
-        return SidecarSnapshot(url: file, identity: identity, dates: dates, hasGPS: hasGPS, gpsCheckReliable: true, warning: output.stderr)
+        return record.contains { key, value in
+            let parts = key.split(separator: ":")
+            guard parts.first?.hasPrefix("XMP") == true else { return false }
+            return parts.last?.contains("GPS") == true || containsGPSField(value)
+        }
     }
 
     private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
@@ -375,11 +393,8 @@ final class ExifTool {
         metadata.gpsAltitudeRef = grouped("GPS:GPSAltitudeRef") ?? tag(in: "GPS", "GPSAltitudeRef")
         metadata.gpsDateStamp = grouped("GPS:GPSDateStamp") ?? tag(in: "GPS", "GPSDateStamp")
         metadata.gpsTimeStamp = grouped("GPS:GPSTimeStamp") ?? tag(in: "GPS", "GPSTimeStamp")
-        let xmpGPSNames: Set<String> = ["GPSLatitude", "GPSLongitude", "GPSAltitude"]
-        metadata.embeddedXMPGPSDetected = record.contains { key, value in
-            key.hasPrefix("XMP") && xmpGPSNames.contains(String(key.split(separator: ":").last ?? ""))
-                && !String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+        metadata.embeddedEXIFGPSDetected = record.keys.contains { $0.split(separator: ":").first == "GPS" }
+        metadata.embeddedXMPGPSDetected = Self.containsXMPGPS(record)
         metadata.imageWidth = grouped("ExifIFD:ExifImageWidth") ?? tag("ExifImageWidth") ?? tag("ImageWidth")
         metadata.imageHeight = grouped("ExifIFD:ExifImageHeight") ?? tag("ExifImageHeight") ?? tag("ImageHeight")
         metadata.fileSize = tag("FileSize").flatMap(Int64.init)

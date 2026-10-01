@@ -53,6 +53,7 @@ public struct PhotoMetadata: Codable, Sendable {
     public var gpsAltitudeRef: String? = nil
     public var gpsDateStamp: String? = nil
     public var gpsTimeStamp: String? = nil
+    public var embeddedEXIFGPSDetected: Bool = false
     public var embeddedXMPGPSDetected: Bool = false
     public var sidecarGPSDetected: Bool = false
     public var gpsSafetyUncertain: Bool = false
@@ -73,7 +74,7 @@ public struct PhotoMetadata: Codable, Sendable {
     /// XMP GPS, or XMP sidecar GPS is present. Partial GPS is treated as
     /// existing metadata and is never silently overwritten.
     public var hasEmbeddedEXIFGPS: Bool {
-        [gpsVersionID, gpsLatitude, gpsLatitudeRef, gpsLongitude, gpsLongitudeRef,
+        embeddedEXIFGPSDetected || [gpsVersionID, gpsLatitude, gpsLatitudeRef, gpsLongitude, gpsLongitudeRef,
          gpsAltitude, gpsAltitudeRef, gpsDateStamp, gpsTimeStamp].contains { value in
             guard let value else { return false }
             return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

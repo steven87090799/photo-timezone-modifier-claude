@@ -86,7 +86,11 @@ public struct PhotoEngine: Sendable {
                         do {
                             if !canRecoverMissing {
                                 try FileSafety.ensureRegular(item.url)
-                                try expectedIdentities[item.url.path]?.verify(item.url)
+                                // A rescan establishes a fresh identity. Only a
+                                // mutation must match the previously approved preview.
+                                if case .inspect = operation {} else {
+                                    try expectedIdentities[item.url.path]?.verify(item.url)
+                                }
                             }
                             if case .inspect = operation {} else if blocked.contains(item.url.path) {
                                 item.publicationUnconfirmed = true
@@ -337,6 +341,7 @@ public struct PhotoEngine: Sendable {
             try sourceIdentity.verify(item.url)
             try parentIdentity.verify(parent)
             try plan?.verify()
+            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
             for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
             for read in sidecarReads { try read.identity.verify(read.url) }
             do {
@@ -552,6 +557,7 @@ public struct PhotoEngine: Sendable {
             try sourceIdentity.verify(item.url)
             try parentIdentity.verify(parent)
             try plan?.verify()
+            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
             for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
             for read in sidecarReads { try read.identity.verify(read.url) }
 

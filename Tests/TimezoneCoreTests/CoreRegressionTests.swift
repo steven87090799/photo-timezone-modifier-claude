@@ -4,6 +4,20 @@ import Testing
 
 @Suite(.serialized)
 struct CoreRegressionTests {
+    @Test func testReviewUnknownGPSSafetySurvivesJournalRoundTrip() throws {
+        var metadata = PhotoMetadata(dateTimeOriginal: nil, offsetOriginal: nil, offsetDigitized: nil,
+            offsetTime: nil, fileType: "JPEG", createDate: nil, modifyDate: nil, dateTags: [:])
+        metadata.gpsSafetyUncertain = true
+        let decoded = try JSONDecoder().decode(PhotoMetadata.self, from: JSONEncoder().encode(metadata))
+        #expect(decoded.gpsSafetyUncertain)
+        #expect(!decoded.canSafelyAddGPS)
+        metadata.gpsSafetyUncertain = false
+        metadata.embeddedEXIFGPSDetected = true
+        let partial = try JSONDecoder().decode(PhotoMetadata.self, from: JSONEncoder().encode(metadata))
+        #expect(partial.hasEmbeddedEXIFGPS)
+        #expect(!partial.canSafelyAddGPS)
+    }
+
     @Test func legacyJournalRowsDecodeWithoutNewFields() throws {
         let item = PhotoItem(url: URL(fileURLWithPath: "/tmp/legacy.jpg"))
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
@@ -15,8 +29,12 @@ struct CoreRegressionTests {
             offsetDigitized: nil, offsetTime: nil, fileType: "JPEG", createDate: nil, modifyDate: nil, dateTags: [:])
         var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(metadata)) as? [String: Any])
         old.removeValue(forKey: "compatibilityIssues")
+        old.removeValue(forKey: "gpsSafetyUncertain")
+        old.removeValue(forKey: "embeddedEXIFGPSDetected")
         let read = try JSONDecoder().decode(PhotoMetadata.self, from: JSONSerialization.data(withJSONObject: old))
         #expect(read.compatibilityIssues.isEmpty)
+        #expect(!read.gpsSafetyUncertain)
+        #expect(!read.embeddedEXIFGPSDetected)
         #expect(read.dateTimeOriginal == metadata.dateTimeOriginal)
     }
 
