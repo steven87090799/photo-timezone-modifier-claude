@@ -48,12 +48,17 @@ public struct PhotoEngine: Sendable {
             switch operation {
             case .write(let offset, _, _), .writeCopy(let offset, _, _, _, _):
                 guard offset.isValid else { throw PhotoError("UTC 偏移必須介於 −12:00 與 +14:00，並以 15 分鐘為單位。") }
-            case .inspect, .restore: break
+            case .addGPS, .addGPSCopy, .inspect, .restore:
+                break
             }
             let plan: DestinationPlan?
-            if case .writeCopy(_, _, let destination, let roots, _) = operation {
+            switch operation {
+            case .writeCopy(_, _, let destination, let roots, _),
+                 .addGPSCopy(_, let destination, let roots, _):
                 plan = try DestinationPlan(destination: destination, roots: roots)
-            } else { plan = nil }
+            default:
+                plan = nil
+            }
             let store = try TransactionStore(directory: (logDirectory ?? support).appendingPathComponent("Transactions"))
             let pending = try store.unfinished()
             let blocked = Set(pending.flatMap { [$0.source.path, $0.target.path] })
@@ -122,7 +127,9 @@ public struct PhotoEngine: Sendable {
                                 }
                                 var diagnosed = metadata
                                 for sidecar in try SidecarSupport.find(beside: item.url) where sidecar.pathExtension.lowercased() == "xmp" {
-                                    diagnosed.compatibilityIssues += try tool.readSidecar(sidecar, cancellation: cancellation).issues(for: metadata)
+                                    let read = try tool.readSidecar(sidecar, cancellation: cancellation)
+                                    diagnosed.sidecarGPSDetected = diagnosed.sidecarGPSDetected || read.hasGPS
+                                    diagnosed.compatibilityIssues += read.issues(for: metadata)
                                 }
                                 diagnosed.compatibilityIssues = Array(Set(diagnosed.compatibilityIssues)).sorted()
                                 try identity.verify(item.url)
@@ -140,6 +147,16 @@ public struct PhotoEngine: Sendable {
                             case .writeCopy(let offset, let mode, _, _, let options):
                                 try autoreleasepool {
                                     try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, cancellation: cancellation)
+                                }
+                            case .addGPS(let location, let options):
+                                try autoreleasepool {
+                                    try writeGPS(item: &item, tool: tool, location: location, options: options,
+                                                 plan: nil, store: store, cancellation: cancellation)
+                                }
+                            case .addGPSCopy(let location, _, _, let options):
+                                try autoreleasepool {
+                                    try writeGPS(item: &item, tool: tool, location: location, options: options,
+                                                 plan: plan, store: store, cancellation: cancellation)
                                 }
                             case .restore:
                                 try restore(item: &item, tool: tool, store: store, cancellation: cancellation)
