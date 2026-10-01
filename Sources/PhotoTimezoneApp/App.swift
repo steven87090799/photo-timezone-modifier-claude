@@ -208,8 +208,8 @@ private struct PhotoMainView: View {
                     .accessibilityLabel("時區寫入方式")
                     .accessibilityIdentifier("writeModePicker")
                     Text(model.mode == .fillMissing
-                         ? "保留所選欄位已有的時區，只補缺漏。"
-                         : "所選時區欄位會改成指定偏移；拍攝時間本身不變。")
+                         ? "保留三個欄位中已有的時區，只補缺漏。"
+                         : "三個 EXIF 時區欄位會改成指定偏移；拍攝時間本身不變。")
                         .font(.caption)
                         .foregroundStyle(model.mode == .replaceAll ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)

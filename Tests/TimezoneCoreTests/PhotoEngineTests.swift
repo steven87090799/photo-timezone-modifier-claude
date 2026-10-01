@@ -17,6 +17,14 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     private let createdDate = "2021:04:05 06:07:09"
     private let modifiedDate = "2022:10:11 12:13:14"
 
+    private func thumbnailBytes(_ file: URL) throws -> Data {
+        let output = try tool.execute(["-m", "-b", "-ThumbnailImage", file.path], timeout: 120)
+        guard output.status == 0, !output.stdout.isEmpty else {
+            throw PhotoError("Test fixture has no readable EXIF thumbnail. \(output.text)")
+        }
+        return output.stdout
+    }
+
     @Test func testAppAndCoreAlwaysUseThreeOffsetsWithMetadataCompatibility() {
         expectEqual(WriteOptions.appDefault.sonyCompatibility, true)
         // Verification strictness remains configurable, but the write target
@@ -506,13 +514,13 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let sample = tool.url.deletingLastPathComponent().appendingPathComponent("t/images/Sony.jpg")
         let original = try Data(contentsOf: sample)
         let photo = try makeFile("camera-thumb.jpg", contents: original)
-        let thumbnail = try tool.thumbnailBytes(photo)
+        let thumbnail = try thumbnailBytes(photo)
         expectTrue(!thumbnail.isEmpty)
         let output = try makeDirectory("output")
         let copy = output.appendingPathComponent(photo.lastPathComponent)
         let rejected = try assertJob(await run([photo], operation: .writeCopy(
             offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo],
-            options: WriteOptions(targets: .allThree, sonyCompatibility: false)
+            options: WriteOptions(sonyCompatibility: false)
         )), failed: 1)
         expectTrue(rejected[0].detail.contains("metadata") || rejected[0].detail.contains("ThumbnailOffset"))
         expectFalse(FileManager.default.fileExists(atPath: copy.path))
@@ -520,19 +528,19 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
         let copied = try assertJob(await run([photo], operation: .writeCopy(
             offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output, sourceRoots: [photo],
-            options: WriteOptions(targets: .allThree, sonyCompatibility: true)
+            options: WriteOptions(sonyCompatibility: true)
         )), succeeded: 1)
         expectEqual(copied[0].outputURL, copy)
         expectEqual(try Data(contentsOf: photo), original)
-        expectEqual(try tool.thumbnailBytes(copy), thumbnail)
+        expectEqual(try thumbnailBytes(copy), thumbnail)
         assertOffsets(try tool.inspect(copy).0, original: "+08:00", digitized: "+08:00", time: "+08:00")
 
         _ = try assertJob(await run([photo], operation: .write(
             offset: UTCOffset(minutes: 480), mode: .fillMissing,
-            options: WriteOptions(targets: .allThree, sonyCompatibility: true)
+            options: WriteOptions(sonyCompatibility: true)
         )), succeeded: 1)
         expectEqual(try Data(contentsOf: originalBackup(for: photo)), original)
-        expectEqual(try tool.thumbnailBytes(photo), thumbnail)
+        expectEqual(try thumbnailBytes(photo), thumbnail)
     }
 
     @Test func testCopyCancellationLeavesUnprocessedSourcesAndOutputsUntouched() async throws {

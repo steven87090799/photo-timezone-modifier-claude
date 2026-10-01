@@ -206,15 +206,6 @@ final class ExifTool {
         return Snapshot(metadata: metadata, warnings: warnings, embeddedTags: result)
     }
 
-    /// Test-only byte oracle; the production write path does not read or hash thumbnails.
-    func thumbnailBytes(_ file: URL) throws -> Data {
-        let output = try execute(["-m", "-b", "-ThumbnailImage", file.path], timeout: 120)
-        guard output.status == 0, !output.stdout.isEmpty else {
-            throw PhotoError("無法驗證內建縮圖內容；原檔未更動。\n\(output.text)")
-        }
-        return output.stdout
-    }
-
     struct SidecarSnapshot {
         let url: URL
         let identity: FileIdentity
