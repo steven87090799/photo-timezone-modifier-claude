@@ -35,8 +35,24 @@ jobs:
           PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh --filter FileDiscoveryTests
 
-      - name: Photo metadata transaction tests
-        timeout-minutes: 15
+      - name: ExifTool persistent transport smoke test
+        timeout-minutes: 3
+        env:
+          PHOTO_TIMEZONE_STRESS: '0'
+        run: ./scripts/test.sh --filter testPinnedExifToolVersionAndPersistentTransportStarts
+
+      - name: Photo write smoke tests
+        timeout-minutes: 6
+        env:
+          PHOTO_TIMEZONE_STRESS: '0'
+        run: |
+          ./scripts/test.sh --filter testFillMissingPreservesExistingOriginalOffsetAndFillsOtherTwoTags
+          ./scripts/test.sh --filter testReplaceAllChangesEveryOffsetButPreservesEveryDate
+          ./scripts/test.sh --filter testSubsecondsAndEveryDateSurviveThreeOffsetWrites
+          ./scripts/test.sh --filter testNumericSnapshotRejectsSubDisplayGPSMutation
+
+      - name: Remaining photo transaction tests
+        timeout-minutes: 12
         env:
           PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh --filter PhotoEngineTests
