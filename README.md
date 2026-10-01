@@ -34,6 +34,14 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 發布后的同步錯誤會標記「已發布但未確認」，阻止盲目重試。由「資訊」選單開啟交易復原檢視；人工確認只封存紀錄，不會偷刪檔或自動重試。
 
+## 下載 App
+
+[下載最新版 macOS App](https://github.com/steven87090799/photo-timezone-modifier-claude/releases/latest/download/PhotoTimezone-macOS.zip) · [所有建置版本](https://github.com/steven87090799/photo-timezone-modifier-claude/releases)
+
+每次推送或合併到 `main`，GitHub Actions 會執行 Linux／macOS 完整一般測試、建置 Apple Silicon／Intel 通用 App，成功後自動發布到 Releases。ZIP 解壓縮後，將「相片時區修改器.app」放到「應用程式」即可。固定下載連結提供最新成功發布的版本；測試或建置失敗時保留上一個成功版本。
+
+每個 Release 記錄提交與建置編號，舊版本可保留下載。PR 的建置成品只放在 Actions 的 `PhotoTimezone-macOS` artifact。也可在 Actions 手動執行 `macOS native app`，選擇 `main` 重新建置發布。App 目前使用 ad-hoc 簽章，尚未取得 Apple Developer ID 簽章／公證。
+
 ## 建置與測試
 
 macOS 13+，需 Swift 6 工具鏈與系統 `/usr/bin/perl`。

@@ -1,6 +1,8 @@
 name: macOS native app
 
 on:
+  push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
     inputs:
@@ -12,10 +14,9 @@ on:
 permissions:
   contents: read
 
-# Keep only the newest run for each PR/ref. Without this, slower stale commits can
-# finish after a newer successful commit and leave misleading red runs in Actions.
+# Cancel stale PR runs; each main push keeps its own build and release.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -46,15 +47,62 @@ jobs:
           PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh
 
+      - name: Identify automatic build
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" app/Info.plist
+
       - name: Build universal app
         timeout-minutes: 8
         run: ./build.sh --universal
 
       - name: Package app preserving executable modes
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-3.5.0-macOS.zip
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-macOS.zip
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PhotoTimezone-macOS
-          path: dist/PhotoTimezone-3.5.0-macOS.zip
+          path: dist/PhotoTimezone-macOS.zip
           if-no-files-found: error
+
+  publish-app:
+    # PRs get downloadable Actions artifacts; only main can publish Releases.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [portable-tests, test-and-build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: PhotoTimezone-macOS
+          path: dist
+      - name: Publish downloadable main build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="build-$GITHUB_SHA"
+          notes="$RUNNER_TEMP/app-release-notes.md"
+          cat > "$notes" <<EOF
+          自動建置的 macOS 13+ 通用 App，支援 Apple Silicon 與 Intel。
+          下載 PhotoTimezone-macOS.zip，解壓縮後將 App 放到「應用程式」。
+
+          提交：$GITHUB_SHA
+          建置編號：$GITHUB_RUN_NUMBER
+          測試與建置：https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          此版本使用 ad-hoc 簽章，尚未取得 Apple Developer ID 簽章／公證。
+          EOF
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "macOS App · build $GITHUB_RUN_NUMBER" --notes-file "$notes"
+          fi
+          gh release upload "$tag" dist/PhotoTimezone-macOS.zip --clobber
+          # A slower old build is archived without replacing the newest download.
+          main_head="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')"
+          latest=false
+          if [[ "$main_head" == "$GITHUB_SHA" ]]; then latest=true; fi
+          gh release edit "$tag" --draft=false --latest="$latest" --notes-file "$notes"
