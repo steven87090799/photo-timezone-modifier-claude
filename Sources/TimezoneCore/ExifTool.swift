@@ -124,7 +124,7 @@ final class ExifTool {
             "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
 
             // Camera and lens identity. Keep vendor fallbacks for display only.
-            "-EXIF:Make", "-EXIF:Model", "-EXIF:BodySerialNumber", "-SerialNumber",
+            "-EXIF:Make", "-EXIF:Model", "-EXIF:SerialNumber", "-SerialNumber",
             "-EXIF:LensMake", "-EXIF:LensModel", "-EXIF:LensInfo", "-EXIF:LensSerialNumber",
             "-LensSpec", "-Lens", "-LensID", "-LensType",
 
@@ -137,8 +137,8 @@ final class ExifTool {
             // Image/file identity and GPS diagnostics.
             "-EXIF:Orientation", "-EXIF:ColorSpace", "-EXIF:ExifImageWidth", "-EXIF:ExifImageHeight",
             "-EXIF:Software", "-ImageWidth", "-ImageHeight", "-FileSize#", "-FileType", "-MIMEType",
-            "-GPS:GPSLatitude", "-GPS:GPSLongitude", "-GPS:GPSAltitude",
-            "-GPS:GPSDateStamp", "-GPS:GPSTimeStamp",
+            "-GPSLatitude", "-GPSLongitude", "-GPSAltitude",
+            "-GPSDateStamp", "-GPSTimeStamp",
             "-Error", "-Warning"
         ]
     }
@@ -299,7 +299,9 @@ final class ExifTool {
         )
         metadata.make = grouped("IFD0:Make") ?? tag("Make")
         metadata.cameraModel = grouped("IFD0:Model") ?? tag("Model")
-        metadata.bodySerialNumber = grouped("ExifIFD:BodySerialNumber")
+        // ExifTool calls tag 0xA431 SerialNumber; the EXIF specification calls
+        // the same field BodySerialNumber.
+        metadata.bodySerialNumber = grouped("ExifIFD:SerialNumber")
         metadata.cameraSerialNumber = metadata.bodySerialNumber ?? tag("SerialNumber")
         metadata.lensMake = grouped("ExifIFD:LensMake")
 
