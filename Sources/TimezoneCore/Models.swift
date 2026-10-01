@@ -55,6 +55,7 @@ public struct PhotoMetadata: Codable, Sendable {
     public var gpsTimeStamp: String? = nil
     public var embeddedXMPGPSDetected: Bool = false
     public var sidecarGPSDetected: Bool = false
+    public var gpsSafetyUncertain: Bool = false
     public var imageWidth: String? = nil
     public var imageHeight: String? = nil
     public var fileSize: Int64? = nil
@@ -80,6 +81,7 @@ public struct PhotoMetadata: Codable, Sendable {
     }
     public var hasCompleteGPSCoordinate: Bool { gpsLatitude != nil && gpsLongitude != nil }
     public var hasAnyGPS: Bool { hasEmbeddedEXIFGPS || embeddedXMPGPSDetected || sidecarGPSDetected }
+    public var canSafelyAddGPS: Bool { !hasAnyGPS && !gpsSafetyUncertain }
 }
 
 public struct GPSCoordinate: Equatable, Sendable {
