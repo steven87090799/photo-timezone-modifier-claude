@@ -126,15 +126,19 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(metadata.gpsTimeStamp != nil)
     }
 
-    @Test func testManualGPSAdditionPreservesDatesOffsetsAndCreatesBackup() async throws {
-        let photo = try makeSeededPhoto("manual-gps.jpg", original: "+08:00", digitized: "+08:00", time: "+08:00")
+    @Test func testManualGPSSafetyBundle() async throws {
+        try await verifyManualGPSAdditionPreservesDatesOffsetsAndCreatesBackup()
+        try await verifyManualGPSCopyLeavesSourceUntouched()
+        try await verifyManualGPSNeverOverwritesExistingOrSidecarGPS()
+    }
+
+    private func verifyManualGPSAdditionPreservesDatesOffsetsAndCreatesBackup() async throws {
+        let photo = try makeSeededPhoto("manual-gps-bundle-original.jpg", original: "+08:00", digitized: "+08:00", time: "+08:00")
         let originalBytes = try Data(contentsOf: photo)
         let location = try GPSCoordinate(latitude: 25.033, longitude: 121.5654, altitudeMeters: 12.5)
 
         let rows = try assertJob(await run([photo], operation: .addGPS(location: location)), succeeded: 1)
-        let snapshot = try tool.snapshot(photo)
-        let metadata = snapshot.metadata
-
+        let metadata = try tool.snapshot(photo).metadata
         assertDates(metadata)
         assertOffsets(metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
         expectTrue(metadata.hasCompleteGPSCoordinate)
@@ -145,10 +149,10 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(rows[0].detail.contains("GPS"))
     }
 
-    @Test func testManualGPSCopyLeavesSourceUntouched() async throws {
-        let photo = try makeSeededPhoto("manual-gps-copy.jpg", original: "+05:45", digitized: "+05:45", time: "+05:45")
+    private func verifyManualGPSCopyLeavesSourceUntouched() async throws {
+        let photo = try makeSeededPhoto("manual-gps-bundle-copy.jpg", original: "+05:45", digitized: "+05:45", time: "+05:45")
         let sourceBytes = try Data(contentsOf: photo)
-        let output = try makeDirectory("manual-gps-copy-output")
+        let output = try makeDirectory("manual-gps-bundle-copy-output")
         let location = try GPSCoordinate(latitude: -33.8688, longitude: 151.2093, altitudeMeters: nil)
 
         let rows = try assertJob(await run([photo], operation: .addGPSCopy(
@@ -167,8 +171,8 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(rows[0].outputURL, copy)
     }
 
-    @Test func testManualGPSNeverOverwritesExistingOrSidecarGPS() async throws {
-        let existing = try makeSeededPhoto("existing-gps.jpg")
+    private func verifyManualGPSNeverOverwritesExistingOrSidecarGPS() async throws {
+        let existing = try makeSeededPhoto("manual-gps-bundle-existing.jpg")
         expectEqual(try tool.execute([
             "-overwrite_original", "-GPSLatitude#=25.03", "-GPSLatitudeRef=N",
             "-GPSLongitude#=121.56", "-GPSLongitudeRef=E", existing.path
@@ -179,12 +183,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(try Data(contentsOf: existing), existingBytes)
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: existing).path))
 
-        let root = try makeDirectory("gps-sidecar")
-        let sidecarPhoto = try makeSeededPhoto("gps-sidecar/photo.jpg")
-        let sidecar = try makeFile("gps-sidecar/photo.xmp", contents: Data("""
+        _ = try makeDirectory("manual-gps-bundle-sidecar")
+        let sidecarPhoto = try makeSeededPhoto("manual-gps-bundle-sidecar/photo.jpg")
+        let sidecar = try makeFile("manual-gps-bundle-sidecar/photo.xmp", contents: Data("""
         <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="25,1.98N" exif:GPSLongitude="121,33.6E"/></rdf:RDF></x:xmpmeta>
         """.utf8))
-        _ = root
         let photoBytes = try Data(contentsOf: sidecarPhoto)
         let sidecarBytes = try Data(contentsOf: sidecar)
         _ = try assertJob(await run([sidecarPhoto], operation: .addGPS(location: location)), skipped: 1)
