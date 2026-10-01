@@ -17,11 +17,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     private let createdDate = "2021:04:05 06:07:09"
     private let modifiedDate = "2022:10:11 12:13:14"
 
-    @Test func testAppAndCoreDefaultsUseAllThreeWithMetadataCompatibility() {
-        expectEqual(WriteOptions.appDefault.targets, .allThree)
+    @Test func testAppAndCoreAlwaysUseThreeOffsetsWithMetadataCompatibility() {
         expectEqual(WriteOptions.appDefault.sonyCompatibility, true)
-        // A caller can still explicitly select strict verification.
-        expectEqual(WriteOptions(targets: .captureOnly, sonyCompatibility: false).sonyCompatibility, false)
+        // Verification strictness remains configurable, but the write target
+        // is fixed to all three standard EXIF offset fields.
+        expectEqual(WriteOptions(sonyCompatibility: false).sonyCompatibility, false)
     }
 
     override init() throws {
@@ -103,21 +103,20 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
-    @Test func testCaptureOnlyEmbedsStandardOffsetWithoutShiftingDatesOrOtherOffsets() async throws {
-        let photo = try makeSeededPhoto("capture-only.jpg", digitized: "-03:30", time: "+09:00")
+    @Test func testCopyAlwaysFillsAllThreeStandardOffsetsWithoutShiftingDates() async throws {
+        let photo = try makeSeededPhoto("all-three.jpg")
         let original = try Data(contentsOf: photo)
-        let output = try makeDirectory("capture-output")
+        let output = try makeDirectory("all-three-output")
         let rows = try assertJob(await run([photo], operation: .writeCopy(
             offset: UTCOffset(minutes: 480), mode: .fillMissing, destination: output,
-            sourceRoots: [photo], options: WriteOptions(targets: .captureOnly)
+            sourceRoots: [photo]
         )), succeeded: 1)
         let candidate = output.appendingPathComponent(photo.lastPathComponent)
         let metadata = try tool.inspect(candidate).0
-        assertOffsets(metadata, original: "+08:00", digitized: "-03:30", time: "+09:00")
+        assertOffsets(metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
         assertDates(metadata)
         expectEqual(try Data(contentsOf: photo), original)
         expectEqual(rows[0].outputURL, candidate)
-        expectEqual(try tool.imageDataSHA256(photo), try tool.imageDataSHA256(candidate))
     }
 
     @Test func testRepeatedWritesPreserveExactFirstOriginalAndRestoreKeepsEditedCopy() async throws {

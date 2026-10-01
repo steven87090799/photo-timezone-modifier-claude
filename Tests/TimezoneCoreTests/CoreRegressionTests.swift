@@ -44,9 +44,8 @@ struct CoreRegressionTests {
     }
 
     @Test func defaultScopeAndRetryAreConsistent() {
-        #expect(WriteOptions().targets == .allThree)
-        #expect(WriteOptions.appDefault.targets == .allThree)
         #expect(WriteOptions().sonyCompatibility == WriteOptions.appDefault.sonyCompatibility)
+        #expect(WriteOptions().copySidecars == WriteOptions.appDefault.copySidecars)
         var item = PhotoItem(url: URL(fileURLWithPath: "/test.jpg"), status: .failed)
         item.publicationUnconfirmed = true
         #expect(!PhotoFilter.unfinished.matches(item))

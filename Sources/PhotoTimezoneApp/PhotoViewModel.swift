@@ -12,7 +12,6 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var recursive = true
     @Published private(set) var offset = UTCOffset(minutes: 480)
     @Published private(set) var mode: WriteMode = .fillMissing
-    @Published private(set) var offsetTargets: OffsetTargets = WriteOptions.appDefault.targets
     @Published private(set) var sonyCompatibility = WriteOptions.appDefault.sonyCompatibility
     @Published private(set) var replaceOriginals = false
     @Published private(set) var notificationsEnabled = false
@@ -243,11 +242,6 @@ final class PhotoViewModel: ObservableObject {
         mode = value
     }
 
-    func setOffsetTargets(_ value: OffsetTargets) {
-        guard !isRunning else { return }
-        offsetTargets = value
-    }
-
     func setSonyCompatibility(_ value: Bool) {
         guard !isRunning else { return }
         sonyCompatibility = value
@@ -419,7 +413,7 @@ final class PhotoViewModel: ObservableObject {
             catch { notice = .error("無法使用這個輸出資料夾", error.localizedDescription); return }
         }
         var placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
-        placement += "\n欄位：\(offsetTargets == .captureOnly ? "只寫 EXIF 拍攝時區 OffsetTimeOriginal" : "寫入三個 EXIF OffsetTime 欄位")。"
+        placement += "\n欄位：固定處理 OffsetTimeOriginal、OffsetTimeDigitized、OffsetTime；日期與鐘點不平移。"
         placement += "\n僅比對可讀中繼資料；不做影像 HASH。伴隨檔會原樣複製，不同步改寫 XMP 時間。"
         if sonyCompatibility {
             placement += "\nSony 相容模式已開啟：僅放行明列的位置指標重排，但無法保證 MakerNotes 私有位元組完全不變。"
@@ -429,7 +423,7 @@ final class PhotoViewModel: ObservableObject {
 
     func confirmReplace() {
         guard canWrite else { return }
-        let options = WriteOptions(targets: offsetTargets, sonyCompatibility: sonyCompatibility)
+        let options = WriteOptions(sonyCompatibility: sonyCompatibility)
         if replaceOriginals {
             start(.write(offset: offset, mode: mode, options: options))
         } else if let outputDirectory {

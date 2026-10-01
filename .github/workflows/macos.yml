@@ -19,6 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Test generated JPEG and TIFF fixtures
+        env:
+          PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh
       - name: Optional thousand-photo stability test
         if: github.event_name == 'workflow_dispatch' && inputs.stress

@@ -195,14 +195,7 @@ private struct PhotoMainView: View {
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeading("03", "選擇寫入方式")
-                    Picker("寫入欄位", selection: Binding(get: { model.offsetTargets }, set: model.setOffsetTargets)) {
-                        Text("只寫拍攝時區（進階）").tag(OffsetTargets.captureOnly)
-                        Text("三個 EXIF 時區欄位（預設）").tag(OffsetTargets.allThree)
-                    }
-                    .pickerStyle(.radioGroup)
-                    .disabled(model.isRunning)
-                    .accessibilityIdentifier("offsetTargetsPicker")
-                    Text("預設處理 OffsetTimeOriginal、OffsetTimeDigitized、OffsetTime；對應的拍攝、數位化、修改日期與次秒全部保留。不會補造原本不存在的日期。")
+                    Text("固定處理 OffsetTimeOriginal、OffsetTimeDigitized、OffsetTime 三個標準 EXIF 時區欄位；對應的拍攝、數位化、修改日期與次秒全部保留，不會平移時間或補造原本不存在的日期。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Picker("寫入方式", selection: Binding(get: { model.mode }, set: model.setMode)) {
