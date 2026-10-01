@@ -119,6 +119,54 @@ struct CoreRegressionTests {
         }
     }
 
+    @Test func gpsCoordinateValidationAndFormatting() throws {
+        let taipei = try GPSCoordinate.parse(latitude: "25.0330", longitude: "121.5654", altitude: "12.5")
+        #expect(taipei.latitude == 25.033)
+        #expect(taipei.longitude == 121.5654)
+        #expect(taipei.altitudeMeters == 12.5)
+        #expect(taipei.latitudeRef == "N")
+        #expect(taipei.longitudeRef == "E")
+        #expect(taipei.altitudeRef == "0")
+        #expect(taipei.latitudeArgument == "25.033")
+        #expect(taipei.longitudeArgument == "121.5654")
+
+        let southern = try GPSCoordinate(latitude: -33.8688, longitude: -70.6693, altitudeMeters: -15)
+        #expect(southern.latitudeRef == "S")
+        #expect(southern.longitudeRef == "W")
+        #expect(southern.altitudeRef == "1")
+
+        #expect(throws: PhotoError.self) {
+            try GPSCoordinate.parse(latitude: "91", longitude: "121", altitude: "")
+        }
+        #expect(throws: PhotoError.self) {
+            try GPSCoordinate.parse(latitude: "25", longitude: "181", altitude: "")
+        }
+        #expect(throws: PhotoError.self) {
+            try GPSCoordinate.parse(latitude: "abc", longitude: "121", altitude: "")
+        }
+    }
+
+    @Test func partialOrExternalGPSCountsAsExistingMetadata() {
+        var metadata = PhotoMetadata(dateTimeOriginal: nil, offsetOriginal: nil, offsetDigitized: nil,
+            offsetTime: nil, fileType: "JPEG", createDate: nil, modifyDate: nil, dateTags: [:])
+        #expect(!metadata.hasAnyGPS)
+        metadata.gpsLatitude = "25.03"
+        #expect(metadata.hasAnyGPS)
+        #expect(!metadata.hasCompleteGPSCoordinate)
+        metadata.gpsLongitude = "121.56"
+        #expect(metadata.hasCompleteGPSCoordinate)
+
+        var xmpOnly = PhotoMetadata(dateTimeOriginal: nil, offsetOriginal: nil, offsetDigitized: nil,
+            offsetTime: nil, fileType: "JPEG", createDate: nil, modifyDate: nil, dateTags: [:])
+        xmpOnly.embeddedXMPGPSDetected = true
+        #expect(xmpOnly.hasAnyGPS)
+
+        var sidecarOnly = PhotoMetadata(dateTimeOriginal: nil, offsetOriginal: nil, offsetDigitized: nil,
+            offsetTime: nil, fileType: "JPEG", createDate: nil, modifyDate: nil, dateTags: [:])
+        sidecarOnly.sidecarGPSDetected = true
+        #expect(sidecarOnly.hasAnyGPS)
+    }
+
     @Test func xmpISOFormattingDoesNotInventAClockConflict() {
         let metadata = PhotoMetadata(dateTimeOriginal: "2024:02:29 12:34:56", offsetOriginal: "+08:00",
             offsetDigitized: "+08:00", offsetTime: "+08:00", fileType: "JPEG",
