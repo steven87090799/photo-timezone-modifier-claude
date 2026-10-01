@@ -72,6 +72,9 @@ jobs:
           ./scripts/test.sh --filter testSubsecondsAndEveryDateSurviveThreeOffsetWrites
           ./scripts/test.sh --filter testNumericSnapshotRejectsSubDisplayGPSMutation
           ./scripts/test.sh --filter testConflictingXMPIsReportedAndNeverRewritten
+          ./scripts/test.sh --filter testManualGPSAdditionPreservesDatesOffsetsAndCreatesBackup
+          ./scripts/test.sh --filter testManualGPSCopyLeavesSourceUntouched
+          ./scripts/test.sh --filter testManualGPSNeverOverwritesExistingOrSidecarGPS
 
       - name: Build universal app
         timeout-minutes: 8
