@@ -116,13 +116,30 @@ final class ExifTool {
     private var inspectionArguments: [String] {
         [
             "-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s",
+
+            // EXIF date/time and timezone triplets.
             "-EXIF:DateTimeOriginal", "-EXIF:CreateDate", "-EXIF:ModifyDate",
             "-EXIF:OffsetTimeOriginal", "-EXIF:OffsetTimeDigitized", "-EXIF:OffsetTime",
-            "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
             "-EXIF:SubSecTimeOriginal", "-EXIF:SubSecTimeDigitized", "-EXIF:SubSecTime",
-            "-Make", "-Model", "-SerialNumber", "-LensModel", "-LensSpec", "-Lens", "-LensID", "-LensType", "-LensInfo", "-ISO", "-ExposureTime", "-FNumber", "-FocalLength",
-            "-ExifImageWidth", "-ExifImageHeight", "-ImageWidth", "-ImageHeight", "-FileSize#",
-            "-FileType", "-Error", "-Warning"
+            "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
+
+            // Camera and lens identity. Keep vendor fallbacks for display only.
+            "-EXIF:Make", "-EXIF:Model", "-EXIF:BodySerialNumber", "-SerialNumber",
+            "-EXIF:LensMake", "-EXIF:LensModel", "-EXIF:LensInfo", "-EXIF:LensSerialNumber",
+            "-LensSpec", "-Lens", "-LensID", "-LensType",
+
+            // Core exposure/capture parameters from the EXIF specification.
+            "-EXIF:ISO", "-EXIF:ExposureTime", "-EXIF:FNumber", "-EXIF:ExposureProgram",
+            "-EXIF:ExposureCompensation", "-EXIF:MeteringMode", "-EXIF:Flash",
+            "-EXIF:FocalLength", "-EXIF:FocalLengthIn35mmFormat",
+            "-EXIF:WhiteBalance", "-EXIF:SceneCaptureType",
+
+            // Image/file identity and GPS diagnostics.
+            "-EXIF:Orientation", "-EXIF:ColorSpace", "-EXIF:ExifImageWidth", "-EXIF:ExifImageHeight",
+            "-EXIF:Software", "-ImageWidth", "-ImageHeight", "-FileSize#", "-FileType", "-MIMEType",
+            "-GPS:GPSLatitude", "-GPS:GPSLongitude", "-GPS:GPSAltitude",
+            "-GPS:GPSDateStamp", "-GPS:GPSTimeStamp",
+            "-Error", "-Warning"
         ]
     }
 
@@ -256,12 +273,18 @@ final class ExifTool {
             guard let value = record[name] as? String, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
             return value
         }
-        func tag(_ name: String) -> String? {
+        func grouped(_ key: String) -> String? {
+            guard let value = record[key] else { return nil }
+            let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.isEmpty ? nil : result
+        }
+        func tagWithKey(_ name: String) -> (key: String, value: String)? {
             let key = record.keys.filter { $0.split(separator: ":").last == Substring(name) }.sorted().first
             guard let key, let value = record[key] else { return nil }
-            let result = String(describing: value)
-            return result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : result
+            let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+            return result.isEmpty ? nil : (key, result)
         }
+        func tag(_ name: String) -> String? { tagWithKey(name)?.value }
         var metadata = PhotoMetadata(
             dateTimeOriginal: text("ExifIFD:DateTimeOriginal"),
             offsetOriginal: text("ExifIFD:OffsetTimeOriginal"),
@@ -274,24 +297,55 @@ final class ExifTool {
                 ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated", "SubSecTimeOriginal", "SubSecTimeDigitized", "SubSecTime"].contains(String(key.split(separator: ":").last ?? ""))
             }.mapValues { String(describing: $0) }
         )
-        metadata.make = tag("Make")
-        metadata.cameraModel = tag("Model")
-        metadata.cameraSerialNumber = tag("SerialNumber")
-        // Preserve upstream display-only lens fallbacks; never write derived IDs.
-        for name in ["LensModel", "LensSpec", "Lens", "LensID", "LensType"] {
-            if let value = tag(name) {
-                metadata.lensModel = value
-                metadata.lensModelSource = name == "LensID" ? "LensID (ExifTool)" : name
-                break
+        metadata.make = grouped("IFD0:Make") ?? tag("Make")
+        metadata.cameraModel = grouped("IFD0:Model") ?? tag("Model")
+        metadata.bodySerialNumber = grouped("ExifIFD:BodySerialNumber")
+        metadata.cameraSerialNumber = metadata.bodySerialNumber ?? tag("SerialNumber")
+        metadata.lensMake = grouped("ExifIFD:LensMake")
+
+        // Prefer the standard EXIF LensModel. Vendor/ExifTool-derived lens IDs
+        // remain useful for preview, but their exact source is shown in the UI.
+        if let standardLens = grouped("ExifIFD:LensModel") {
+            metadata.lensModel = standardLens
+            metadata.lensModelSource = "ExifIFD:LensModel"
+        } else {
+            for name in ["LensModel", "LensSpec", "Lens", "LensID", "LensType"] {
+                if let found = tagWithKey(name) {
+                    metadata.lensModel = found.value
+                    metadata.lensModelSource = found.key
+                    break
+                }
             }
         }
-        metadata.lensInfo = tag("LensInfo")
-        metadata.iso = tag("ISO")
-        metadata.exposureTime = tag("ExposureTime")
-        metadata.aperture = tag("FNumber")
-        metadata.focalLength = tag("FocalLength")
-        metadata.imageWidth = tag("ExifImageWidth") ?? tag("ImageWidth")
-        metadata.imageHeight = tag("ExifImageHeight") ?? tag("ImageHeight")
+        metadata.lensInfo = grouped("ExifIFD:LensInfo") ?? tag("LensInfo")
+        metadata.lensSerialNumber = grouped("ExifIFD:LensSerialNumber")
+
+        metadata.subSecTimeOriginal = grouped("ExifIFD:SubSecTimeOriginal")
+        metadata.subSecTimeDigitized = grouped("ExifIFD:SubSecTimeDigitized")
+        metadata.subSecTime = grouped("ExifIFD:SubSecTime")
+        metadata.iso = grouped("ExifIFD:ISO") ?? tag("ISO")
+        metadata.exposureTime = grouped("ExifIFD:ExposureTime") ?? tag("ExposureTime")
+        metadata.aperture = grouped("ExifIFD:FNumber") ?? tag("FNumber")
+        metadata.exposureProgram = grouped("ExifIFD:ExposureProgram")
+        metadata.exposureCompensation = grouped("ExifIFD:ExposureCompensation")
+        metadata.meteringMode = grouped("ExifIFD:MeteringMode")
+        metadata.flash = grouped("ExifIFD:Flash")
+        metadata.focalLength = grouped("ExifIFD:FocalLength") ?? tag("FocalLength")
+        metadata.focalLength35mm = grouped("ExifIFD:FocalLengthIn35mmFormat")
+        metadata.whiteBalance = grouped("ExifIFD:WhiteBalance")
+        metadata.sceneCaptureType = grouped("ExifIFD:SceneCaptureType")
+
+        metadata.orientation = grouped("IFD0:Orientation") ?? tag("Orientation")
+        metadata.colorSpace = grouped("ExifIFD:ColorSpace")
+        metadata.software = grouped("IFD0:Software") ?? tag("Software")
+        metadata.mimeType = grouped("File:MIMEType")
+        metadata.gpsLatitude = grouped("GPS:GPSLatitude")
+        metadata.gpsLongitude = grouped("GPS:GPSLongitude")
+        metadata.gpsAltitude = grouped("GPS:GPSAltitude")
+        metadata.gpsDateStamp = grouped("GPS:GPSDateStamp")
+        metadata.gpsTimeStamp = grouped("GPS:GPSTimeStamp")
+        metadata.imageWidth = grouped("ExifIFD:ExifImageWidth") ?? tag("ExifImageWidth") ?? tag("ImageWidth")
+        metadata.imageHeight = grouped("ExifIFD:ExifImageHeight") ?? tag("ExifImageHeight") ?? tag("ImageHeight")
         metadata.fileSize = tag("FileSize").flatMap(Int64.init)
         guard ["JPEG", "TIFF", "ARW"].contains(metadata.fileType ?? "") else {
             throw PhotoError("實際檔案格式不是支援的 JPEG／TIFF／ARW，已略過寫入。")
