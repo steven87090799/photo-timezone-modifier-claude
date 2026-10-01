@@ -45,12 +45,16 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             }
             throw PhotoError("Pinned ExifTool is not installed. Run scripts/prepare-exiftool.sh or set TEST_EXIFTOOL_PATH to ExifTool \(EngineResources.version).")
         }
-        // Match production transport: reuse one bounded ExifTool worker instead
-        // of paying a new Perl/ExifTool launch for every fixture assertion.
+        // Match production transport, but do not launch an external process
+        // from suite initialization. Swift Testing may instantiate suites while
+        // discovering filtered tests; eager ExifTool I/O here can stall the
+        // entire runner before the first test starts.
         tool = ExifTool(url: url, persistent: true)
-        // A wrong or broken installation is a failure, never a silent skip.
-        try tool.validateVersion()
         logDirectory = temporaryDirectory.appendingPathComponent("logs", isDirectory: true)
+    }
+
+    @Test func testPinnedExifToolVersionAndPersistentTransportStarts() throws {
+        try tool.validateVersion()
     }
 
     @Test func testBadFirstPhotoDoesNotPreventFollowingJPEGAndTIFFWrites() async throws {
