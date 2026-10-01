@@ -1,5 +1,8 @@
 name: Materialize reviewed repair branch
 on:
+  push:
+    branches: [fix/metadata-only-three-offsets-20261001]
+    paths: ['.repair-transfer/**']
   workflow_dispatch:
 permissions:
   contents: write
