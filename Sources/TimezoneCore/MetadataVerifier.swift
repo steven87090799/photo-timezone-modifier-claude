@@ -151,7 +151,7 @@ enum MetadataVerifier {
         // verifying that both old/new offsets remain inside their respective files.
         let sonyPointers: Set<String> = ["MPImage2:MPImageStart", "IFD0:PreviewImageStart",
             "IFD1:ThumbnailOffset", "IFD2:JpgFromRawStart", "Sony:HiddenDataOffset",
-            "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"]
+            "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets", "SubIFD:TileOffsets"]
         return sony && options.sonyCompatibility && sonyPointers.contains(key)
     }
 
