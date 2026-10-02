@@ -646,10 +646,10 @@ public struct PhotoEngine: Sendable {
         let stage = SafeFileTransaction.temporaryPhoto(beside: item.url)
         defer { try? fm.removeItem(at: stage) }
         try SafeFileTransaction.copyAndSync(backup, to: stage)
-        let candidate = try tool.snapshot(stage, cancellation: cancellation, strictOffsets: false)
-        guard before.embeddedTags == candidate.embeddedTags, before.metadata.dateTags == candidate.metadata.dateTags else {
-            throw PhotoError("Restore candidate metadata differs from the backup; no original was changed.")
+        guard try SafeFileTransaction.contentsAreIdentical(backup, stage) else {
+            throw PhotoError("Restore candidate bytes differ from the backup; no original was changed.")
         }
+        let candidate = try tool.snapshot(stage, cancellation: cancellation, strictOffsets: false)
         try backupIdentity.verify(backup)
         try currentIdentity?.verify(item.url)
         if cancellation.isCancelled { throw CancellationError() }
@@ -661,7 +661,7 @@ public struct PhotoEngine: Sendable {
             targetIdentityBefore: currentIdentity,
             candidateIdentity: try FileIdentity.read(stage), originalDates: before.metadata.dateTags,
             oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [], phase: .prepared,
-            detail: "Whole-file restore, not an offset-only undo. Metadata-only verification.")
+            detail: "Whole-file restore, not an offset-only undo. Candidate verified byte-for-byte against the canonical backup.")
         item.transactionID = manifest.id; item.backupURL = currentCopy ?? backup
         try store.save(manifest)
         var published = false
@@ -697,7 +697,7 @@ public struct PhotoEngine: Sendable {
             throw error
         }
         item.status = .success
-        item.detail = "Whole-file restore completed; backup and previous version retained. Metadata verified without a content hash."
+        item.detail = "Whole-file restore completed; backup and previous version retained. Restore candidate verified byte-for-byte against the canonical backup."
     }
 
 }
