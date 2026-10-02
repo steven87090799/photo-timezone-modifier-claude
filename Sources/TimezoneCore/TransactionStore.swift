@@ -131,7 +131,7 @@ final class TransactionStore {
         var result = Set<String>()
         for record in try records(in: active) {
             result.insert(record.candidate.standardizedFileURL.path)
-            for path in record.sidecarCandidateIdentities?.keys ?? [] {
+            for path in record.sidecarCandidateIdentities.map({ Array($0.keys) }) ?? [] {
                 result.insert(URL(fileURLWithPath: path).standardizedFileURL.path)
             }
         }
