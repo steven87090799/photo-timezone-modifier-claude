@@ -1296,11 +1296,14 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let summary = try requireValue(job.summaries.first, "Missing finished event", file: file, line: line)
         expectEqual(job.summaries.count, 1, "Exactly one finished event", file: file, line: line)
         if case .finished? = job.events.last {} else { recordFailure("Finished must be the last event", file: file, line: line) }
-        expectEqual(summary.total, succeeded + skipped + failed + cancelled, file: file, line: line)
-        expectEqual(summary.succeeded, succeeded, file: file, line: line)
-        expectEqual(summary.skipped, skipped, file: file, line: line)
-        expectEqual(summary.failed, failed, file: file, line: line)
-        expectEqual(summary.cancelled, cancelled, file: file, line: line)
+        let terminalDetails = job.updates.map {
+            "\($0.item.url.lastPathComponent): \($0.item.status.rawValue) — \($0.item.detail)"
+        }.joined(separator: " | ")
+        expectEqual(summary.total, succeeded + skipped + failed + cancelled, terminalDetails, file: file, line: line)
+        expectEqual(summary.succeeded, succeeded, terminalDetails, file: file, line: line)
+        expectEqual(summary.skipped, skipped, terminalDetails, file: file, line: line)
+        expectEqual(summary.failed, failed, terminalDetails, file: file, line: line)
+        expectEqual(summary.cancelled, cancelled, terminalDetails, file: file, line: line)
         expectEqual(summary.total, summary.succeeded + summary.skipped + summary.failed + summary.cancelled,
                        "Every discovered item must have a terminal outcome", file: file, line: line)
         expectFalse(summary.message.isEmpty, file: file, line: line)
