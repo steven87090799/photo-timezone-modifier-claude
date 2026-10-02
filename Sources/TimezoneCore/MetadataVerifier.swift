@@ -129,8 +129,13 @@ enum MetadataVerifier {
         if metadata.fileType == "JPEG", key == "IFD1:ThumbnailOffset" { return true }
         if metadata.fileType == "TIFF", (group.hasPrefix("IFD") || group.hasPrefix("SubIFD")),
            ["StripOffsets", "TileOffsets", "ThumbnailOffset"].contains(tag) { return true }
+        // ExifTool may relocate embedded preview/JPEG payloads when a TIFF-based
+        // Sony RAW file gains EXIF fields. These values are offsets, not payload
+        // metadata: accept only the explicit pointer tags below, and only after
+        // verifying that both old/new offsets remain inside their respective files.
         let sonyPointers: Set<String> = ["MPImage2:MPImageStart", "IFD0:PreviewImageStart",
-            "IFD1:ThumbnailOffset", "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"]
+            "IFD1:ThumbnailOffset", "IFD2:JpgFromRawStart",
+            "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"]
         return sony && options.sonyCompatibility && sonyPointers.contains(key)
     }
 
