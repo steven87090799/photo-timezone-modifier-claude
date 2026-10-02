@@ -14,6 +14,37 @@ final class FileDiscoveryTests: TemporaryDirectoryTestCase {
         #expect(try directory.output(for: photo).path == output.appendingPathComponent("source/photo.jpg").path)
     }
 
+    @Test func testFilesystemRootIsRejectedWithoutEnumerationOrMapping() throws {
+        let root = URL(fileURLWithPath: "/", isDirectory: true)
+        let items = FileDiscovery.collect(inputs: [root], recursive: true, cancellation: CancellationToken())
+        expectEqual(items.count, 1)
+        expectEqual(items.first?.status, .failed)
+        expectTrue(items.first?.detail.contains("根目錄") == true)
+
+        let output = try makeDirectory("root-output")
+        #expect(throws: PhotoError.self) {
+            try CopyDestination.validate(output, roots: [root])
+        }
+    }
+
+    @Test func testSidecarIndexHandlesMixedCaseExtensionsAndRefreshesDirectoryChanges() throws {
+        let photo = try makeFile("mixed/photo.jpg")
+        let xmp = try makeFile("mixed/photo.XmP", contents: Data("xmp".utf8))
+        let index = SidecarIndex(capacity: 2)
+
+        var found = try SidecarSupport.find(beside: photo, index: index)
+        expectEqual(Set(found.map(\.lastPathComponent)), Set(["photo.XmP"]))
+
+        let on1 = try makeFile("mixed/photo.jpg.On1", contents: Data("on1".utf8))
+        let acr = try makeFile("mixed/photo.aCr", contents: Data("acr".utf8))
+        found = try SidecarSupport.find(beside: photo, index: index)
+        expectEqual(Set(found.map(\.lastPathComponent)), Set(["photo.XmP", "photo.jpg.On1", "photo.aCr"]))
+
+        try FileManager.default.removeItem(at: xmp)
+        found = try SidecarSupport.find(beside: photo, index: index)
+        expectEqual(Set(found.map(\.lastPathComponent)), Set([on1.lastPathComponent, acr.lastPathComponent]))
+    }
+
     @Test func testReviewSidecarSetChangesRequireRescan() throws {
         let photo = try makeFile("review.jpg")
         let original = try SidecarSupport.find(beside: photo)
