@@ -11,5 +11,5 @@ var targets: [Target] = [
 products.append(.executable(name: "PhotoTimezoneApp", targets: ["PhotoTimezoneApp"]))
 targets.append(.executableTarget(name: "PhotoTimezoneApp", dependencies: ["TimezoneCore"]))
 #endif
-let package = Package(name: "PhotoTimezone", platforms: [.macOS(.v13)],
+let package = Package(name: "PhotoTimezone", platforms: [.macOS("27.0")],
                       products: products, targets: targets)
