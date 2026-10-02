@@ -150,26 +150,34 @@ enum MetadataVerifier {
         // metadata: accept only the explicit pointer tags below, and only after
         // verifying that both old/new offsets remain inside their respective files.
         let sonyPointers: Set<String> = ["MPImage2:MPImageStart", "IFD0:PreviewImageStart",
-            "IFD1:ThumbnailOffset", "IFD2:JpgFromRawStart",
+            "IFD1:ThumbnailOffset", "IFD2:JpgFromRawStart", "Sony:HiddenDataOffset",
             "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"]
         return sony && options.sonyCompatibility && sonyPointers.contains(key)
     }
 
-    /// Sony ARW embeds an encrypted SR2 private IFD described by an offset/length
-    /// pair. ExifTool may rebuild that block while preserving all decoded tags.
-    /// Treat only this exact structural length as relocatable, and require both
-    /// the old and new spans to remain fully inside their respective files.
+    /// Sony ARW contains a small set of private blocks described by explicit
+    /// offset/length pairs. ExifTool may relocate/rebuild these containers while
+    /// preserving all decoded tags. Treat only the exact pairs below as structural,
+    /// and require both old/new spans to remain fully inside their respective files.
     private static func permittedStructuralSpanChange(
         _ key: String, before: [String: String], after: [String: String],
         metadata: PhotoMetadata, options: WriteOptions,
         oldLimit: Int64?, newLimit: Int64?
     ) -> Bool {
-        guard key == "SR2:SR2SubIFDLength",
-              metadata.make?.uppercased() == "SONY", options.sonyCompatibility,
-              let oldOffset = before["SR2:SR2SubIFDOffset"],
-              let oldLength = before["SR2:SR2SubIFDLength"],
-              let newOffset = after["SR2:SR2SubIFDOffset"],
-              let newLength = after["SR2:SR2SubIFDLength"] else {
+        guard metadata.make?.uppercased() == "SONY", options.sonyCompatibility else {
+            return false
+        }
+        let pair: (offset: String, length: String)
+        switch key {
+        case "SR2:SR2SubIFDLength":
+            pair = ("SR2:SR2SubIFDOffset", "SR2:SR2SubIFDLength")
+        case "Sony:HiddenDataLength":
+            pair = ("Sony:HiddenDataOffset", "Sony:HiddenDataLength")
+        default:
+            return false
+        }
+        guard let oldOffset = before[pair.offset], let oldLength = before[pair.length],
+              let newOffset = after[pair.offset], let newLength = after[pair.length] else {
             return false
         }
         return validSpan(offset: oldOffset, length: oldLength, limit: oldLimit)
