@@ -1050,7 +1050,8 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             "SR2:SR2SubIFDKey": "12345",
             "IFD2:JpgFromRawStart": "5000",
             "Sony:HiddenDataOffset": "8000",
-            "Sony:HiddenDataLength": "1000"
+            "Sony:HiddenDataLength": "1000",
+            "SubIFD:TileOffsets": "[10000,20000]"
         ]
         let afterTags = [
             "SR2:SR2SubIFDOffset": "1200",
@@ -1058,7 +1059,8 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             "SR2:SR2SubIFDKey": "12345",
             "IFD2:JpgFromRawStart": "5200",
             "Sony:HiddenDataOffset": "8300",
-            "Sony:HiddenDataLength": "1100"
+            "Sony:HiddenDataLength": "1100",
+            "SubIFD:TileOffsets": "[10200,20200]"
         ]
         let before = ExifTool.Snapshot(metadata: beforeMetadata, warnings: "", embeddedTags: beforeTags)
         let after = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: afterTags)
@@ -1071,6 +1073,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(notices.contains { $0.contains("IFD2:JpgFromRawStart") })
         expectTrue(notices.contains { $0.contains("Sony:HiddenDataOffset") })
         expectTrue(notices.contains { $0.contains("Sony:HiddenDataLength") })
+        expectTrue(notices.contains { $0.contains("SubIFD:TileOffsets") })
 
         #expect(throws: PhotoError.self) {
             try MetadataVerifier.verify(
