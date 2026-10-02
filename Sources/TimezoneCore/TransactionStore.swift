@@ -90,10 +90,19 @@ final class TransactionStore {
             if let staged, let expected = record.candidateIdentity, staged == expected,
                targetUnchanged, record.publishedSidecars.isEmpty,
                record.phase == .prepared || record.phase == .backupDurable {
-                record.phase = .aborted
-                record.detail = "Recovered before publication: candidate and destination identities unchanged. Files and backups retained."
-                try finish(record)
-                continue
+                do {
+                    try FileManager.default.removeItem(at: record.candidate)
+                    try SafeFileTransaction.syncDirectory(record.candidate.deletingLastPathComponent())
+                    record.phase = .aborted
+                    record.detail = "Recovered before publication: verified disposable candidate removed; destination and backups retained."
+                    try finish(record)
+                    continue
+                } catch {
+                    record.detail = "Recovery proved publication did not occur, but the disposable candidate could not be removed: \(error.localizedDescription)"
+                    try save(record)
+                    pending.append(record)
+                    continue
+                }
             }
             // Never infer 'not published' solely from an old phase: the process
             // may have stopped immediately after rename, before updating it.
