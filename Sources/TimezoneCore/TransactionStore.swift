@@ -32,8 +32,16 @@ struct TransactionManifest: Codable {
 }
 
 final class TransactionStore {
+    private struct Provenance {
+        let id: UUID
+        let backupIdentity: FileIdentity?
+        let sourceIdentity: FileIdentity
+        let phase: TransactionPhase
+    }
+
     let active: URL
     let history: URL
+    private var provenanceBySource: [String: [Provenance]] = [:]
     private let encoder: JSONEncoder = {
         let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; return e
     }()
@@ -44,6 +52,9 @@ final class TransactionStore {
         for dir in [active, history] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
+        }
+        for record in try records(in: active) + records(in: history) {
+            rememberProvenance(record)
         }
     }
 
@@ -61,6 +72,7 @@ final class TransactionStore {
         } else {
             try SafeFileTransaction.publishExclusive(temp, to: destination)
         }
+        rememberProvenance(manifest)
     }
 
     func finish(_ manifest: TransactionManifest) throws {
@@ -84,12 +96,10 @@ final class TransactionStore {
             throw PhotoError("Backup is not the canonical _original path for this photo.")
         }
         let current = try FileIdentity.read(backup)
-        var sawReference = false
-        for record in try allRecords() {
-            guard record.source.standardizedFileURL.path == source.path,
-                  record.backup?.standardizedFileURL.path == backup.path else { continue }
-            sawReference = true
-            if let pinned = record.canonicalBackupIdentity {
+        let records = provenanceBySource[source.path] ?? []
+        let sawReference = !records.isEmpty
+        for record in records {
+            if let pinned = record.backupIdentity {
                 let durablePhases: Set<TransactionPhase> = [
                     .backupDurable, .published, .committed, .aborted, .publicationUnconfirmed, .reviewed
                 ]
@@ -115,16 +125,30 @@ final class TransactionStore {
     }
 
     func canonicalProvenanceRecordIDs() throws -> Set<UUID> {
-        var ids = Set<UUID>()
-        for record in try allRecords() {
-            guard let backup = record.backup,
-                  backup.standardizedFileURL.path == record.source.standardizedFileURL.path + "_original" else { continue }
-            if record.canonicalBackupIdentity != nil ||
-               [.committed, .publicationUnconfirmed, .reviewed].contains(record.phase) {
-                ids.insert(record.id)
+        Set(provenanceBySource.values.flatMap { records in
+            records.compactMap { record in
+                if record.backupIdentity != nil ||
+                   [.committed, .publicationUnconfirmed, .reviewed].contains(record.phase) {
+                    return record.id
+                }
+                return nil
             }
-        }
-        return ids
+        })
+    }
+
+    private func rememberProvenance(_ record: TransactionManifest) {
+        let source = record.source.standardizedFileURL
+        guard let backup = record.backup?.standardizedFileURL,
+              backup.path == source.path + "_original" else { return }
+        var values = provenanceBySource[source.path] ?? []
+        values.removeAll { $0.id == record.id }
+        values.append(Provenance(
+            id: record.id,
+            backupIdentity: record.canonicalBackupIdentity,
+            sourceIdentity: record.sourceIdentity,
+            phase: record.phase
+        ))
+        provenanceBySource[source.path] = values
     }
 
     func activeCandidatePaths() throws -> Set<String> {
@@ -136,10 +160,6 @@ final class TransactionStore {
             }
         }
         return result
-    }
-
-    private func allRecords() throws -> [TransactionManifest] {
-        try records(in: active) + records(in: history)
     }
 
     private func records(in directory: URL) throws -> [TransactionManifest] {
