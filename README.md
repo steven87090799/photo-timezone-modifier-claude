@@ -1,6 +1,6 @@
 # 相片時區修改器 3.5.0
 
-原生 macOS SwiftUI 工具，支援 JPEG、TIFF、Sony ARW。只修改明確選取的 EXIF 時區，不換算或修改拍攝時間。
+原生 macOS SwiftUI 工具，支援 JPEG、TIFF、Sony ARW。只有在使用者明確確認後才補寫三個 EXIF 時區欄位或手動新增 GPS；不換算或修改拍攝時間。
 
 ## 這版的寫入規則
 
@@ -26,19 +26,19 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 唯讀診斷 EXIF、內嵌 XMP 與 XMP sidecar 的時間衝突，**不會為了讓軟體顯示相同而偷改拍攝時間或 XMP**。副本模式預設原樣複製同名 `.xmp`、`.on1`、`.acr` 伴隨檔，同名衝突會停止該張照片的發布。
 
-雲端圖庫、編目資料庫或既有 XMP 不一定自動更新。本版不宣稱已完成所有目標軟體的實機驗證。請用獨立測試副本比較「原檔、補時區結果、ON1 匯出」的時間欄位。
+雲端圖庫、編目資料庫或既有 XMP 不一定自動更新。本版不宣稱已在 CI 內啟動 ON1／Lightroom／Immich／Google Photos。ON1 提供 A/B/C/C0 實機驗證流程與自動判讀腳本，見 [ON1 acceptance](docs/ON1_ACCEPTANCE.md)。
 
 ## 復原與異常提交
 
-「從原始備份還原」是**整檔還原**，不是僅撤銷時區；還原前會另存當前版本。不會自動刪除你的備份。
+「從原始備份還原」是**整檔還原**，不是僅撤銷時區；還原前會另存當前版本。不會自動刪除你的備份。既有 `_original` 必須能由 PhotoTimezone 的 durable transaction provenance 證明來源，否則自動還原／再次原檔寫入會被拒絕。
 
-發布后的同步錯誤會標記「已發布但未確認」，阻止盲目重試。由「資訊」選單開啟交易復原檢視；人工確認只封存紀錄，不會偷刪檔或自動重試。
+發布后的同步錯誤會標記「已發布但未確認」，阻止盲目重試。由「資訊」選單開啟交易復原檢視；人工確認只封存紀錄，不會偷刪檔或自動重試。若 crash 發生在發布前，只有身分、路徑與 UUID 都能對上的 disposable candidate 才會自動清理。診斷頁另提供 Logs／非 provenance 歷史記錄與孤立候選的顯式清理；照片備份只統計、不自動刪除。
 
 ## 下載 App
 
 [下載最新版 macOS App](https://github.com/steven87090799/photo-timezone-modifier-claude/releases/latest/download/PhotoTimezone-macOS.zip) · [所有建置版本](https://github.com/steven87090799/photo-timezone-modifier-claude/releases)
 
-每次推送或合併到 `main`，GitHub Actions 會執行 Linux／macOS 完整一般測試、建置僅適用 Apple Silicon（M 系列晶片）的 App，成功後自動發布到 Releases。ZIP 解壓縮後，將「相片時區修改器.app」放到「應用程式」即可。固定下載連結提供最新成功發布的版本；測試或建置失敗時保留上一個成功版本。
+每次推送或合併到 `main`，GitHub Actions 會在 Apple Silicon macOS 27 runner 執行完整測試、下載並驗證固定 SHA-256 的 Sony ILCE-7M4 真實 ARW fixture、建置 M 系列 App，成功後自動發布到 Releases。ZIP 解壓縮後，將「相片時區修改器.app」放到「應用程式」即可。固定下載連結提供最新成功發布的版本；測試或建置失敗時保留上一個成功版本。
 
 每個 Release 記錄提交與建置編號，舊版本可保留下載。PR 的建置成品只放在 Actions 的 `PhotoTimezone-macOS` artifact。也可在 Actions 手動執行 `macOS native app`，選擇 `main` 重新建置發布。App 目前使用 ad-hoc 簽章，尚未取得 Apple Developer ID 簽章／公證。
 
@@ -52,7 +52,7 @@ PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
 ./build.sh
 ```
 
-成品位於 `dist/相片時區修改器.app`，僅包含 arm64 架構，適用 M 系列 Mac。預設是 ad-hoc 簽章，不是 Apple 公證發行版。Linux 可跑核心測試，不能產生 macOS App。
+成品位於 `dist/相片時區修改器.app`，只包含 arm64 架構並要求 macOS 27.0+。預設是 ad-hoc 簽章，不是 Apple 公證發行版；Intel 與 macOS 26 以下不再列為支援或 CI 驗證平台。
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
 
