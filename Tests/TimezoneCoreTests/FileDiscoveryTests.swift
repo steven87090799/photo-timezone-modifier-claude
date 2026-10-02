@@ -4,6 +4,26 @@ import Testing
 
 @Suite(.serialized)
 final class FileDiscoveryTests: TemporaryDirectoryTestCase {
+    @Test func testRootSourceIsRejectedAndContainmentHandlesRoot() throws {
+        let output = try makeDirectory("root-destination")
+        #expect(CopyDestination.contains(URL(fileURLWithPath: "/"), URL(fileURLWithPath: "/Users/test/photo.jpg")))
+        #expect(throws: PhotoError.self) {
+            try CopyDestination.validate(output, roots: [URL(fileURLWithPath: "/")])
+        }
+    }
+
+    @Test func testSidecarIndexMatchesMixedCaseExtensionsAndRefreshes() throws {
+        let photo = try makeFile("mixed/photo.jpg")
+        let sidecar = try makeFile("mixed/photo.XmP")
+        let index = SidecarIndex()
+        #expect(try index.find(beside: photo) == [sidecar])
+        let extra = try makeFile("mixed/photo.jpg.On1")
+        let cached = try index.find(beside: photo)
+        #expect(cached == [sidecar])
+        let refreshed = try index.find(beside: photo, refresh: true)
+        #expect(Set(refreshed) == Set([sidecar, extra]))
+    }
+
     @Test func testReviewCopyDestinationTerminatesAtFilesystemRoot() throws {
         let photo = try makeFile("source/photo.jpg")
         let output = try makeDirectory("destination")
