@@ -7,6 +7,11 @@ if [[ $# != 0 ]]; then
   echo "用法：./build.sh（僅建置 Apple Silicon／M 系列 App）" >&2
   exit 1
 fi
+if [[ "$(/usr/bin/uname -m)" != "arm64" ]]; then
+  echo "只支援 Apple Silicon（arm64）建置。" >&2
+  exit 1
+fi
+export MACOSX_DEPLOYMENT_TARGET=27.0
 ./scripts/prepare-exiftool.sh
 bash ./scripts/prepare-icon.sh
 mkdir -p "$PROJECT_DIR/dist"
