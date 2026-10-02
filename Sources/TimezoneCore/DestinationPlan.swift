@@ -62,25 +62,63 @@ final class DestinationPlan {
     }
 }
 
-enum SidecarSupport {
-    static func verifyUnchanged(_ inspected: [URL], beside photo: URL) throws {
-        guard Set(try find(beside: photo).map(\.path)) == Set(inspected.map(\.path)) else {
+final class SidecarIndex {
+    private var directories: [String: [String: [URL]]] = [:]
+
+    private func snapshot(directory: URL, refresh: Bool) throws -> [String: [URL]] {
+        let key = directory.standardizedFileURL.path
+        if !refresh, let cached = directories[key] { return cached }
+        var index: [String: [URL]] = [:]
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        )
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            guard ["xmp", "on1", "acr"].contains(ext) else { continue }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            index[url.lastPathComponent.lowercased(), default: []].append(url)
+        }
+        directories[key] = index
+        return index
+    }
+
+    func find(beside photo: URL, refresh: Bool = false) throws -> [URL] {
+        let directory = photo.deletingLastPathComponent()
+        let index = try snapshot(directory: directory, refresh: refresh)
+        let stem = photo.deletingPathExtension().lastPathComponent.lowercased()
+        let full = photo.lastPathComponent.lowercased()
+        var candidates: [URL] = []
+        for ext in ["xmp", "on1", "acr"] {
+            candidates += index["\(stem).\(ext)"] ?? []
+            candidates += index["\(full).\(ext)"] ?? []
+        }
+        var seenPaths = Set<String>(), seenFiles = Set<String>(), result: [URL] = []
+        for url in candidates.sorted(by: { $0.path < $1.path }) {
+            guard seenPaths.insert(url.path).inserted else { continue }
+            let identity = try FileIdentity.read(url)
+            guard seenFiles.insert("\(identity.device):\(identity.inode)").inserted else { continue }
+            result.append(url)
+        }
+        return result
+    }
+
+    func verifyUnchanged(_ inspected: [URL], beside photo: URL) throws {
+        let current = try find(beside: photo, refresh: true)
+        guard Set(current.map(\.path)) == Set(inspected.map(\.path)) else {
             throw PhotoError("Sidecar set changed during processing; photo was not published. Rescan before retrying.")
         }
     }
+}
+
+enum SidecarSupport {
+    static func verifyUnchanged(_ inspected: [URL], beside photo: URL) throws {
+        try SidecarIndex().verifyUnchanged(inspected, beside: photo)
+    }
 
     static func find(beside photo: URL) throws -> [URL] {
-        let stem = photo.deletingPathExtension(), fm = FileManager.default
-        var seen = Set<String>(), seenFiles = Set<String>(), result: [URL] = []
-        for ext in ["xmp", "XMP", "on1", "ON1", "acr", "ACR"] {
-            for base in [stem, photo] {
-                let url = base.appendingPathExtension(ext)
-                guard seen.insert(url.path).inserted, fm.fileExists(atPath: url.path) else { continue }
-                let identity = try FileIdentity.read(url)
-                guard seenFiles.insert("\(identity.device):\(identity.inode)").inserted else { continue }
-                result.append(url)
-            }
-        }
-        return result
+        try SidecarIndex().find(beside: photo)
     }
 }
