@@ -256,13 +256,25 @@ final class ExifTool {
     ) throws -> String {
         let output = try execute([
             "-charset", "filename=UTF8", "-j", "-G1:4", "-s", "-n",
-            "-b", "-sep", " ", "-\(key)", file.path
+            "-b", "-\(key)", file.path
         ], timeout: 120, cancellation: cancellation)
-        guard output.status == 0, output.stdout.count <= 1024 * 1024,
-              let entries = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
-              entries.count == 1, let record = entries.first,
-              record["ExifTool:Error"] == nil, let value = record[key] else {
-            throw PhotoError("Unable to dereference bounded layout pointer \(key); candidate was not accepted.")
+        guard output.status == 0 else {
+            throw PhotoError("Unable to dereference layout pointer \(key): ExifTool status \(output.status), \(output.stderr)")
+        }
+        guard output.stdout.count <= 1024 * 1024 else {
+            throw PhotoError("Dereferenced layout pointer \(key) exceeded the 1 MiB metadata budget.")
+        }
+        guard let entries = try? JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
+              entries.count == 1, let record = entries.first else {
+            let sample = String(decoding: output.stdout.prefix(256), as: UTF8.self)
+            throw PhotoError("Unable to decode dereferenced layout pointer \(key) as JSON: \(sample)")
+        }
+        if let error = record["ExifTool:Error"] {
+            throw PhotoError("Unable to dereference layout pointer \(key): \(error)")
+        }
+        guard let value = record[key] else {
+            let keys = record.keys.sorted().joined(separator: ", ")
+            throw PhotoError("Dereferenced layout pointer \(key) was absent; returned keys: \(keys)")
         }
         let data = try JSONSerialization.data(
             withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]
