@@ -1,6 +1,6 @@
 import Foundation
 
-public enum TransactionPhase: String, Codable, Sendable {
+public enum TransactionPhase: String, Codable, Sendable, Hashable {
     case prepared, backupDurable, published, committed, aborted, publicationUnconfirmed, reviewed
 }
 
