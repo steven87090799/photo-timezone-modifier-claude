@@ -12,6 +12,9 @@ final class DestinationPlan {
     init(destination: URL, roots: [URL]) throws {
         try CopyDestination.validate(destination, roots: roots)
         self.destination = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard self.destination.path != "/" else {
+            throw PhotoError("Filesystem root cannot be used as the copy destination.")
+        }
         identity = try DirectoryIdentity.read(self.destination)
         for root in roots {
             let normalized = root.standardizedFileURL
@@ -39,6 +42,9 @@ final class DestinationPlan {
         }
         let output: URL
         if let root = match {
+            guard root.path != "/" else {
+                throw PhotoError("Filesystem root cannot be used as a source root.")
+            }
             output = destination.appendingPathComponent(root.lastPathComponent, isDirectory: true)
                 .appendingPathComponent(String(source.path.dropFirst(root.path.count + 1)))
         } else {
@@ -62,25 +68,3 @@ final class DestinationPlan {
     }
 }
 
-enum SidecarSupport {
-    static func verifyUnchanged(_ inspected: [URL], beside photo: URL) throws {
-        guard Set(try find(beside: photo).map(\.path)) == Set(inspected.map(\.path)) else {
-            throw PhotoError("Sidecar set changed during processing; photo was not published. Rescan before retrying.")
-        }
-    }
-
-    static func find(beside photo: URL) throws -> [URL] {
-        let stem = photo.deletingPathExtension(), fm = FileManager.default
-        var seen = Set<String>(), seenFiles = Set<String>(), result: [URL] = []
-        for ext in ["xmp", "XMP", "on1", "ON1", "acr", "ACR"] {
-            for base in [stem, photo] {
-                let url = base.appendingPathExtension(ext)
-                guard seen.insert(url.path).inserted, fm.fileExists(atPath: url.path) else { continue }
-                let identity = try FileIdentity.read(url)
-                guard seenFiles.insert("\(identity.device):\(identity.inode)").inserted else { continue }
-                result.append(url)
-            }
-        }
-        return result
-    }
-}
