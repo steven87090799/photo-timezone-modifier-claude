@@ -1048,13 +1048,17 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             "SR2:SR2SubIFDOffset": "1000",
             "SR2:SR2SubIFDLength": "2000",
             "SR2:SR2SubIFDKey": "12345",
-            "IFD2:JpgFromRawStart": "5000"
+            "IFD2:JpgFromRawStart": "5000",
+            "Sony:HiddenDataOffset": "8000",
+            "Sony:HiddenDataLength": "1000"
         ]
         let afterTags = [
             "SR2:SR2SubIFDOffset": "1200",
             "SR2:SR2SubIFDLength": "2100",
             "SR2:SR2SubIFDKey": "12345",
-            "IFD2:JpgFromRawStart": "5200"
+            "IFD2:JpgFromRawStart": "5200",
+            "Sony:HiddenDataOffset": "8300",
+            "Sony:HiddenDataLength": "1100"
         ]
         let before = ExifTool.Snapshot(metadata: beforeMetadata, warnings: "", embeddedTags: beforeTags)
         let after = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: afterTags)
@@ -1065,6 +1069,8 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         )
         expectTrue(notices.contains { $0.contains("SR2:SR2SubIFDLength") })
         expectTrue(notices.contains { $0.contains("IFD2:JpgFromRawStart") })
+        expectTrue(notices.contains { $0.contains("Sony:HiddenDataOffset") })
+        expectTrue(notices.contains { $0.contains("Sony:HiddenDataLength") })
 
         #expect(throws: PhotoError.self) {
             try MetadataVerifier.verify(
@@ -1079,6 +1085,16 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         #expect(throws: PhotoError.self) {
             try MetadataVerifier.verify(
                 before: before, after: invalid, assignments: [],
+                options: WriteOptions(sonyCompatibility: true)
+            )
+        }
+
+        var invalidHiddenTags = afterTags
+        invalidHiddenTags["Sony:HiddenDataLength"] = "200000"
+        let invalidHidden = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: invalidHiddenTags)
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(
+                before: before, after: invalidHidden, assignments: [],
                 options: WriteOptions(sonyCompatibility: true)
             )
         }
