@@ -215,7 +215,7 @@ enum MetadataVerifier {
             return values.count == numbers.count ? values : nil
         }
         if let text = value as? String {
-            let parts = text.split(separator: " ")
+            let parts = text.split { $0.isWhitespace || $0 == "," }
             let values = parts.compactMap { Int64($0) }
             return values.count == parts.count && !values.isEmpty ? values : nil
         }
