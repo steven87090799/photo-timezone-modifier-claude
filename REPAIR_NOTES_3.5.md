@@ -48,7 +48,7 @@ The chosen fixed offset must be appropriate for each associated timestamp.
 | F24 misleading preview | External-open action explicitly named, disabled during work; not described as guaranteed read-only. |
 | F25 aliases | Device/inode deduplication, original hardlink replacement refused, copy mode remains available. |
 | F26 Int.min | Overflow-safe formatting and rejection before mutation; regression test. |
-| F27 releases | Native macOS CI and universal build retained; Linux core validation does not certify macOS UI, signing or real RAW compatibility. |
+| F27 releases | Native macOS CI is Apple Silicon-only; shipping baseline is macOS 27+. Linux core validation does not certify macOS UI, signing or real RAW compatibility. |
 | F28 architecture | ViewModel separated, dedicated transport/verifier/identity/transaction/destination/catalogue modules; ARW UTI declaration aligned. |
 
 ## ExifTool lifecycle patch
@@ -140,6 +140,6 @@ breaking ad-hoc signature validation. This is a local build-environment limitati
 
 The three-offset contract, no clock/date changes, metadata-only production
 verification, copy defaults and backup/publication safeguards are preserved.
-Real camera RAW/application acceptance, power-loss behavior and Intel hardware
+Real camera RAW/application acceptance and power-loss behavior
 execution remain unverified by these fixture tests. Prior Linux stress results
 above are historical and were not rerun for this follow-up.
