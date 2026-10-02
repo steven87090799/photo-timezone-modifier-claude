@@ -9,7 +9,11 @@ public enum TimeValidation {
               [1, 2, 4, 5].allSatisfy({ (48...57).contains(bytes[$0]) }) else { return false }
         let hours = Int(bytes[1] - 48) * 10 + Int(bytes[2] - 48)
         let minutes = Int(bytes[4] - 48) * 10 + Int(bytes[5] - 48)
-        return minutes < 60 && (hours < 14 || (hours == 14 && minutes == 0))
+        guard minutes < 60 else { return false }
+        if bytes[0] == 45 {
+            return hours < 12 || (hours == 12 && minutes == 0)
+        }
+        return hours < 14 || (hours == 14 && minutes == 0)
     }
 
     public static func isCaptureDate(_ value: String?) -> Bool {
@@ -44,6 +48,10 @@ public enum TimeValidation {
     static func issues(_ metadata: PhotoMetadata, dates: [String: String]? = nil) -> [String] {
         var result: [String] = []
         let dates = dates ?? metadata.dateTags
+        let presentOffsets = [metadata.offsetOriginal, metadata.offsetDigitized, metadata.offsetTime].compactMap { $0 }
+        if Set(presentOffsets).count > 1 {
+            result.append("The three EXIF timezone offsets are inconsistent; fill-missing preserves existing values, while replace-all can normalize them.")
+        }
         let pairs: [(String, String?, String?)] = [
             ("DateTimeOriginal", metadata.dateTimeOriginal, metadata.offsetOriginal),
             ("DateCreated", metadata.dateTimeOriginal, metadata.offsetOriginal),
