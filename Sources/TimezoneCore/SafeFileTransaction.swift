@@ -100,6 +100,9 @@ public enum CopyDestination {
     public static func validate(_ destination: URL, roots: [URL]) throws {
         guard !roots.isEmpty else { throw PhotoError("尚未選取來源相片或資料夾。") }
         let destination = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard destination.path != "/" else {
+            throw PhotoError("檔案系統根目錄不可作為輸出目的地；請選擇一般資料夾。")
+        }
         let values = try destination.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true,
               FileManager.default.isWritableFile(atPath: destination.path) else {
@@ -107,6 +110,9 @@ public enum CopyDestination {
         }
         for root in roots {
             let root = root.standardizedFileURL.resolvingSymlinksInPath()
+            guard root.path != "/" else {
+                throw PhotoError("檔案系統根目錄不可作為來源；請選擇實際相片資料夾。")
+            }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue {
@@ -153,6 +159,9 @@ public enum CopyDestination {
         let source = source.standardizedFileURL
         let destination = destination.standardizedFileURL.resolvingSymlinksInPath()
         let sorted = roots.map(\.standardizedFileURL).sorted { $0.path.count < $1.path.count }
+        guard !sorted.contains(where: { $0.path == "/" }) else {
+            throw PhotoError("Filesystem root cannot be mapped into a copy destination.")
+        }
         for root in sorted {
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
@@ -169,7 +178,8 @@ public enum CopyDestination {
     }
 
     static func contains(_ directory: URL, _ child: URL) -> Bool {
-        child.path == directory.path || child.path.hasPrefix(directory.path + "/")
+        if directory.path == "/" { return child.path.hasPrefix("/") }
+        return child.path == directory.path || child.path.hasPrefix(directory.path + "/")
     }
 }
 
