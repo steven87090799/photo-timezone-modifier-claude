@@ -28,7 +28,10 @@ public struct StorageCleanupResult: Sendable {
 /// UUID-named staging files that no active transaction references.
 public enum StorageMaintenance {
     public static func snapshot(photoURLs: [URL]) throws -> StorageUsage {
-        let support = try supportDirectory()
+        try snapshot(photoURLs: photoURLs, support: supportDirectory())
+    }
+
+    static func snapshot(photoURLs: [URL], support: URL) throws -> StorageUsage {
         let store = try TransactionStore(directory: support.appendingPathComponent("Transactions", isDirectory: true))
         let logs = try measureFlatDirectory(support.appendingPathComponent("Logs", isDirectory: true),
                                             extensions: ["jsonl"])
@@ -45,7 +48,11 @@ public enum StorageMaintenance {
     }
 
     public static func cleanAdministrativeHistory() throws -> StorageCleanupResult {
-        let support = try supportDirectory()
+        try cleanAdministrativeHistory(support: supportDirectory())
+    }
+
+    static func cleanAdministrativeHistory(support: URL) throws -> StorageCleanupResult {
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let lock = try JobLock(url: support.appendingPathComponent("job.lock"))
         defer { lock.release() }
         let store = try TransactionStore(directory: support.appendingPathComponent("Transactions", isDirectory: true))
@@ -88,7 +95,11 @@ public enum StorageMaintenance {
     }
 
     public static func cleanOrphanCandidates(photoURLs: [URL]) throws -> StorageCleanupResult {
-        let support = try supportDirectory()
+        try cleanOrphanCandidates(photoURLs: photoURLs, support: supportDirectory())
+    }
+
+    static func cleanOrphanCandidates(photoURLs: [URL], support: URL) throws -> StorageCleanupResult {
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let lock = try JobLock(url: support.appendingPathComponent("job.lock"))
         defer { lock.release() }
         let store = try TransactionStore(directory: support.appendingPathComponent("Transactions", isDirectory: true))
