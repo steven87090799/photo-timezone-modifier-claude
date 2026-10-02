@@ -313,6 +313,7 @@ public struct PhotoEngine: Sendable {
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
+                try BackupProvenance.verify(source: item.url, backup: oldest)
                 backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
             } else { backup = oldest }
         } else { backup = nil }
@@ -335,7 +336,14 @@ public struct PhotoEngine: Sendable {
                 try SafeFileTransaction.copyAndSync(item.url, to: temp)
                 try sourceIdentity.verify(item.url)
                 try SafeFileTransaction.publishExclusive(temp, to: backup)
+                if backup.path == item.url.path + "_original" {
+                    try BackupProvenance.record(
+                        source: item.url, sourceIdentity: sourceIdentity,
+                        backup: backup, transactionID: manifest.id
+                    )
+                }
                 manifest.phase = .backupDurable
+                try store.save(manifest)
             }
             // No cancellation after this boundary: finish the durable transaction.
             try sourceIdentity.verify(item.url)
@@ -511,6 +519,7 @@ public struct PhotoEngine: Sendable {
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
+                try BackupProvenance.verify(source: item.url, backup: oldest)
                 backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
             } else {
                 backup = oldest
@@ -551,7 +560,14 @@ public struct PhotoEngine: Sendable {
                 try SafeFileTransaction.copyAndSync(item.url, to: temp)
                 try sourceIdentity.verify(item.url)
                 try SafeFileTransaction.publishExclusive(temp, to: backup)
+                if backup.path == item.url.path + "_original" {
+                    try BackupProvenance.record(
+                        source: item.url, sourceIdentity: sourceIdentity,
+                        backup: backup, transactionID: manifest.id
+                    )
+                }
                 manifest.phase = .backupDurable
+                try store.save(manifest)
             }
 
             try sourceIdentity.verify(item.url)
@@ -616,6 +632,7 @@ public struct PhotoEngine: Sendable {
             item.status = .skipped; item.detail = "No _original backup; nothing changed."; return
         }
         let backupIdentity = try FileIdentity.read(backup)
+        try BackupProvenance.verify(source: item.url, backup: backup)
         let before = try tool.snapshot(backup, cancellation: cancellation, strictOffsets: false)
         let currentIdentity = fm.fileExists(atPath: item.url.path) ? try FileIdentity.read(item.url) : nil
         if let currentIdentity, currentIdentity.links > 1 { throw PhotoError("Restore would break hard links; use an independent copy.") }
