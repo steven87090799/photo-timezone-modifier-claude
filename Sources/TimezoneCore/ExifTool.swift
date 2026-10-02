@@ -221,7 +221,57 @@ final class ExifTool {
             let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys])
             result[key] = String(decoding: data, as: UTF8.self)
         }
+
+        // ExifTool intentionally wraps long StripOffsets/TileOffsets ValueConv
+        // strings in a scalar reference. Normal JSON then contains only
+        // "(Binary data N bytes, use -b option to extract)", which is not the
+        // pointer list and must not be compared as metadata. Dereference only
+        // these explicit image-layout tags, as bounded JSON text, so the
+        // verifier can still validate pointer count and file bounds without
+        // hashing or reading the image payload.
+        let expandableLayoutPointers: Set<String> = [
+            "SubIFD:StripOffsets", "SubIFD:TileOffsets"
+        ]
+        for key in expandableLayoutPointers {
+            guard let canonical = result[key], Self.isBinarySummary(canonical) else { continue }
+            result[key] = try expandedLayoutPointer(
+                key, file: file, cancellation: cancellation
+            )
+        }
+
         return Snapshot(metadata: metadata, warnings: warnings, embeddedTags: result)
+    }
+
+    private static func isBinarySummary(_ canonical: String) -> Bool {
+        guard let value = try? JSONSerialization.jsonObject(
+            with: Data(canonical.utf8), options: [.fragmentsAllowed]
+        ) as? String else {
+            return false
+        }
+        return value.hasPrefix("(Binary data ") && value.contains("use -b option to extract")
+    }
+
+    private func expandedLayoutPointer(
+        _ key: String, file: URL, cancellation: CancellationToken?
+    ) throws -> String {
+        let output = try execute([
+            "-charset", "filename=UTF8", "-j", "-G1:4", "-s", "-n",
+            "-b", "-sep", " ", "-\(key)", file.path
+        ], timeout: 120, cancellation: cancellation)
+        guard output.status == 0, output.stdout.count <= 1024 * 1024,
+              let entries = try JSONSerialization.jsonObject(with: output.stdout) as? [[String: Any]],
+              entries.count == 1, let record = entries.first,
+              record["ExifTool:Error"] == nil, let value = record[key] else {
+            throw PhotoError("Unable to dereference bounded layout pointer \(key); candidate was not accepted.")
+        }
+        let data = try JSONSerialization.data(
+            withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]
+        )
+        let canonical = String(decoding: data, as: UTF8.self)
+        guard !Self.isBinarySummary(canonical) else {
+            throw PhotoError("Layout pointer \(key) remained opaque after bounded extraction; candidate was not accepted.")
+        }
+        return canonical
     }
 
     struct SidecarSnapshot {
