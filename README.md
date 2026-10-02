@@ -1,6 +1,6 @@
 # 相片時區修改器 3.5.0
 
-原生 macOS SwiftUI 工具，支援 JPEG、TIFF、Sony ARW。只修改明確選取的 EXIF 時區，不換算或修改拍攝時間。
+原生 macOS SwiftUI 工具，支援 JPEG、TIFF、Sony ARW。只有使用者明確確認後才修改三個 EXIF 時區欄位或新增缺少的 EXIF GPS；不換算或修改拍攝時間。
 
 ## 這版的寫入規則
 
@@ -32,7 +32,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 「從原始備份還原」是**整檔還原**，不是僅撤銷時區；還原前會另存當前版本。不會自動刪除你的備份。
 
-發布后的同步錯誤會標記「已發布但未確認」，阻止盲目重試。由「資訊」選單開啟交易復原檢視；人工確認只封存紀錄，不會偷刪檔或自動重試。
+發布后的同步錯誤會標記「已發布但未確認」，阻止盲目重試。未發布且可證明安全的 crash candidate 會在復原時清理；_original 只有在本 App 的 provenance 紀錄可驗證時才允許自動還原。由「資訊」選單開啟交易復原檢視；人工確認只封存紀錄，不會偷刪檔或自動重試。
 
 ## 下載 App
 
@@ -44,7 +44,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## 建置與測試
 
-macOS 13+，需 Swift 6 工具鏈與系統 `/usr/bin/perl`。
+macOS 27+，需 Swift 6 工具鏈與系統 `/usr/bin/perl`。
 
 ```bash
 ./scripts/test.sh
@@ -52,7 +52,7 @@ PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
 ./build.sh
 ```
 
-成品位於 `dist/相片時區修改器.app`，僅包含 arm64 架構，適用 M 系列 Mac。預設是 ad-hoc 簽章，不是 Apple 公證發行版。Linux 可跑核心測試，不能產生 macOS App。
+成品位於 `dist/相片時區修改器.app`，僅包含 arm64 架構，只支援 macOS 27+ 的 Apple Silicon／M 系列 Mac。預設是 ad-hoc 簽章，不是 Apple 公證發行版。Linux 可跑核心測試，不能產生 macOS App。
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
 
