@@ -885,6 +885,51 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW"] != nil))
+    func testRealSonyARWTimezoneGPSAndRestoreRegression() async throws {
+        let rawPath = try requireValue(ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW"])
+        let source = URL(fileURLWithPath: rawPath)
+        try FileSafety.ensureRegular(source)
+
+        let timezonePhoto = temporaryDirectory.appendingPathComponent("real-sony-timezone.ARW")
+        try SafeFileTransaction.copyAndSync(source, to: timezonePhoto)
+        let sourceDigest = try digest(of: source)
+        let before = try tool.snapshot(timezonePhoto)
+        expectEqual(before.metadata.fileType, "ARW")
+        expectTrue(before.metadata.make?.uppercased() == "SONY")
+        let beforeImageHash = try tool.imageDataSHA256(timezonePhoto)
+
+        _ = try assertJob(await run([timezonePhoto], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll,
+            options: WriteOptions(sonyCompatibility: true)
+        )), succeeded: 1)
+        let after = try tool.snapshot(timezonePhoto)
+        expectEqual(before.metadata.dateTags, after.metadata.dateTags)
+        assertOffsets(after.metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
+        expectEqual(try tool.imageDataSHA256(timezonePhoto), beforeImageHash)
+        expectEqual(try digest(of: originalBackup(for: timezonePhoto)), sourceDigest)
+
+        _ = try assertJob(await run([timezonePhoto], operation: .restore), succeeded: 1)
+        expectEqual(try digest(of: timezonePhoto), sourceDigest)
+
+        let gpsPhoto = temporaryDirectory.appendingPathComponent("real-sony-gps.ARW")
+        try SafeFileTransaction.copyAndSync(source, to: gpsPhoto)
+        let gpsBefore = try tool.snapshot(gpsPhoto)
+        expectFalse(gpsBefore.metadata.hasAnyGPS, "The pinned real ARW fixture must not already contain GPS.")
+        let gpsImageHash = try tool.imageDataSHA256(gpsPhoto)
+        let location = try GPSCoordinate(latitude: 25.033, longitude: 121.5654, altitudeMeters: 12.5)
+        _ = try assertJob(await run([gpsPhoto], operation: .addGPS(
+            location: location, options: WriteOptions(sonyCompatibility: true)
+        )), succeeded: 1)
+        let gpsAfter = try tool.snapshot(gpsPhoto)
+        expectEqual(gpsBefore.metadata.dateTags, gpsAfter.metadata.dateTags)
+        expectEqual(gpsBefore.metadata.offsetOriginal, gpsAfter.metadata.offsetOriginal)
+        expectEqual(gpsBefore.metadata.offsetDigitized, gpsAfter.metadata.offsetDigitized)
+        expectEqual(gpsBefore.metadata.offsetTime, gpsAfter.metadata.offsetTime)
+        expectTrue(gpsAfter.metadata.hasCompleteGPSCoordinate)
+        expectEqual(try tool.imageDataSHA256(gpsPhoto), gpsImageHash)
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_STRESS"] == "1"))
     func testThousandPhotoScanWriteAndBackupIntegrity() async throws {
         let jpeg = try makeSeededPhoto("templates/a.jpg")
