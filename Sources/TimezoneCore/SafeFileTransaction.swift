@@ -40,6 +40,36 @@ enum SafeFileTransaction {
         try syncFile(destination)
     }
 
+    /// Compare two regular files without loading them into memory. The identities
+    /// are verified again after reading so a concurrent replacement/change cannot
+    /// make a restore candidate look valid.
+    static func contentsAreIdentical(_ lhs: URL, _ rhs: URL) throws -> Bool {
+        let lhsIdentity = try FileIdentity.read(lhs)
+        let rhsIdentity = try FileIdentity.read(rhs)
+        guard lhsIdentity.size == rhsIdentity.size else { return false }
+
+        let left = try FileHandle(forReadingFrom: lhs)
+        let right = try FileHandle(forReadingFrom: rhs)
+        defer {
+            try? left.close()
+            try? right.close()
+        }
+
+        let chunkSize = 1024 * 1024
+        while true {
+            let leftChunk = try left.read(upToCount: chunkSize) ?? Data()
+            let rightChunk = try right.read(upToCount: chunkSize) ?? Data()
+            guard leftChunk == rightChunk else { return false }
+            if leftChunk.isEmpty {
+                break
+            }
+        }
+
+        try lhsIdentity.verify(lhs)
+        try rhsIdentity.verify(rhs)
+        return true
+    }
+
     static func publishExclusive(_ temporary: URL, to destination: URL) throws {
         #if canImport(Darwin)
         let result = temporary.path.withCString { from in
