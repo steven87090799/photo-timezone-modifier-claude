@@ -14,7 +14,7 @@ ON1 匯出可能重新壓縮影像，所以 **B 與 C 不做整檔 HASH 相等�
 ## 執行
 
 ```bash
-./scripts/on1-acceptance.sh A.ARW B.ARW C.jpg C0.jpg
+bash ./scripts/on1-acceptance.sh A.ARW B.ARW C.jpg C0.jpg
 ```
 
 腳本會檢查：
