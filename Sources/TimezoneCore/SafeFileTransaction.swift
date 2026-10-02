@@ -107,6 +107,9 @@ public enum CopyDestination {
         }
         for root in roots {
             let root = root.standardizedFileURL.resolvingSymlinksInPath()
+            guard root.path != "/" else {
+                throw PhotoError("不支援把整個檔案系統根目錄 / 當作照片來源；請選擇實際的照片資料夾。")
+            }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue {
@@ -169,7 +172,8 @@ public enum CopyDestination {
     }
 
     static func contains(_ directory: URL, _ child: URL) -> Bool {
-        child.path == directory.path || child.path.hasPrefix(directory.path + "/")
+        if directory.path == "/" { return child.path.hasPrefix("/") }
+        return child.path == directory.path || child.path.hasPrefix(directory.path + "/")
     }
 }
 
