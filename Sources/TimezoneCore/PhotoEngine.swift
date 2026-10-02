@@ -60,7 +60,9 @@ public struct PhotoEngine: Sendable {
             default:
                 plan = nil
             }
-            let store = try TransactionStore(directory: (logDirectory ?? support).appendingPathComponent("Transactions"))
+            let workRoot = logDirectory ?? support
+            let store = try TransactionStore(directory: workRoot.appendingPathComponent("Transactions"))
+            let provenanceDirectory = workRoot.appendingPathComponent("BackupProvenance", isDirectory: true)
             let pending = try store.unfinished()
             let blocked = Set(pending.flatMap { [$0.source.path, $0.target.path] })
             journal = try Journal(directory: logDirectory ?? support.appendingPathComponent("Logs"), operation: operation.label)
@@ -148,24 +150,24 @@ public struct PhotoEngine: Sendable {
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, provenanceDirectory: provenanceDirectory, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .writeCopy(let offset, let mode, _, _, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, provenanceDirectory: provenanceDirectory, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPS(let location, let options):
                                 try autoreleasepool {
                                     try writeGPS(item: &item, tool: tool, location: location, options: options,
-                                                 plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
+                                                 plan: nil, store: store, provenanceDirectory: provenanceDirectory, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPSCopy(let location, _, _, let options):
                                 try autoreleasepool {
                                     try writeGPS(item: &item, tool: tool, location: location, options: options,
-                                                 plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
+                                                 plan: plan, store: store, provenanceDirectory: provenanceDirectory, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .restore:
-                                try restore(item: &item, tool: tool, store: store, cancellation: cancellation)
+                                try restore(item: &item, tool: tool, store: store, provenanceDirectory: provenanceDirectory, cancellation: cancellation)
                             }
                         } catch is CancellationError {
                             item.status = .cancelled
@@ -220,7 +222,8 @@ public struct PhotoEngine: Sendable {
 
     private func write(
         item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode, options: WriteOptions,
-        plan: DestinationPlan?, store: TransactionStore, sidecarIndex: SidecarIndex, cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, provenanceDirectory: URL,
+        sidecarIndex: SidecarIndex, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
         let sourceIdentity = try FileIdentity.read(item.url)
@@ -314,7 +317,7 @@ public struct PhotoEngine: Sendable {
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
-                try BackupProvenance.verify(source: item.url, backup: oldest)
+                try BackupProvenance.verify(source: item.url, backup: oldest, directory: provenanceDirectory)
                 backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
             } else { backup = oldest }
         } else { backup = nil }
@@ -340,7 +343,7 @@ public struct PhotoEngine: Sendable {
                 if backup.path == item.url.path + "_original" {
                     try BackupProvenance.record(
                         source: item.url, sourceIdentity: sourceIdentity,
-                        backup: backup, transactionID: manifest.id
+                        backup: backup, transactionID: manifest.id, directory: provenanceDirectory
                     )
                 }
                 manifest.phase = .backupDurable
@@ -397,7 +400,8 @@ public struct PhotoEngine: Sendable {
 
     private func writeGPS(
         item: inout PhotoItem, tool: ExifTool, location: GPSCoordinate, options: WriteOptions,
-        plan: DestinationPlan?, store: TransactionStore, sidecarIndex: SidecarIndex, cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, provenanceDirectory: URL,
+        sidecarIndex: SidecarIndex, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
         let sourceIdentity = try FileIdentity.read(item.url)
@@ -520,7 +524,7 @@ public struct PhotoEngine: Sendable {
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
-                try BackupProvenance.verify(source: item.url, backup: oldest)
+                try BackupProvenance.verify(source: item.url, backup: oldest, directory: provenanceDirectory)
                 backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
             } else {
                 backup = oldest
@@ -564,7 +568,7 @@ public struct PhotoEngine: Sendable {
                 if backup.path == item.url.path + "_original" {
                     try BackupProvenance.record(
                         source: item.url, sourceIdentity: sourceIdentity,
-                        backup: backup, transactionID: manifest.id
+                        backup: backup, transactionID: manifest.id, directory: provenanceDirectory
                     )
                 }
                 manifest.phase = .backupDurable
@@ -626,14 +630,14 @@ public struct PhotoEngine: Sendable {
     }
 
     private func restore(item: inout PhotoItem, tool: ExifTool, store: TransactionStore,
-                         cancellation: CancellationToken) throws {
+                         provenanceDirectory: URL, cancellation: CancellationToken) throws {
         let fm = FileManager.default
         let backup = URL(fileURLWithPath: item.url.path + "_original")
         guard fm.fileExists(atPath: backup.path) else {
             item.status = .skipped; item.detail = "No _original backup; nothing changed."; return
         }
         let backupIdentity = try FileIdentity.read(backup)
-        try BackupProvenance.verify(source: item.url, backup: backup)
+        try BackupProvenance.verify(source: item.url, backup: backup, directory: provenanceDirectory)
         let before = try tool.snapshot(backup, cancellation: cancellation, strictOffsets: false)
         let currentIdentity = fm.fileExists(atPath: item.url.path) ? try FileIdentity.read(item.url) : nil
         if let currentIdentity, currentIdentity.links > 1 { throw PhotoError("Restore would break hard links; use an independent copy.") }
