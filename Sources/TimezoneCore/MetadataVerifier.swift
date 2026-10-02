@@ -21,6 +21,14 @@ enum MetadataVerifier {
         let changed = Set(expected.keys).union(actual.keys).filter { expected[$0] != actual[$0] }.sorted()
         var relocations: [String] = []
         for key in changed {
+            if permittedStructuralSpanChange(
+                key, before: expected, after: actual, metadata: old, options: options,
+                oldLimit: old.fileSize, newLimit: new.fileSize
+            ), let updated = actual[key] {
+                expected[key] = updated
+                relocations.append(key)
+                continue
+            }
             guard let prior = expected[key], let updated = actual[key],
                   permittedPointer(key, metadata: old, options: options),
                   validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
@@ -97,6 +105,14 @@ enum MetadataVerifier {
                 relocations.append(key)
                 continue
             }
+            if permittedStructuralSpanChange(
+                key, before: expected, after: actual, metadata: old, options: options,
+                oldLimit: old.fileSize, newLimit: new.fileSize
+            ), let updated = actual[key] {
+                expected[key] = updated
+                relocations.append(key)
+                continue
+            }
             if let prior = expected[key], let updated = actual[key],
                permittedPointer(key, metadata: old, options: options),
                validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
@@ -139,6 +155,27 @@ enum MetadataVerifier {
         return sony && options.sonyCompatibility && sonyPointers.contains(key)
     }
 
+    /// Sony ARW embeds an encrypted SR2 private IFD described by an offset/length
+    /// pair. ExifTool may rebuild that block while preserving all decoded tags.
+    /// Treat only this exact structural length as relocatable, and require both
+    /// the old and new spans to remain fully inside their respective files.
+    private static func permittedStructuralSpanChange(
+        _ key: String, before: [String: String], after: [String: String],
+        metadata: PhotoMetadata, options: WriteOptions,
+        oldLimit: Int64?, newLimit: Int64?
+    ) -> Bool {
+        guard key == "SR2:SR2SubIFDLength",
+              metadata.make?.uppercased() == "SONY", options.sonyCompatibility,
+              let oldOffset = before["SR2:SR2SubIFDOffset"],
+              let oldLength = before["SR2:SR2SubIFDLength"],
+              let newOffset = after["SR2:SR2SubIFDOffset"],
+              let newLength = after["SR2:SR2SubIFDLength"] else {
+            return false
+        }
+        return validSpan(offset: oldOffset, length: oldLength, limit: oldLimit)
+            && validSpan(offset: newOffset, length: newLength, limit: newLimit)
+    }
+
     private static func pointerValues(_ canonical: String) -> [Int64]? {
         guard let value = try? JSONSerialization.jsonObject(with: Data(canonical.utf8), options: [.fragmentsAllowed]) else { return nil }
         func integer(_ number: NSNumber) -> Int64? {
@@ -158,8 +195,20 @@ enum MetadataVerifier {
         return nil
     }
     private static func pointerCount(_ value: String) -> Int { pointerValues(value)?.count ?? 0 }
+    private static func scalarInteger(_ value: String) -> Int64? {
+        guard let values = pointerValues(value), values.count == 1 else { return nil }
+        return values[0]
+    }
     private static func validPointers(_ value: String, limit: Int64?) -> Bool {
         guard let limit, let values = pointerValues(value), !values.isEmpty else { return false }
         return values.allSatisfy { $0 >= 0 && $0 < limit }
+    }
+    private static func validSpan(offset: String, length: String, limit: Int64?) -> Bool {
+        guard let limit, limit >= 0,
+              let start = scalarInteger(offset), let count = scalarInteger(length),
+              start >= 0, count >= 0, start <= limit, count <= limit - start else {
+            return false
+        }
+        return true
     }
 }
