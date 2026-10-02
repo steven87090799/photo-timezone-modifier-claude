@@ -25,7 +25,7 @@ for f in "$A" "$B" "$C" "$C0"; do
 done
 
 tag() {
-  /usr/bin/perl "$TOOL" -config "" -charset filename=UTF8 -s3 "-$1" "$2" | /usr/bin/tr -d '\r'
+  /usr/bin/perl "$TOOL" -config "" -charset filename=UTF8 -s3 "-EXIF:$1" "$2" | /usr/bin/tr -d '\r'
 }
 
 valid_offset() {
