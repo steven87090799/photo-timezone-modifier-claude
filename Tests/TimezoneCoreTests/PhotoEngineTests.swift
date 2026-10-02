@@ -523,6 +523,26 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
+    @Test func testReadableButUntrustedOriginalBackupIsRejected() async throws {
+        let photo = try makeSeededPhoto("untrusted.jpg")
+        let original = try Data(contentsOf: photo)
+        let other = try makeSeededPhoto("other.jpg")
+        let backup = originalBackup(for: photo)
+        try FileManager.default.copyItem(at: other, to: backup)
+        let backupBytes = try Data(contentsOf: backup)
+
+        let write = await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .replaceAll))
+        let rows = try assertJob(write, failed: 1)
+        expectTrue(rows[0].detail.contains("來源紀錄"))
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(try Data(contentsOf: backup), backupBytes)
+
+        let restore = await run([photo], operation: .restore)
+        _ = try assertJob(restore, failed: 1)
+        expectEqual(try Data(contentsOf: photo), original)
+        expectEqual(try Data(contentsOf: backup), backupBytes)
+    }
+
     @Test func testNonstandardOffsetIsNeverMistakenForMissing() async throws {
         let photo = try makeSeededPhoto("nonstandard.jpg")
         let setup = try tool.execute(["-overwrite_original", "-IFD0:OffsetTimeOriginal=+03:00", photo.path])
@@ -538,8 +558,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     @Test func testMissingPhotoCanBeDiscoveredAndRecoveredFromBackup() async throws {
         let photo = try makeSeededPhoto("orphan.jpg")
         let original = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), succeeded: 1)
         let backup = originalBackup(for: photo)
-        try FileManager.default.moveItem(at: photo, to: backup)
+        try FileManager.default.removeItem(at: photo)
         let preview = await run([temporaryDirectory], operation: .inspect)
         let rows = try assertJob(preview, failed: 1)
         expectEqual(rows[0].url.lastPathComponent, photo.lastPathComponent)
@@ -556,8 +579,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     @Test func testBackupFileCanBeSelectedDirectlyForMissingPhotoRecovery() async throws {
         let photo = try makeSeededPhoto("direct.tiff", format: .tiff)
         let original = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: -210), mode: .replaceAll
+        )), succeeded: 1)
         let backup = originalBackup(for: photo)
-        try FileManager.default.moveItem(at: photo, to: backup)
+        try FileManager.default.removeItem(at: photo)
         let restored = await run([backup], operation: .restore)
         let items = try assertJob(restored, succeeded: 1)
         expectEqual(items[0].url.path, photo.path)
@@ -1054,7 +1080,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try store.save(manifest)
         expectTrue(try store.unfinished().isEmpty)
         expectEqual(try Data(contentsOf: photo), bytes)
-        expectEqual(try Data(contentsOf: stage), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: stage.path))
         expectTrue(FileManager.default.fileExists(atPath: store.history.appendingPathComponent("\(manifest.id).json").path))
     }
 
