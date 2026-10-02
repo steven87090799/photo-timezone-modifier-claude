@@ -10,6 +10,14 @@ on:
         description: Run the 1000-photo write and backup integrity test
         type: boolean
         default: false
+      real_arw_url:
+        description: Optional direct URL to a CC0 real Sony ARW fixture
+        type: string
+        default: ''
+      real_arw_sha256:
+        description: SHA-256 for real_arw_url; required when URL is supplied
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -40,6 +48,19 @@ jobs:
     timeout-minutes: 22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Fetch pinned real Sony ARW fixture
+        if: github.event_name == 'workflow_dispatch' && inputs.real_arw_url != ''
+        env:
+          REAL_ARW_URL: ${{ inputs.real_arw_url }}
+          REAL_ARW_SHA256: ${{ inputs.real_arw_sha256 }}
+        run: |
+          set -euo pipefail
+          test -n "$REAL_ARW_SHA256"
+          mkdir -p .build/real-fixtures
+          curl --fail --location --retry 3 --output .build/real-fixtures/sony.ARW "$REAL_ARW_URL"
+          printf '%s  %s\n' "$REAL_ARW_SHA256" ".build/real-fixtures/sony.ARW" | shasum -a 256 -c -
+          echo "PHOTO_TIMEZONE_REAL_ARW=$PWD/.build/real-fixtures/sony.ARW" >> "$GITHUB_ENV"
 
       - name: Full native regression suite
         timeout-minutes: 10
