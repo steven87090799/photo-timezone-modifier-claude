@@ -5,6 +5,9 @@ import TimezoneCore
 struct DiagnosticsView: View {
     @ObservedObject var model: PhotoViewModel
     @StateObject private var metrics = ProcessDiagnostics()
+    @State private var storage: StorageUsageSummary?
+    @State private var storageMessage = ""
+    @State private var storageBusy = false
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
@@ -59,7 +62,7 @@ struct DiagnosticsView: View {
                     detail("ExifTool", "內附固定版本 \(EngineResources.version)")
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
-                    detail("可處理格式", "JPEG、TIFF、Sony ARW；僅補寫時區，不轉換原格式")
+                    detail("可處理格式", "JPEG、TIFF、Sony ARW；可寫三欄時區或手動新增 GPS，不轉換原格式")
                     Text("3.5：三欄時區、中繼資料驗證、有界記憶體與交易復原記錄。\n3.4.1：Sony 相容模式預設開啟，保留嚴格模式開關與逐張驗證。\n3.4：預設只補 EXIF 拍攝時區，不加減拍攝鐘點。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -85,6 +88,31 @@ struct DiagnosticsView: View {
                     }
                 }
 
+                section("儲存空間", symbol: "externaldrive") {
+                    if let storage {
+                        detail("工作紀錄", ByteCountFormatter.string(fromByteCount: storage.logsBytes, countStyle: .file))
+                        detail("交易歷史", ByteCountFormatter.string(fromByteCount: storage.transactionHistoryBytes, countStyle: .file))
+                        detail("待復原交易", ByteCountFormatter.string(fromByteCount: storage.activeTransactionBytes, countStyle: .file))
+                        detail("追蹤原始備份", "\(storage.trackedBackupCount) 個 · " + ByteCountFormatter.string(fromByteCount: storage.trackedBackupBytes, countStyle: .file))
+                        if storage.missingTrackedBackups > 0 {
+                            Text("有 \(storage.missingTrackedBackups) 筆 provenance 指向已不存在的備份；不會自動刪除 provenance。")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    } else {
+                        Text(storageBusy ? "正在計算…" : "尚未計算").font(.caption).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Button("重新計算") { refreshStorage() }.disabled(storageBusy)
+                        Button("清除 30 天前 Logs／交易歷史") { cleanupStorage() }
+                            .disabled(storageBusy || model.isRunning)
+                    }
+                    if !storageMessage.isEmpty {
+                        Text(storageMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("只清除行政紀錄；_original、歷史照片備份、provenance 與待復原交易永遠不會由這個按鈕刪除。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 section("安全界線", symbol: "checkmark.shield") {
                     Text("三個 EXIF 時區欄位為預設處理對象，不改日期或次秒。僅比對可讀中繼資料與檔案屬性；不計算照片 HASH，不宣稱影像或私有位元組全同。備份、候選副本與提交前交易記錄仍保留。")
                     Text("ExifTool 可能重排檔案內部位址；軟體無法保證磁碟故障、突然斷電或未知相機私有資料下絕對零風險。正式處理前請保留另一份獨立備份。")
@@ -95,7 +123,7 @@ struct DiagnosticsView: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .top)
         }
-        .onAppear { metrics.start() }
+        .onAppear { metrics.start(); refreshStorage() }
         .onDisappear { metrics.stop() }
         .accessibilityIdentifier("diagnosticsPage")
     }
@@ -127,6 +155,42 @@ struct DiagnosticsView: View {
             Text(value).textSelection(.enabled)
         }
         .font(.callout)
+    }
+
+    private func refreshStorage() {
+        guard !storageBusy else { return }
+        storageBusy = true
+        storageMessage = ""
+        Task { @MainActor in
+            do {
+                storage = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.summary()
+                }.value
+            } catch {
+                storageMessage = error.localizedDescription
+            }
+            storageBusy = false
+        }
+    }
+
+    private func cleanupStorage() {
+        guard !storageBusy, !model.isRunning else { return }
+        storageBusy = true
+        storageMessage = ""
+        Task { @MainActor in
+            do {
+                let removed = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.cleanupAdministrativeHistory(olderThanDays: 30)
+                }.value
+                storageMessage = "已清除 \(removed) 個 30 天前的行政紀錄；照片備份未變更。"
+                storage = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.summary()
+                }.value
+            } catch {
+                storageMessage = error.localizedDescription
+            }
+            storageBusy = false
+        }
     }
 
     private func copySummary() {
