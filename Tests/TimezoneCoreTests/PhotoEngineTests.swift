@@ -891,6 +891,15 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("a.jpg").path))
     }
 
+    @Test func testRestoreByteVerificationDetectsSameSizeMutation() throws {
+        let original = try makeFile("restore-byte-source.bin", contents: Data([0, 1, 2, 3, 4, 5]))
+        let candidate = try makeFile("restore-byte-candidate.bin", contents: Data([0, 1, 2, 3, 4, 5]))
+        expectTrue(try SafeFileTransaction.contentsAreIdentical(original, candidate))
+
+        try Data([0, 1, 9, 3, 4, 5]).write(to: candidate)
+        expectFalse(try SafeFileTransaction.contentsAreIdentical(original, candidate))
+    }
+
     @Test func testPreparedBackupWithoutReplacementLeavesOriginalIntact() throws {
         let photo = try makeSeededPhoto("interrupted.jpg")
         let original = try Data(contentsOf: photo)
