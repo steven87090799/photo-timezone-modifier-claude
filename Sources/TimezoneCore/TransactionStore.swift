@@ -127,6 +127,17 @@ final class TransactionStore {
         return ids
     }
 
+    func activeCandidatePaths() throws -> Set<String> {
+        var result = Set<String>()
+        for record in try records(in: active) {
+            result.insert(record.candidate.standardizedFileURL.path)
+            for path in record.sidecarCandidateIdentities?.keys ?? [] {
+                result.insert(URL(fileURLWithPath: path).standardizedFileURL.path)
+            }
+        }
+        return result
+    }
+
     private func allRecords() throws -> [TransactionManifest] {
         try records(in: active) + records(in: history)
     }
