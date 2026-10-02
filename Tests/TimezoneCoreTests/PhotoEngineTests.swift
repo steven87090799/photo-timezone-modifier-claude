@@ -1027,6 +1027,63 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
+    @Test func testSonySR2StructuralSpanRelocationIsBoundedAndCompatibilityGated() throws {
+        var beforeMetadata = PhotoMetadata(
+            dateTimeOriginal: originalDate,
+            offsetOriginal: "+02:00",
+            offsetDigitized: "+02:00",
+            offsetTime: "+02:00",
+            fileType: "ARW",
+            createDate: createdDate,
+            modifyDate: modifiedDate,
+            dateTags: ["ExifIFD:DateTimeOriginal": originalDate]
+        )
+        beforeMetadata.make = "SONY"
+        beforeMetadata.fileSize = 100_000
+
+        var afterMetadata = beforeMetadata
+        afterMetadata.fileSize = 101_000
+
+        let beforeTags = [
+            "SR2:SR2SubIFDOffset": "1000",
+            "SR2:SR2SubIFDLength": "2000",
+            "SR2:SR2SubIFDKey": "12345",
+            "IFD2:JpgFromRawStart": "5000"
+        ]
+        let afterTags = [
+            "SR2:SR2SubIFDOffset": "1200",
+            "SR2:SR2SubIFDLength": "2100",
+            "SR2:SR2SubIFDKey": "12345",
+            "IFD2:JpgFromRawStart": "5200"
+        ]
+        let before = ExifTool.Snapshot(metadata: beforeMetadata, warnings: "", embeddedTags: beforeTags)
+        let after = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: afterTags)
+
+        let notices = try MetadataVerifier.verify(
+            before: before, after: after, assignments: [],
+            options: WriteOptions(sonyCompatibility: true)
+        )
+        expectTrue(notices.contains { $0.contains("SR2:SR2SubIFDLength") })
+        expectTrue(notices.contains { $0.contains("IFD2:JpgFromRawStart") })
+
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(
+                before: before, after: after, assignments: [],
+                options: WriteOptions(sonyCompatibility: false)
+            )
+        }
+
+        var invalidTags = afterTags
+        invalidTags["SR2:SR2SubIFDLength"] = "200000"
+        let invalid = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: invalidTags)
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(
+                before: before, after: invalid, assignments: [],
+                options: WriteOptions(sonyCompatibility: true)
+            )
+        }
+    }
+
     @Test func testConflictingXMPIsReportedAndNeverRewritten() async throws {
         let photo = try makeSeededPhoto("conflict.jpg")
         expectEqual(try tool.execute(["-overwrite_original", "-XMP-exif:DateTimeOriginal=\(originalDate)+09:00", photo.path]).status, 0)
