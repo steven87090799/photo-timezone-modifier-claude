@@ -1132,6 +1132,61 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(FileManager.default.fileExists(atPath: store.history.appendingPathComponent("\(manifest.id).json").path))
     }
 
+    @Test func testStorageMaintenanceKeepsPhotoBackupsAndProvenanceButRemovesSafeClutter() throws {
+        let photo = try makeSeededPhoto("storage.jpg")
+        let backup = originalBackup(for: photo)
+        try SafeFileTransaction.copyAndSync(photo, to: backup)
+
+        let support = try makeDirectory("storage-support")
+        let logs = support.appendingPathComponent("Logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try Data("log".utf8).write(to: logs.appendingPathComponent("job-test.jsonl"))
+
+        let store = try TransactionStore(directory: support.appendingPathComponent("Transactions"))
+        let sourceIdentity = try FileIdentity.read(photo)
+        let provenanceID = UUID()
+        let protectedRecord = TransactionManifest(
+            version: 2, id: provenanceID, source: photo, target: photo,
+            candidate: temporaryDirectory.appendingPathComponent("consumed-candidate.jpg"),
+            backup: backup, sourceIdentity: sourceIdentity, targetIdentityBefore: sourceIdentity,
+            candidateIdentity: nil, canonicalBackupIdentity: try FileIdentity.read(backup),
+            originalDates: [:], oldOffsets: [:], newOffsets: [:],
+            sidecarTargets: [], publishedSidecars: [], phase: .committed, detail: "provenance"
+        )
+        try store.finish(protectedRecord)
+
+        let disposableRecord = TransactionManifest(
+            version: 2, id: UUID(), source: photo, target: photo,
+            candidate: temporaryDirectory.appendingPathComponent("consumed-other.jpg"),
+            backup: nil, sourceIdentity: sourceIdentity, targetIdentityBefore: sourceIdentity,
+            candidateIdentity: nil, originalDates: [:], oldOffsets: [:], newOffsets: [:],
+            sidecarTargets: [], publishedSidecars: [], phase: .committed, detail: "removable"
+        )
+        try store.finish(disposableRecord)
+
+        let orphan = photo.deletingLastPathComponent()
+            .appendingPathComponent(".photo-timezone-\(UUID().uuidString).jpg")
+        try SafeFileTransaction.copyCandidate(photo, to: orphan)
+
+        let before = try StorageMaintenance.snapshot(photoURLs: [photo], support: support)
+        expectTrue(before.photoBackups >= 1)
+        expectTrue(before.orphanCandidates >= 1)
+        expectTrue(before.historyFiles >= 2)
+        expectTrue(before.logFiles >= 1)
+
+        let admin = try StorageMaintenance.cleanAdministrativeHistory(support: support)
+        expectTrue(admin.removedFiles >= 2)
+        expectTrue(FileManager.default.fileExists(atPath: backup.path))
+        expectTrue(FileManager.default.fileExists(
+            atPath: store.history.appendingPathComponent("\(provenanceID.uuidString).json").path
+        ))
+
+        let candidates = try StorageMaintenance.cleanOrphanCandidates(photoURLs: [photo], support: support)
+        expectTrue(candidates.removedFiles >= 1)
+        expectFalse(FileManager.default.fileExists(atPath: orphan.path))
+        expectTrue(FileManager.default.fileExists(atPath: backup.path))
+    }
+
     @Test func testRecoveryAfterRenameBlocksAutomaticRetry() async throws {
         let photo = try makeSeededPhoto("published.jpg")
         let backup = originalBackup(for: photo)
