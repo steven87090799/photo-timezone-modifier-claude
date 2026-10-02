@@ -32,6 +32,7 @@ public struct PhotoEngine: Sendable {
     ) {
         let fm = FileManager.default
         let tool = ExifTool(url: exiftoolURL, persistent: true)
+        let sidecarIndex = SidecarIndex()
         var items: [PhotoItem] = []
         var journal: Journal?
         var generalError: String?
@@ -130,7 +131,7 @@ public struct PhotoEngine: Sendable {
                                     }
                                 }
                                 var diagnosed = metadata
-                                for sidecar in try SidecarSupport.find(beside: item.url) where sidecar.pathExtension.lowercased() == "xmp" {
+                                for sidecar in try sidecarIndex.find(beside: item.url) where sidecar.pathExtension.lowercased() == "xmp" {
                                     let read = try tool.readSidecar(sidecar, cancellation: cancellation)
                                     diagnosed.sidecarGPSDetected = diagnosed.sidecarGPSDetected || read.hasGPS
                                     diagnosed.gpsSafetyUncertain = diagnosed.gpsSafetyUncertain || !read.gpsCheckReliable
@@ -147,21 +148,21 @@ public struct PhotoEngine: Sendable {
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .writeCopy(let offset, let mode, _, _, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPS(let location, let options):
                                 try autoreleasepool {
                                     try writeGPS(item: &item, tool: tool, location: location, options: options,
-                                                 plan: nil, store: store, cancellation: cancellation)
+                                                 plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPSCopy(let location, _, _, let options):
                                 try autoreleasepool {
                                     try writeGPS(item: &item, tool: tool, location: location, options: options,
-                                                 plan: plan, store: store, cancellation: cancellation)
+                                                 plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .restore:
                                 try restore(item: &item, tool: tool, store: store, cancellation: cancellation)
@@ -219,7 +220,7 @@ public struct PhotoEngine: Sendable {
 
     private func write(
         item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode, options: WriteOptions,
-        plan: DestinationPlan?, store: TransactionStore, cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, sidecarIndex: SidecarIndex, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
         let sourceIdentity = try FileIdentity.read(item.url)
@@ -237,7 +238,7 @@ public struct PhotoEngine: Sendable {
         ]
         let requested = allFields.filter { (mode == .replaceAll || $0.1 == nil) && $0.1 != offset.value }
         let assignments = requested.map { ($0.0, offset.value) }
-        let sidecars = try SidecarSupport.find(beside: item.url)
+        let sidecars = try sidecarIndex.find(beside: item.url)
         var notices: [String] = []
         let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
             .map { try tool.readSidecar($0, cancellation: cancellation) }
@@ -349,7 +350,7 @@ public struct PhotoEngine: Sendable {
             try sourceIdentity.verify(item.url)
             try parentIdentity.verify(parent)
             try plan?.verify()
-            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
+            try sidecarIndex.verifyUnchanged(sidecars, beside: item.url)
             for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
             for read in sidecarReads { try read.identity.verify(read.url) }
             do {
@@ -396,7 +397,7 @@ public struct PhotoEngine: Sendable {
 
     private func writeGPS(
         item: inout PhotoItem, tool: ExifTool, location: GPSCoordinate, options: WriteOptions,
-        plan: DestinationPlan?, store: TransactionStore, cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, sidecarIndex: SidecarIndex, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
         let sourceIdentity = try FileIdentity.read(item.url)
@@ -408,7 +409,7 @@ public struct PhotoEngine: Sendable {
         var before = originalSnapshot.metadata
         try sourceIdentity.verify(item.url)
 
-        let sidecars = try SidecarSupport.find(beside: item.url)
+        let sidecars = try sidecarIndex.find(beside: item.url)
         let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
             .map { try tool.readSidecar($0, cancellation: cancellation) }
         before.sidecarGPSDetected = sidecarReads.contains { $0.hasGPS }
@@ -573,7 +574,7 @@ public struct PhotoEngine: Sendable {
             try sourceIdentity.verify(item.url)
             try parentIdentity.verify(parent)
             try plan?.verify()
-            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
+            try sidecarIndex.verifyUnchanged(sidecars, beside: item.url)
             for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
             for read in sidecarReads { try read.identity.verify(read.url) }
 
