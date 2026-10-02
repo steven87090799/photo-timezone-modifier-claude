@@ -2,21 +2,25 @@
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "測試基線只支援 Apple Silicon（arm64）macOS。" >&2
+  exit 1
+fi
+OS_MAJOR="$(/usr/bin/sw_vers -productVersion | /usr/bin/awk -F. '{print $1}')"
+if (( OS_MAJOR < 27 )); then
+  echo "測試需要 macOS 27 或更新版本；目前為 $(/usr/bin/sw_vers -productVersion)。" >&2
+  exit 1
+fi
+export MACOSX_DEPLOYMENT_TARGET=27.0
+
 ./scripts/prepare-exiftool.sh
 
-TEST_DEVELOPER_DIR=""
-if command -v xcode-select >/dev/null 2>&1; then TEST_DEVELOPER_DIR="$(xcode-select -p)"; fi
+TEST_DEVELOPER_DIR="$(xcode-select -p)"
 TEST_PLUGIN="$TEST_DEVELOPER_DIR/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib"
 
-# Use SwiftPM's standard native test path on Apple runners, loading the CLT
-# Testing macro plugin when available. Linux uses the Testing-only path.
-# Copy/GPS hangs were traced to DestinationPlan's root traversal, not SwiftPM.
-if [[ "$(uname -s)" == "Darwin" ]]; then
-  if [[ -f "$TEST_PLUGIN" ]]; then
-    swift test -Xswiftc -load-plugin-library -Xswiftc "$TEST_PLUGIN" "$@"
-  else
-    swift test "$@"
-  fi
+if [[ -f "$TEST_PLUGIN" ]]; then
+  swift test -Xswiftc -load-plugin-library -Xswiftc "$TEST_PLUGIN" "$@"
 else
-  swift test --disable-xctest "$@"
+  swift test "$@"
 fi
