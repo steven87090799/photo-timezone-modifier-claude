@@ -57,6 +57,52 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try tool.validateVersion()
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW_FIXTURE"] != nil))
+    func testRealSonyA7IVARWTimezoneGPSBackupAndRestore() async throws {
+        guard let path = ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW_FIXTURE"] else { return }
+        let fixture = URL(fileURLWithPath: path)
+        try FileSafety.ensureRegular(fixture)
+        let photo = temporaryDirectory.appendingPathComponent("ILCE-7M4-real.ARW")
+        try FileManager.default.copyItem(at: fixture, to: photo)
+
+        let originalDigest = try digest(of: photo)
+        let before = try tool.snapshot(photo)
+        expectEqual(before.metadata.fileType, "ARW")
+        expectTrue(before.metadata.make?.uppercased() == "SONY")
+        expectTrue(before.metadata.cameraModel?.contains("ILCE-7M4") == true)
+        let originalDates = before.metadata.dateTags
+        let imageHash = try tool.imageDataSHA256(photo)
+
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 345), mode: .replaceAll,
+            options: WriteOptions(sonyCompatibility: true)
+        )), succeeded: 1)
+        let timezoneResult = try tool.snapshot(photo)
+        expectEqual(timezoneResult.metadata.dateTags, originalDates)
+        assertOffsets(timezoneResult.metadata, original: "+05:45", digitized: "+05:45", time: "+05:45")
+        expectEqual(try tool.imageDataSHA256(photo), imageHash)
+        expectEqual(try digest(of: originalBackup(for: photo)), originalDigest)
+
+        _ = try assertJob(await run([photo], operation: .restore), succeeded: 1)
+        expectEqual(try digest(of: photo), originalDigest)
+
+        let restored = try tool.snapshot(photo)
+        expectEqual(restored.metadata.dateTags, originalDates)
+        expectFalse(restored.metadata.hasAnyGPS)
+        let restoredOffsets = (restored.metadata.offsetOriginal, restored.metadata.offsetDigitized, restored.metadata.offsetTime)
+        _ = try assertJob(await run([photo], operation: .addGPS(
+            location: GPSCoordinate(latitude: 25.0330, longitude: 121.5654, altitudeMeters: 12.5),
+            options: WriteOptions(sonyCompatibility: true)
+        )), succeeded: 1)
+        let gpsResult = try tool.snapshot(photo)
+        expectEqual(gpsResult.metadata.dateTags, originalDates)
+        expectEqual(gpsResult.metadata.offsetOriginal, restoredOffsets.0)
+        expectEqual(gpsResult.metadata.offsetDigitized, restoredOffsets.1)
+        expectEqual(gpsResult.metadata.offsetTime, restoredOffsets.2)
+        expectTrue(gpsResult.metadata.hasCompleteGPSCoordinate)
+        expectEqual(try tool.imageDataSHA256(photo), imageHash)
+    }
+
     @Test func testImportantExifPreviewFieldsAreReadFromStandardTags() throws {
         let photo = try makeSeededPhoto("important-exif-preview.jpg")
         let output = try tool.execute([
@@ -538,8 +584,12 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     @Test func testMissingPhotoCanBeDiscoveredAndRecoveredFromBackup() async throws {
         let photo = try makeSeededPhoto("orphan.jpg")
         let original = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), succeeded: 1)
         let backup = originalBackup(for: photo)
-        try FileManager.default.moveItem(at: photo, to: backup)
+        expectEqual(try Data(contentsOf: backup), original)
+        try FileManager.default.removeItem(at: photo)
         let preview = await run([temporaryDirectory], operation: .inspect)
         let rows = try assertJob(preview, failed: 1)
         expectEqual(rows[0].url.lastPathComponent, photo.lastPathComponent)
@@ -556,12 +606,36 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     @Test func testBackupFileCanBeSelectedDirectlyForMissingPhotoRecovery() async throws {
         let photo = try makeSeededPhoto("direct.tiff", format: .tiff)
         let original = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), succeeded: 1)
         let backup = originalBackup(for: photo)
-        try FileManager.default.moveItem(at: photo, to: backup)
+        try FileManager.default.removeItem(at: photo)
         let restored = await run([backup], operation: .restore)
         let items = try assertJob(restored, succeeded: 1)
         expectEqual(items[0].url.path, photo.path)
         expectEqual(try Data(contentsOf: photo), original)
+    }
+
+    @Test func testPreexistingValidOriginalWithoutProvenanceIsNeverTrusted() async throws {
+        let photo = try makeSeededPhoto("foreign-backup.jpg")
+        let sourceBytes = try Data(contentsOf: photo)
+        let unrelated = try makeSeededPhoto("unrelated.jpg", original: "+01:00")
+        let foreignBytes = try Data(contentsOf: unrelated)
+        let backup = originalBackup(for: photo)
+        try foreignBytes.write(to: backup)
+
+        let write = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), failed: 1)
+        expectTrue(write[0].detail.contains("provenance"))
+        expectEqual(try Data(contentsOf: photo), sourceBytes)
+        expectEqual(try Data(contentsOf: backup), foreignBytes)
+
+        let restore = try assertJob(await run([photo], operation: .restore), failed: 1)
+        expectTrue(restore[0].detail.contains("provenance"))
+        expectEqual(try Data(contentsOf: photo), sourceBytes)
+        expectEqual(try Data(contentsOf: backup), foreignBytes)
     }
 
     @Test func testReadTimeoutTerminatesAnUnresponsiveChild() throws {
@@ -1054,7 +1128,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try store.save(manifest)
         expectTrue(try store.unfinished().isEmpty)
         expectEqual(try Data(contentsOf: photo), bytes)
-        expectEqual(try Data(contentsOf: stage), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: stage.path))
         expectTrue(FileManager.default.fileExists(atPath: store.history.appendingPathComponent("\(manifest.id).json").path))
     }
 
