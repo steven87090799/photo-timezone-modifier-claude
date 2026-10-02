@@ -22,6 +22,12 @@
 
 ExifTool 在單次工作中重用，定期回收；進度事件有界線，清單排序移到背景並快取；縮圖最多 8 張與 8 MiB。不為側欄強制解碼整張 ARW。單次中繼資料輸出上限 16 MiB，超限不接受部分結果。
 
+## 真實 RAW / ON1 驗收
+
+真實 Sony ARW regression 可透過 `PHOTO_TIMEZONE_REAL_ARW` 或 Actions 的 `real_arw_url + real_arw_sha256` 執行；測試 fixture 會額外做 image payload HASH，但 production 不會。詳見 `docs/REAL_ARW_CI.md`。
+
+ON1 Photo RAW 必須在實際安裝 ON1 的 macOS 27+ Apple Silicon Mac 上跑 A/B/C/C0 acceptance；詳見 `docs/ON1_ACCEPTANCE.md`。
+
 ## ON1 / Lightroom / Immich / Google 相簿
 
 唯讀診斷 EXIF、內嵌 XMP 與 XMP sidecar 的時間衝突，**不會為了讓軟體顯示相同而偷改拍攝時間或 XMP**。副本模式預設原樣複製同名 `.xmp`、`.on1`、`.acr` 伴隨檔，同名衝突會停止該張照片的發布。
