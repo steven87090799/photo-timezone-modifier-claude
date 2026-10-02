@@ -3,6 +3,18 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
+
+if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+  echo "此專案只建置 Apple Silicon（arm64）macOS App。" >&2
+  exit 1
+fi
+OS_MAJOR="$(/usr/bin/sw_vers -productVersion | /usr/bin/awk -F. '{print $1}')"
+if (( OS_MAJOR < 27 )); then
+  echo "需要 macOS 27 或更新版本；目前為 $(/usr/bin/sw_vers -productVersion)。" >&2
+  exit 1
+fi
+export MACOSX_DEPLOYMENT_TARGET=27.0
+
 if [[ $# != 0 ]]; then
   echo "用法：./build.sh（僅建置 Apple Silicon／M 系列 App）" >&2
   exit 1
