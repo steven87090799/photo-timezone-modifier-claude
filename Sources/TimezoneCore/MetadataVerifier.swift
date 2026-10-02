@@ -29,14 +29,24 @@ enum MetadataVerifier {
                 relocations.append(key)
                 continue
             }
-            guard let prior = expected[key], let updated = actual[key],
-                  permittedPointer(key, metadata: old, options: options),
-                  validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
-                  pointerCount(prior) == pointerCount(updated) else {
-                throw PhotoError("Non-offset metadata changed: \(key). Candidate was rejected; original not changed.")
+            if let prior = expected[key], let updated = actual[key],
+               permittedPointer(key, metadata: old, options: options) {
+                let oldValid = validPointers(prior, limit: old.fileSize)
+                let newValid = validPointers(updated, limit: new.fileSize)
+                let sameCount = pointerCount(prior) == pointerCount(updated)
+                guard oldValid, newValid, sameCount else {
+                    throw PhotoError(
+                        "Pointer relocation failed validation: \(key). " +
+                        "before[\(pointerSummary(prior, limit: old.fileSize))] " +
+                        "after[\(pointerSummary(updated, limit: new.fileSize))] " +
+                        "sameCount=\(sameCount). Candidate was rejected; original not changed."
+                    )
+                }
+                expected[key] = updated
+                relocations.append(key)
+                continue
             }
-            expected[key] = updated
-            relocations.append(key)
+            throw PhotoError("Non-offset metadata changed: \(key). Candidate was rejected; original not changed.")
         }
         guard expected == actual else { throw PhotoError("Metadata verification did not match the authorized operation.") }
         // Existing source warnings are reported, but a new warning is never accepted silently.
@@ -114,9 +124,18 @@ enum MetadataVerifier {
                 continue
             }
             if let prior = expected[key], let updated = actual[key],
-               permittedPointer(key, metadata: old, options: options),
-               validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
-               pointerCount(prior) == pointerCount(updated) {
+               permittedPointer(key, metadata: old, options: options) {
+                let oldValid = validPointers(prior, limit: old.fileSize)
+                let newValid = validPointers(updated, limit: new.fileSize)
+                let sameCount = pointerCount(prior) == pointerCount(updated)
+                guard oldValid, newValid, sameCount else {
+                    throw PhotoError(
+                        "GPS 結構位址驗證失敗：\(key)。" +
+                        "before[\(pointerSummary(prior, limit: old.fileSize))] " +
+                        "after[\(pointerSummary(updated, limit: new.fileSize))] " +
+                        "sameCount=\(sameCount)。候選檔已拒絕，原檔未更動。"
+                    )
+                }
                 expected[key] = updated
                 relocations.append(key)
                 continue
@@ -202,6 +221,20 @@ enum MetadataVerifier {
         }
         return nil
     }
+    private static func pointerSummary(_ value: String, limit: Int64?) -> String {
+        guard let values = pointerValues(value), !values.isEmpty else {
+            let sample = String(value.prefix(96)).replacingOccurrences(of: "\n", with: "\\n")
+            return "unparsed; canonical=\(sample)"
+        }
+        let minimum = values.min() ?? -1
+        let maximum = values.max() ?? -1
+        let bound = limit.map(String.init) ?? "nil"
+        let inRange = limit.map { fileSize in
+            values.allSatisfy { $0 >= 0 && $0 < fileSize }
+        } ?? false
+        return "count=\(values.count), min=\(minimum), max=\(maximum), fileSize=\(bound), inRange=\(inRange)"
+    }
+
     private static func pointerCount(_ value: String) -> Int { pointerValues(value)?.count ?? 0 }
     private static func scalarInteger(_ value: String) -> Int64? {
         guard let values = pointerValues(value), values.count == 1 else { return nil }
