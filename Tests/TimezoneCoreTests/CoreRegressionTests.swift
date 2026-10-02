@@ -56,7 +56,7 @@ struct CoreRegressionTests {
         for offset in ["+00:00", "-00:00", "+14:00", "-03:30", "+05:45", "+12:34"] {
             #expect(TimeValidation.isOffset(offset))
         }
-        for offset in ["", "UTC+8", "+8:00", "+14:01", "+08:60", " 08:00", "+08:00 "] {
+        for offset in ["", "UTC+8", "+8:00", "-12:01", "-13:00", "-14:00", "+14:01", "+08:60", " 08:00", "+08:00 "] {
             #expect(!TimeValidation.isOffset(offset))
         }
     }
@@ -193,5 +193,12 @@ struct CoreRegressionTests {
         #expect(same.isEmpty)
         let different = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:34:56+09:00"])
         #expect(different.contains { $0.contains("conflict") })
+
+        let inconsistent = PhotoMetadata(
+            dateTimeOriginal: "2024:02:29 12:34:56", offsetOriginal: "+08:00",
+            offsetDigitized: "+09:00", offsetTime: "+08:00", fileType: "JPEG",
+            createDate: "2024:02:29 12:34:56", modifyDate: "2024:02:29 12:34:56", dateTags: [:]
+        )
+        #expect(TimeValidation.issues(inconsistent).contains { $0.contains("inconsistent") })
     }
 }
