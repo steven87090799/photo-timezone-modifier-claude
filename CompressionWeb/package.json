@@ -1,5 +1,5 @@
 {
-  "name": "nexpress-macos-embedded",
+  "name": "phototimezone-compression-engine",
   "private": true,
   "version": "3.2.1",
   "nexpressRelease": {
@@ -8,6 +8,6 @@
   "scripts": {
     "generate:build-info": "node scripts/generate-build-info.mjs",
     "check:build-info": "node scripts/check-build-info.mjs",
-    "check:syntax": "node --check main.js && node --check worker.js && node --check sw.js && node --check runtime-policy.js && node --check build-identity.mjs"
+    "check:syntax": "node --check native-engine.js && node --check worker.js && node --check runtime-policy.js && node --check build-identity.mjs"
   }
 }

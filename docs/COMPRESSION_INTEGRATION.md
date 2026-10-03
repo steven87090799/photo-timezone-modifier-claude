@@ -1,52 +1,52 @@
-# 影像壓縮分頁整合
+# 原生影像壓縮分頁
 
-## 來源與範圍
+## 操作介面
 
-本分頁以私人 GitHub 專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（NEXPRESS 3.2.1）為來源。`CompressionWeb/` 保留該專案的執行期頁面、Worker、WASM 編碼器、字型、圖示、離線 Service Worker 與 Build ID 驗證；移除 Cloudflare 託管層、開發測試工具及舊的第三方 HEIF 編解碼資產。上方的「影像壓縮」分頁用 `WKWebView` 載入只監聽 `127.0.0.1` 的 App 內建頁面；原有的「相片處理」時區寫入工作不會因此開始重新編碼。
+介面採用相片時區修改器的 SwiftUI 風格，上方固定頁籤沿用主程式。左側提供匯入、六種格式、品質／PNG 壓縮努力度、並行數與輸出設定；中間顯示批次清單、逐張進度與總進度；右側顯示原始圖片、預覽或實際輸出、大小及中繼資料結果。說明放在問號懸浮提示及「格式與中繼資料說明」。切換分頁不會重載引擎或清空批次。
 
-| 原專案頁面／功能 | macOS 分頁中的位置 |
-| --- | --- |
-| 壓縮：拖放／多選、六種輸出格式、品質、預覽、並行與執行進度 | 影像壓縮 → 壓縮 |
-| 單檔結果、並排縮放檢視、下載、全部 ZIP、失敗報告 | COMPRESS 右側結果區 |
-| 批次：待處理數量、格式、執行緒與大小估算摘要 | 影像壓縮 → 批次 |
-| 設定：目前設定摘要、PWA 狀態、選用 Webhook 與測試 | 影像壓縮 → 設定 |
-| 關於：引擎、格式與中繼資料說明、執行中的 Build ID／更新狀態 | 影像壓縮 → 關於 |
-| CHANGELOG | 與上游相同，在 COMPRESS 頁左下設計者簽名連點五次開啟 |
-| 離線快取、更新提示、深／淺色模式、Worker 狀態 | 壓縮頁設定與狀態區 |
+1. 加入多張圖片或資料夾，也可拖入。包含子資料夾選項在加入資料夾時生效。
+2. 選格式、品質與並行數。選取圖片可產生最長邊 900 px 的快速預覽及約略大小；正式輸出維持完整尺寸。預覽部分編碼參數較快，因此估算不是精確承諾。
+3. 開始整批壓縮。可停止尚未完成的工作，已完成結果仍可儲存。
+4. 在右側儲存單張，或由下方「輸出」選單儲存全部、ZIP、CSV 報告。整批儲存遇到同名檔會加上序號，不取代原檔。
+5. 「放大比較」可並排查看原始與壓縮影像。系統無法解碼的輸出仍可儲存，介面明示無法視覺預覽。
 
-本機頁面不用網際網路即可處理圖片。Webhook 預設關閉；只有使用者設定 URL 並啟用後，才會把輸出檔與摘要送往指定端點。Webhook Token 只存在目前頁面工作階段。遠端 Webhook 應使用 HTTPS；本機 HTTP 可用於開發接收端。服務端仍需允許從本機頁面 origin 發出的跨來源請求。
+Webhook 預設關閉，只有啟用後才傳送壓縮檔及摘要。設定支援 HTTPS，以及 localhost／127.0.0.1 的 HTTP 測試；Bearer Token 僅保留在這次工作階段。保留 NEXPRESS 的 multipart `file`、`metadata`、`X-Nexpress-Batch` 與 JSON 摘要欄位；失敗重試兩次，傳送結果獨立列出。原生 URLSession 不需要瀏覽器 CORS 設定，也不跟隨重新導向。
 
-## 編碼器選擇
+## 執行引擎與格式
 
-「最佳」依畫質、大小、速度、相容性及中繼資料需求而變，沒有單一格式在所有圖片上都最優。這版保留來源專案已調校的實際輸出編碼路徑；300×300 即時預覽使用較快參數，不能當作完整輸出的位元組級預測。
+編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。WKWebView 只執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
 
-| 格式 | 完整輸出的實作與選擇理由 | 適用情境 |
+| 格式 | 完整輸出 | 色彩處理 |
 | --- | --- | --- |
-| JPEG | MozJPEG WASM，漸進式、Trellis；高品質改用 4:4:4。jpegli 是值得追蹤的新編碼器，但目前沒有同一批照片的畫質／時間比較與已整合的 WASM、metadata 路徑，因此未以未驗證的新編碼器取代現有流程。 | 最廣泛的分享／服務相容性；可嘗試保留 EXIF／ICC。 |
-| PNG | OxiPNG WASM，像素無損；滑桿映射壓縮努力度 0–6，預設最高努力度。 | 圖示、截圖、透明與必須無損的圖片。 |
-| WebP | libwebp WASM，`method: 6` 與 sharp YUV；輸出重建 EXIF／ICC 容器。 | 網站用靜態圖片，兼顧體積與普及度。 |
-| AVIF | libavif／libaom WASM，`speed: 4`、品質映射 CQ，較高品質時用 4:4:4。 | 願意付出較長編碼時間以壓小照片。 |
-| HEIF／HEIC | macOS ImageIO `public.heic` 原生 HEVC，使用 `kCGImageDestinationLossyCompressionQuality`；同一原生路徑處理 HEIC 輸入及預覽。沒有 elheif、kvazaar 或 heic-to。 | Apple 裝置與軟體流程；品質可調。 |
-| JPEG XL | libjxl WASM，有損時按尺寸選 effort；品質 100 為像素無損，大圖按記憶體風險降低 effort。 | 可接受格式相容性限制的封存與高品質輸出。 |
+| JPEG | MozJPEG，漸進式、Trellis，高品質 4:4:4 | 保留來源 RGB ICC，其他色彩模式轉 sRGB |
+| PNG | OxiPNG，像素無損，努力度 0–6 | 保留來源 RGB ICC |
+| WebP | libwebp，method 6、sharp YUV | 保留來源 RGB ICC |
+| AVIF | libavif／libaom，speed 4、CQ 品質映射 | 明示轉換為 sRGB |
+| HEIF／HEIC | macOS ImageIO `public.heic` 原生 HEVC | 保留來源 RGB ICC |
+| JPEG XL | libjxl，品質 100 為解碼後像素無損，依尺寸調整 effort | 明示轉換為 sRGB |
 
-參考原始技術文件：[Apple ImageIO destination types](https://developer.apple.com/documentation/imageio/cgimagedestinationcopytypeidentifiers())、[ImageIO 有損品質鍵](https://developer.apple.com/documentation/imageio/kcgimagedestinationlossycompressionquality)、[MozJPEG](https://github.com/mozilla/mozjpeg/blob/master/README.md)、[jpegli](https://github.com/google/jpegli/blob/main/README.md)、[OxiPNG](https://github.com/oxipng/oxipng)、[libwebp](https://github.com/webmproject/libwebp/blob/main/doc/api.md)、[libavif](https://github.com/AOMediaCodec/libavif/blob/main/doc/avifenc.1.md)、[libjxl effort](https://github.com/libjxl/libjxl/blob/main/doc/encode_effort.md)。這些文件說明各編碼器能力，不代表已對所有照片完成跨編碼器主觀畫質比較。
+HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。JPEG XL 無損編碼失敗時，以新 Worker 的品質 99 重試，結果會明示非無損降級。
 
-## 色彩、中繼資料與輸入限制
+## 中繼資料與檔案安全
 
-- 來源會經過 WebKit ImageData 的 8 位元 RGBA 像素路徑；輸出不可當成 RAW／HDR／10-bit／增益圖或原始 ICC 的完整保存副本。HEIF 原生輸出以 sRGB 像素編碼。
-- JPEG 來源轉 JPEG 可複製既有 EXIF／ICC／XMP APP 區段；轉 WebP 則重組 EXIF／ICCP／標準 XMP chunk。遇到無法安全注入的中繼資料會讓該張失敗，不會回傳一張被剝除資料卻標示成功的圖片。延伸 XMP 不能安全重組為 WebP 時會逐張失敗。
-- 非 JPEG 來源的 EXIF／ICC／XMP 尚無完整提取路徑，不能宣稱全部保留。AVIF、HEIF、PNG、JPEG XL 輸出目前不注入來源 EXIF／ICC／XMP；結果卡與處理紀錄會明確顯示不保留或未確認。壓縮流程不提供時區或 GPS 修改入口，也不會在 Worker 內執行舊版的時間改寫。
-- 動畫 GIF／APNG／WebP 只處理第一幀，介面會提示。JPEG XL 的品質 100 是解碼後像素無損，並非 JPEG 原始位元流的可逆重封裝；若無損模式的 WASM 工作中止，原流程會明示改用新 Worker 的品質 99 重試。
-- 大檔案會佔用 WebKit、Worker 與原生解碼記憶體；服務端限制單次 HEIF 請求本體最多 256 MiB。ZIP 產生時需要額外記憶體。
+- ImageIO 解碼轉正後，以 8 位元 RGBA 在來源 RGB 色彩空間編碼，避免 WebKit canvas 先轉 sRGB 再錯標原 ICC。AVIF／JXL 明確先轉 sRGB，輸出回報此轉換。
+- 內建 ExifTool 複製一般 EXIF、XMP、IPTC、ICC，並比對來源和輸出中的可讀欄位及 ICC 位元組。既有時區、GPS、日期不做重新指定或平移。方向與尺寸欄位配合轉正後像素更新，舊縮圖與預覽不複製。
+- 未保留的欄位逐張回報；RGB 原 ICC 無法一致寫入時，拒絕該張結果，避免錯色。相機私有 MakerNote 及不透明二進位欄位不宣稱逐位元驗證。格式能力不足時不顯示「全部保留」。
+- 壓縮不改 `.xmp` sidecar，不重複執行修圖前的時區／GPS 操作。這個頁面的輸入應為修圖後匯出的圖片。
+- 高位元／HDR／RAW／增益圖不保證保留，動畫只輸出第一幀，逐張提示。PNG／JXL 的無損指的是解碼後的 8 位元像素，不是原始檔的可逆封裝。
+- 來源先複製到專用暫存目錄，複製前後檢查身分；編碼與中繼資料寫入都處理暫存副本。單檔最多 256 MiB，解碼後 RGBA 最多 256 MiB，大圖會降低實際並行數。ZIP 使用系統 ditto 在暫存目錄打包。
+- 關閉／結束程式會阻擋尚在匯入、壓縮或輸出的工作；需先停止或等候完成。
 
-## 變更與驗證方式
+## 自行編譯
 
-改動 `CompressionWeb/index.html`、`main.js`、`worker.js`、`sw.js` 或其他執行期資產後，在 `CompressionWeb/` 執行：
+修改執行期 JavaScript 後先執行：
 
 ```sh
+cd CompressionWeb
 npm run generate:build-info
 npm run check:build-info
 npm run check:syntax
+cd ..
 ```
 
-接著在專案根目錄執行 `./build.sh`，使用 `dist/PhotoTimezone-macOS-local.zip` 解壓後的 App。ABOUT 的 Build ID 應顯示 `VERIFIED`；離線狀態應在快取完成後顯示 READY。使用非私人測試圖各輸出一張格式並檢查可下載；HEIC 輸入與 HEIF 輸出也應各走一次。這些檢查不取代真實照片的色彩、畫質與中繼資料驗收。
+日常修改可用 `swift build --build-system native -c debug --arch arm64` 快速確認編譯；需要可安裝 App 時執行 `./build.sh`，使用 `dist/PhotoTimezone-macOS-local.zip`。這是實際原生介面，不再使用瀏覽器模擬外觀。上傳 `main` 後 CI 會自行打包，不必反覆要求 AI 編譯或等待。

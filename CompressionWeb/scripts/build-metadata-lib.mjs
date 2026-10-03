@@ -11,19 +11,7 @@ import {
 const REVISION = /^(?:[0-9a-f]{7,40}|unavailable)$/;
 const UTC_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-const RUNTIME_ENTRIES = [
-  'index.html',
-  'main.js',
-  'worker.js',
-  'build-identity.mjs',
-  'runtime-policy.js',
-  'sw.js',
-  'generation.json',
-  'manifest.webmanifest',
-  'fonts',
-  'icons',
-  'vendor',
-];
+const RUNTIME_ENTRIES = ['engine.html', 'native-engine.js', 'worker.js', 'build-identity.mjs', 'runtime-policy.js', 'generation.json', 'vendor'];
 
 async function walk(root, relative) {
   const absolute = path.join(root, relative);
@@ -35,21 +23,9 @@ async function walk(root, relative) {
 }
 
 function normalizedRuntimeBytes(relative, bytes) {
-  if (!['index.html', 'worker.js', 'sw.js'].includes(relative)) return bytes;
-  let text = bytes.toString('utf8');
-  if (relative === 'index.html') {
-    text = text
-      .replace(/(<meta name="nexpress-build-id" content=")[^"]*(")/, '$1__GENERATED_BUILD_ID__$2')
-      .replace(/(<meta name="nexpress-content-hash" content=")[^"]*(")/, '$1sha256:__GENERATED_CONTENT_HASH__$2')
-      .replace(/([?&]b=)[^&"']+/g, '$1__GENERATED_BUILD_ID__');
-  } else if (relative === 'worker.js') {
-    text = text.replace(/(runtime-policy\.js\?v=[^&"']+&b=)[^&"']+/, '$1__GENERATED_BUILD_ID__');
-  } else {
-    text = text
-      .replace(/const BUILD_ID = '[^']*';/, "const BUILD_ID = '__GENERATED_BUILD_ID__';")
-      .replace(/const CONTENT_HASH = '[^']*';/, "const CONTENT_HASH = 'sha256:__GENERATED_CONTENT_HASH__';");
-  }
-  return Buffer.from(text, 'utf8');
+  if (relative !== 'worker.js') return bytes;
+  return Buffer.from(bytes.toString('utf8').replace(
+    /(runtime-policy\.js\?v=[^&"']+&b=)[^&"']+/, '$1__GENERATED_BUILD_ID__'), 'utf8');
 }
 
 export async function runtimeAssetFiles(root) {

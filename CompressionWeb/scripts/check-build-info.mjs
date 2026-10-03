@@ -31,14 +31,6 @@ if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(actual.builtAt || '')
 const buildId = expectedBuildId(release, actual.revision, expected.contentHash);
 if (actual.buildId !== buildId) errors.push(`buildId: expected ${buildId}, got ${actual.buildId}`);
 
-const index = await readFile(path.join(root, 'index.html'), 'utf8');
-if (!index.includes(`<meta name="nexpress-build-id" content="${actual.buildId}">`)) errors.push('index.html build ID is stale');
-if (!index.includes(`<meta name="nexpress-content-hash" content="${actual.contentHash}">`)) errors.push('index.html content hash is stale');
-if (!index.includes(`./main.js?v=${actual.releaseGeneration}&b=${encodeURIComponent(actual.buildId)}`)) errors.push('index.html main module identity is stale');
-if (!index.includes(`./vendor/jszip.min.js?v=${actual.releaseGeneration}&b=${encodeURIComponent(actual.buildId)}`)) errors.push('index.html JSZip identity is stale');
-const sw = await readFile(path.join(root, 'sw.js'), 'utf8');
-if (!sw.includes(`const BUILD_ID = '${actual.buildId}';`)) errors.push('sw.js build ID is stale');
-if (!sw.includes(`const CONTENT_HASH = '${actual.contentHash}';`)) errors.push('sw.js content hash is stale');
 const worker = await readFile(path.join(root, 'worker.js'), 'utf8');
 if (!worker.includes(`runtime-policy.js?v=${actual.releaseGeneration}&b=${encodeURIComponent(actual.buildId)}`)) {
   errors.push('worker.js runtime-policy identity is stale');

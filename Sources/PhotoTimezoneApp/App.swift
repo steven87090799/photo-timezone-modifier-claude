@@ -8,13 +8,17 @@ import TimezoneCore
 struct PhotoTimezoneApp: App {
     @NSApplicationDelegateAdaptor(PhotoAppDelegate.self) private var appDelegate
     @StateObject private var model = PhotoViewModel()
+    @StateObject private var compression = CompressionModel()
 
     var body: some Scene {
         Window("相片時區修改器", id: "main") {
-            PhotoMainView(model: model)
-                .background(WindowCloseGuard(model: model))
-                .onAppear { appDelegate.connect(model) }
-                .onOpenURL { model.addInputs([$0]) }
+            PhotoMainView(model: model, compression: compression)
+                .background(WindowCloseGuard(model: model, compression: compression))
+                .onAppear { appDelegate.connect(model, compression: compression); compression.host.loadIfNeeded() }
+                .onOpenURL { url in
+                    if model.activePage == .compression { compression.addInputs([url]) }
+                    else { model.addInputs([url]) }
+                }
                 .frame(minWidth: 1100, minHeight: 760)
                 .preferredColorScheme(.dark)
                 .sheet(isPresented: $model.showingRecovery) { RecoveryView() }
@@ -23,9 +27,12 @@ struct PhotoTimezoneApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("加入相片或資料夾…", action: model.chooseInputs)
+                Button("加入相片或資料夾…") {
+                    if model.activePage == .compression { compression.chooseInputs() }
+                    else { model.chooseInputs() }
+                }
                     .keyboardShortcut("o")
-                    .disabled(model.isRunning)
+                    .disabled(model.activePage == .compression ? compression.isRunning || compression.isImporting : model.isRunning)
             }
             CommandMenu("相片") {
                 Button("掃描預覽", action: model.inspect)
@@ -81,7 +88,7 @@ enum PhotoNotice: Identifiable {
 
 private struct PhotoMainView: View {
     @ObservedObject var model: PhotoViewModel
-    @StateObject private var compressionHost = CompressionHost()
+    @ObservedObject var compression: CompressionModel
 
     private struct MetadataSpecField: Identifiable {
         let title: String
@@ -104,7 +111,7 @@ private struct PhotoMainView: View {
                 }
                 .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
             } else if model.activePage == .compression {
-                CompressionView(host: compressionHost)
+                CompressionView(model: compression)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 DiagnosticsView(model: model)
@@ -116,6 +123,7 @@ private struct PhotoMainView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(CompressionRuntimeView(host: compression.host).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true))
         .overlay {
             if model.activePage == .photos && model.dropTargeted {
                 RoundedRectangle(cornerRadius: 12)
@@ -968,12 +976,15 @@ private extension PhotoStatus {
 @MainActor
 final class PhotoAppDelegate: NSObject, NSApplicationDelegate {
     private weak var model: PhotoViewModel?
+    private weak var compression: CompressionModel?
     private var pendingURLs: [URL] = []
 
-    func connect(_ model: PhotoViewModel) {
+    func connect(_ model: PhotoViewModel, compression: CompressionModel) {
         self.model = model
+        self.compression = compression
         if !pendingURLs.isEmpty {
-            model.addInputs(pendingURLs)
+            if model.activePage == .compression { compression.addInputs(pendingURLs) }
+            else { model.addInputs(pendingURLs) }
             pendingURLs = []
         }
     }
@@ -984,10 +995,18 @@ final class PhotoAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        if let model { model.addInputs(urls) } else { pendingURLs.append(contentsOf: urls) }
+        if let model {
+            if model.activePage == .compression { compression?.addInputs(urls) }
+            else { model.addInputs(urls) }
+        } else { pendingURLs.append(contentsOf: urls) }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let compression, compression.isRunning || compression.isExporting || compression.isImporting {
+            model?.notice = .error("影像壓縮仍在處理", "請等待處理完成，或先停止壓縮後再結束程式。")
+            sender.activate(ignoringOtherApps: true)
+            return .terminateCancel
+        }
         guard let model, model.isRunning else { return .terminateNow }
         model.requestClose()
         sender.activate(ignoringOtherApps: true)
@@ -1000,8 +1019,9 @@ final class PhotoAppDelegate: NSObject, NSApplicationDelegate {
 /// Intercepts only close requests and forwards SwiftUI's existing window-delegate behavior.
 private struct WindowCloseGuard: NSViewRepresentable {
     let model: PhotoViewModel
+    let compression: CompressionModel
 
-    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+    func makeCoordinator() -> Coordinator { Coordinator(model: model, compression: compression) }
 
     func makeNSView(context: Context) -> WindowAttachmentView {
         let view = WindowAttachmentView()
@@ -1016,10 +1036,11 @@ private struct WindowCloseGuard: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSWindowDelegate {
         private weak var model: PhotoViewModel?
+        private weak var compression: CompressionModel?
         private weak var originalDelegate: NSWindowDelegate?
         private weak var attachedWindow: NSWindow?
 
-        init(model: PhotoViewModel) { self.model = model }
+        init(model: PhotoViewModel, compression: CompressionModel) { self.model = model; self.compression = compression }
 
         func attach(to window: NSWindow?) {
             guard let window, window.delegate !== self else { return }
@@ -1032,6 +1053,10 @@ private struct WindowCloseGuard: NSViewRepresentable {
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
+            if let compression, compression.isRunning || compression.isExporting || compression.isImporting {
+                model?.notice = .error("影像壓縮仍在處理", "請等待處理完成，或先停止壓縮後再關閉視窗。")
+                return false
+            }
             if let model, model.isRunning {
                 model.requestClose()
                 return false
