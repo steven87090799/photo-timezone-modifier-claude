@@ -80,7 +80,11 @@ public struct PhotoMetadata: Codable, Sendable {
             return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
-    public var hasCompleteGPSCoordinate: Bool { gpsLatitude != nil && gpsLongitude != nil }
+    public var hasCompleteGPSCoordinate: Bool {
+        gpsLatitude != nil && gpsLongitude != nil &&
+            ["N", "S", "NORTH", "SOUTH"].contains(gpsLatitudeRef?.uppercased() ?? "") &&
+            ["E", "W", "EAST", "WEST"].contains(gpsLongitudeRef?.uppercased() ?? "")
+    }
     public var hasAnyGPS: Bool { hasEmbeddedEXIFGPS || embeddedXMPGPSDetected || sidecarGPSDetected }
     public var canSafelyAddGPS: Bool { !hasAnyGPS && !gpsSafetyUncertain }
 }
@@ -169,6 +173,15 @@ public enum WriteMode: String, CaseIterable, Sendable {
     case fillMissing, replaceAll
 }
 
+public struct GPSWriteRequest: Sendable {
+    public let coordinate: GPSCoordinate
+    public let overwrite: Bool
+    public init(coordinate: GPSCoordinate, overwrite: Bool) {
+        self.coordinate = coordinate
+        self.overwrite = overwrite
+    }
+}
+
 public struct WriteOptions: Sendable {
     public let sonyCompatibility: Bool
 
@@ -178,9 +191,17 @@ public struct WriteOptions: Sendable {
     public static let appDefault = WriteOptions()
 
     public let copySidecars: Bool
-    public init(sonyCompatibility: Bool = true, copySidecars: Bool = true) {
+    /// If present, GPS always applies to every inspected input, independently
+    /// of the UI's photo search, filter and selection.
+    public let gps: GPSWriteRequest?
+    /// The existing scope control applies only to timezone changes.
+    public let timezonePaths: Set<String>?
+    public init(sonyCompatibility: Bool = true, copySidecars: Bool = true,
+                gps: GPSWriteRequest? = nil, timezonePaths: Set<String>? = nil) {
         self.sonyCompatibility = sonyCompatibility
         self.copySidecars = copySidecars
+        self.gps = gps
+        self.timezonePaths = timezonePaths
     }
 }
 

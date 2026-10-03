@@ -1,0 +1,3088 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Generated deployment identity. ABOUT validates build-info.json against these page-bound markers. -->
+  <meta name="nexpress-release-generation" content="3.2.1">
+  <meta name="nexpress-build-id" content="nexpress-3.2.1-g3.2.1-04361249b1d3-f4fee95b300cb982">
+  <meta name="nexpress-content-hash" content="sha256:f4fee95b300cb982c05b5c126c464254f5525c227f2ffdc553882931a1b29161">
+  <title>影像壓縮 · 相片時區修改器</title>
+  <meta name="description"
+    content="相片時區修改器內建的本機影像壓縮工具。支援 JPEG、PNG、WebP、AVIF、HEIF 與 JPEG XL；HEIF 使用 macOS ImageIO。Webhook 預設關閉。">
+  <meta property="og:title" content="影像壓縮 · 相片時區修改器">
+  <meta property="og:description" content="本地瀏覽器影像壓縮工具。無上傳、完全離線。支援 JPEG、PNG、WebP、AVIF。">
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23081117'/%3E%3Cpath d='M37 8 18 35h11l-3 21 20-29H35l2-19Z' fill='%2300e5a0'/%3E%3Cpath d='M42 11 24 34h8l-2 14 13-19h-9l2-18Z' fill='%2378ffd1' opacity='.45'/%3E%3C/svg%3E">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <meta name="theme-color" content="#080c12">
+  <style>
+    /* ╔══════════════════════════════════════════════════════════════╗
+       ║  NEXPRESS — VOID CONSOLE                                       ║
+       ║  全新液態玻璃介面:深空底 × 青電光 × 紫羅蘭 × 浮動玻璃島          ║
+       ║  DOM 合約不變(所有 id / JS 操作之 class 名稱與語意皆保留)        ║
+       ╚══════════════════════════════════════════════════════════════╝ */
+
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-display: swap; font-weight: 300; src: url('./fonts/jetbrains-mono-latin-300-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-display: swap; font-weight: 400; src: url('./fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-display: swap; font-weight: 500; src: url('./fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-display: swap; font-weight: 600; src: url('./fonts/jetbrains-mono-latin-600-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-display: swap; font-weight: 700; src: url('./fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Orbitron'; font-style: normal; font-display: swap; font-weight: 500; src: url('./fonts/orbitron-latin-500-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Orbitron'; font-style: normal; font-display: swap; font-weight: 600; src: url('./fonts/orbitron-latin-600-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Orbitron'; font-style: normal; font-display: swap; font-weight: 700; src: url('./fonts/orbitron-latin-700-normal.woff2') format('woff2'); }
+    @font-face { font-family: 'Orbitron'; font-style: normal; font-display: swap; font-weight: 900; src: url('./fonts/orbitron-latin-900-normal.woff2') format('woff2'); }
+
+    /* ── 設計代幣(變數名沿用舊合約:main.js 內聯樣式依賴 --g/--b/--amb/--br2/--br3/--ts 等) ── */
+    :root {
+      --g: #34f5a2;              /* success mint */
+      --gd: #0fbf7a;
+      --gdim: rgba(52, 245, 162, .08);
+      --b: #4cc9ff;              /* signal blue */
+      --bd: #1b7fb8;
+      --cy: #00e8ff;             /* electric cyan(主色) */
+      --vi: #8b7cf6;             /* violet(副色) */
+      --amb: #ffc247;
+      --red: #ff4d6d;
+      --bg: #04060c;
+      --s1: #090d16;
+      --s2: #0c1220;
+      --s3: #101a2c;
+      --br: #10182a;
+      --br2: #1b2742;
+      --br3: #35486e;
+      --tm: #3d5578;
+      --tw: #e8f4ff;
+      --ts: #7d9cc0;
+      --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+      --hud: 'Orbitron', 'Avenir Next Condensed', 'Helvetica Neue', sans-serif;
+      /* 玻璃代幣 */
+      --glass: rgba(13, 20, 36, .52);
+      --glass-2: rgba(9, 14, 26, .62);
+      --foot-bg: rgba(8, 12, 22, .94);
+      --glass-br: rgba(160, 200, 255, .13);
+      --glass-hi: rgba(255, 255, 255, .09);
+      --r-lg: 22px;
+      --r-md: 16px;
+      --r-sm: 11px;
+      --shadow-float: 0 18px 44px rgba(0, 0, 0, .42);
+      --glow-cy: 0 0 22px rgba(0, 232, 255, .16);
+      --glow-g: 0 0 20px rgba(52, 245, 162, .18);
+    }
+
+    body.light-theme {
+      --g: #0b9e69;
+      --gd: #087a51;
+      --gdim: rgba(11, 158, 105, .08);
+      --b: #0b7fc4;
+      --bd: #0a659c;
+      --cy: #0797b9;
+      --vi: #6d5bd0;
+      --amb: #a8730f;
+      --red: #cf2f52;
+      --bg: #e9eff6;
+      --s1: #f7fafd;
+      --s2: #eef3f9;
+      --s3: #e2eaf3;
+      --br: #d3deea;
+      --br2: #bccbdb;
+      --br3: #7e94ad;
+      --tm: #8ba2b9;
+      --tw: #10243a;
+      --ts: #4a6580;
+      --glass: rgba(255, 255, 255, .55);
+      --glass-2: rgba(248, 251, 255, .68);
+      --foot-bg: rgba(233, 239, 246, .95);
+      --glass-br: rgba(30, 60, 100, .14);
+      --glass-hi: rgba(255, 255, 255, .85);
+      --shadow-float: 0 18px 44px rgba(30, 55, 90, .12);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { height: 100%; }
+
+    body {
+      background: var(--bg);
+      color: var(--tw);
+      font-family: var(--mono);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ═══ 深空背景系統:四層 GPU 動畫 ═══ */
+
+    /* 層1:極光星雲(青/紫/薄荷 光團漂移) */
+    html::before {
+      content: '';
+      position: fixed;
+      inset: -28%;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(720px 480px at 16% 22%, rgba(0, 232, 255, .13), transparent 60%),
+        radial-gradient(820px 560px at 84% 14%, rgba(139, 124, 246, .12), transparent 62%),
+        radial-gradient(900px 680px at 62% 92%, rgba(52, 245, 162, .08), transparent 60%),
+        radial-gradient(460px 380px at 32% 68%, rgba(76, 201, 255, .09), transparent 58%);
+      filter: blur(58px);
+      animation: void-drift 30s ease-in-out infinite alternate;
+      will-change: transform;
+    }
+
+    @keyframes void-drift {
+      0%   { transform: translate3d(-4%, -2%, 0) scale(1) rotate(0deg); }
+      50%  { transform: translate3d(3%, 4%, 0) scale(1.07) rotate(1.6deg); }
+      100% { transform: translate3d(5%, -3%, 0) scale(1.02) rotate(-1.2deg); }
+    }
+
+    /* 層2:反向視差星雲 */
+    html::after {
+      content: '';
+      position: fixed;
+      inset: -32%;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(1000px 760px at 74% 82%, rgba(0, 232, 255, .06), transparent 64%),
+        radial-gradient(760px 560px at 8% 56%, rgba(139, 124, 246, .07), transparent 60%);
+      filter: blur(68px);
+      animation: void-drift-2 44s ease-in-out infinite alternate;
+      will-change: transform;
+    }
+
+    @keyframes void-drift-2 {
+      0%   { transform: translate3d(4%, 3%, 0) scale(1.06) rotate(1deg); }
+      100% { transform: translate3d(-5%, -4%, 0) scale(1) rotate(-1.6deg); }
+    }
+
+    /* 層3:科技格線(細線 + 中央淡出遮罩) */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(120, 170, 255, .05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(120, 170, 255, .05) 1px, transparent 1px);
+      background-size: 44px 44px;
+      -webkit-mask-image: radial-gradient(ellipse 120% 90% at 50% 40%, #000 30%, transparent 78%);
+              mask-image: radial-gradient(ellipse 120% 90% at 50% 40%, #000 30%, transparent 78%);
+    }
+
+    /* 層4:掃描光帶(緩慢下掃) */
+    body::after {
+      content: '';
+      position: fixed;
+      left: 0; right: 0; top: -14%;
+      height: 11%;
+      z-index: 0;
+      pointer-events: none;
+      background: linear-gradient(180deg, transparent, rgba(0, 232, 255, .04), transparent);
+      animation: scan-sweep 17s linear infinite;
+    }
+
+    @keyframes scan-sweep {
+      0%   { transform: translateY(0); }
+      100% { transform: translateY(1200%); }
+    }
+
+    body.light-theme::before { opacity: .6; }
+    body.light-theme::after { opacity: .5; }
+    html:has(body.light-theme)::before,
+    html:has(body.light-theme)::after { opacity: .5; }
+
+    @media (prefers-reduced-motion: reduce) {
+      html::before, html::after, body::after { animation: none !important; }
+      body::after { display: none; }
+      * { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+
+    /* ═══ 玻璃基底 mixin(以 class 群組實現) ═══ */
+    .hud, .left-col, .term-wrap, .res-wrap, .stats-bar,
+    .info-card, .info-hero, .tz-card, .zoom-hdr {
+      background: linear-gradient(165deg, rgba(255, 255, 255, .055), rgba(255, 255, 255, .015)) , var(--glass);
+      backdrop-filter: blur(24px) saturate(1.6);
+      -webkit-backdrop-filter: blur(24px) saturate(1.6);
+      border: 1px solid var(--glass-br);
+      box-shadow:
+        inset 0 1px 0 var(--glass-hi),
+        inset 0 -1px 0 rgba(0, 0, 0, .25),
+        var(--shadow-float);
+    }
+
+    /* ═══════════════ HUD:浮動指令列 ═══════════════ */
+    .hud {
+      position: relative;
+      z-index: 5;
+      margin: 14px 16px 0;
+      border-radius: var(--r-lg);
+      overflow: hidden;
+    }
+
+    .hud-r1 {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px 20px;
+      padding: 14px 22px;
+      border-bottom: 1px solid rgba(160, 200, 255, .07);
+    }
+
+    .brand {
+      font-family: var(--hud);
+      font-weight: 900;
+      font-size: 21px;
+      letter-spacing: 3px;
+      background: linear-gradient(92deg, var(--cy) 0%, var(--b) 45%, var(--vi) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      position: relative;
+      padding-left: 20px;
+      white-space: nowrap;
+    }
+
+    /* 呼吸核心指示燈 */
+    .brand::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      margin-top: -5px;
+      border-radius: 50%;
+      background: var(--cy);
+      box-shadow: 0 0 12px var(--cy), 0 0 28px rgba(0, 232, 255, .5);
+      animation: core-pulse 2.6s ease-in-out infinite;
+    }
+
+    @keyframes core-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: .55; transform: scale(.78); }
+    }
+
+    .brand-sub {
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--ts);
+      white-space: nowrap;
+      opacity: .8;
+    }
+
+    .hud-nav {
+      display: flex;
+      gap: 6px;
+      margin-left: auto;
+      padding: 5px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, .28);
+      border: 1px solid rgba(160, 200, 255, .08);
+    }
+
+    body.light-theme .hud-nav { background: rgba(30, 60, 100, .07); }
+
+    .nav-item {
+      font-family: var(--hud);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--ts);
+      padding: 8px 18px;
+      border-radius: 999px;
+      cursor: pointer;
+      user-select: none;
+      position: relative;
+      transition: color .22s ease, background .22s ease, box-shadow .25s ease, transform .15s ease;
+    }
+
+    .nav-item:hover { color: var(--tw); transform: translateY(-1px); }
+    .nav-item:active { transform: translateY(0) scale(.96); }
+
+    .nav-item.on {
+      color: #031018;
+      background: linear-gradient(120deg, var(--cy), var(--b));
+      box-shadow: 0 0 16px rgba(0, 232, 255, .35), inset 0 1px 0 rgba(255, 255, 255, .4);
+      text-shadow: none;
+    }
+
+    body.light-theme .nav-item.on { color: #fff; }
+
+    .hud-tools {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .theme-toggle-label {
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--ts);
+    }
+
+    .theme-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+
+    .theme-switch {
+      width: 40px;
+      height: 21px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, .4);
+      border: 1px solid var(--glass-br);
+      position: relative;
+      transition: background .25s ease, border-color .25s ease;
+    }
+
+    .theme-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--cy), var(--b));
+      box-shadow: 0 0 8px rgba(0, 232, 255, .5);
+      transition: transform .3s cubic-bezier(.34, 1.56, .64, 1);
+    }
+
+    .theme-toggle input:checked + .theme-switch::after { transform: translateX(19px); }
+    .theme-toggle input:focus-visible + .theme-switch { outline: 2px solid var(--cy); outline-offset: 2px; }
+
+    .hud-clock {
+      font-family: var(--hud);
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--cy);
+      text-shadow: 0 0 14px rgba(0, 232, 255, .4);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── HUD 儀表列:玻璃膠囊群 ── */
+    .hud-r2 {
+      display: flex;
+      align-items: stretch;
+      gap: 10px;
+      padding: 12px 18px 14px;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .hud-r2::-webkit-scrollbar { display: none; }
+
+    .grp-label {
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      transform: rotate(180deg);
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 3px;
+      color: var(--cy);
+      opacity: .5;
+      align-self: center;
+      flex: none;
+      user-select: none;
+    }
+
+    .inst-group {
+      display: flex;
+      gap: 8px;
+      flex: none;
+    }
+
+    .inst {
+      position: relative;
+      min-width: 118px;
+      padding: 9px 14px 10px;
+      border-radius: var(--r-md);
+      background: rgba(255, 255, 255, .03);
+      border: 1px solid rgba(160, 200, 255, .09);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 2px;
+      transition: border-color .25s ease, box-shadow .25s ease, transform .18s ease;
+    }
+
+    .inst:hover {
+      border-color: rgba(0, 232, 255, .28);
+      box-shadow: var(--glow-cy);
+      transform: translateY(-2px);
+    }
+
+    .inst-label {
+      font-size: 8.5px;
+      font-weight: 600;
+      letter-spacing: 1.6px;
+      color: var(--ts);
+      white-space: nowrap;
+    }
+
+    .inst-val {
+      font-family: var(--hud);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--g);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .inst-val.blue { color: var(--b); }
+    .inst-val.amber { color: var(--amb); }
+    .inst-val.red { color: var(--red); }
+    .inst-val.dim { color: var(--ts); }
+
+    .inst-sub {
+      font-size: 8.5px;
+      letter-spacing: .6px;
+      color: var(--tm);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 150px;
+    }
+
+    .inst-led {
+      position: absolute;
+      top: 9px;
+      right: 10px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--tm);
+    }
+
+    .inst-led.on {
+      background: var(--g);
+      box-shadow: 0 0 8px var(--g), 0 0 18px rgba(52, 245, 162, .5);
+    }
+
+    .inst-led.ld {
+      background: var(--amb);
+      box-shadow: 0 0 8px var(--amb);
+      animation: led-blink 1s ease-in-out infinite;
+    }
+
+    .inst-led.err {
+      background: var(--red);
+      box-shadow: 0 0 8px var(--red);
+    }
+
+    .inst-led.blink { animation: led-blink .8s ease-in-out infinite; }
+
+    @keyframes led-blink {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .25; }
+    }
+
+    .inst-bar {
+      height: 3px;
+      border-radius: 2px;
+      background: rgba(0, 0, 0, .35);
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .inst-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg, var(--cy), var(--b));
+      box-shadow: 0 0 8px rgba(0, 232, 255, .5);
+      transition: width .5s cubic-bezier(.22, 1, .36, 1);
+    }
+
+    .hud-spacer { flex: 1; }
+
+    /* ═══════════════ 視圖切換 ═══════════════ */
+    .app-view {
+      display: none;
+      position: relative;
+      z-index: 1;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .app-view.is-active { display: block; }
+
+    section[data-view-panel="compress"].is-active { display: block; overflow: hidden; }
+
+    .info-view.is-active { overflow-y: auto; }
+
+    /* ═══════════════ COMPRESS 工作區:浮動雙島 ═══════════════ */
+    .workspace {
+      display: grid;
+      grid-template-columns: 375px minmax(0, 1fr);
+      gap: 16px;
+      padding: 14px 16px 16px;
+      height: 100%;
+    }
+
+    /* ── 左島:控制台 ── */
+    .left-col {
+      border-radius: var(--r-lg);
+      overflow-y: auto;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      scrollbar-width: thin;
+    }
+
+    .sec {
+      padding: 14px 20px 13px;
+      border-bottom: 1px solid rgba(160, 200, 255, .07);
+    }
+
+    .sec-hd {
+      font-family: var(--hud);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      color: var(--ts);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .sec-hd::before {
+      content: '';
+      width: 5px;
+      height: 5px;
+      border-radius: 1px;
+      background: var(--cy);
+      box-shadow: 0 0 6px rgba(0, 232, 255, .7);
+      transform: rotate(45deg);
+      flex: none;
+    }
+
+    /* ── 上傳傳送門 ── */
+    .upload-zone {
+      position: relative;
+      border-radius: var(--r-md);
+      padding: 20px 16px 18px;
+      text-align: center;
+      cursor: pointer;
+      background:
+        radial-gradient(220px 130px at 50% 0%, rgba(0, 232, 255, .07), transparent 70%),
+        rgba(255, 255, 255, .02);
+      border: 1px dashed rgba(0, 232, 255, .3);
+      transition: border-color .25s ease, box-shadow .3s ease, background .3s ease, transform .18s ease;
+      overflow: hidden;
+    }
+
+    .upload-zone::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, transparent 30%, rgba(0, 232, 255, .06) 50%, transparent 70%);
+      transform: translateX(-100%);
+      transition: transform .8s ease;
+      pointer-events: none;
+    }
+
+    .upload-zone:hover::before { transform: translateX(100%); }
+
+    .upload-zone:hover {
+      border-color: rgba(0, 232, 255, .65);
+      box-shadow: var(--glow-cy), inset 0 0 30px rgba(0, 232, 255, .05);
+      transform: translateY(-2px);
+    }
+
+    .upload-zone.drag-over {
+      border-color: var(--cy);
+      border-style: solid;
+      animation: portal-breathe 1.1s ease-in-out infinite;
+    }
+
+    @keyframes portal-breathe {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(0, 232, 255, .4), 0 0 26px rgba(0, 232, 255, .16), inset 0 0 34px rgba(0, 232, 255, .07); }
+      50%      { box-shadow: 0 0 0 2px rgba(0, 232, 255, .65), 0 0 44px rgba(0, 232, 255, .3), inset 0 0 48px rgba(0, 232, 255, .12); }
+    }
+
+    .upload-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    .up-icon {
+      pointer-events: none;
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 9px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      color: var(--cy);
+      background: rgba(0, 232, 255, .08);
+      border: 1px solid rgba(0, 232, 255, .3);
+      box-shadow: 0 0 18px rgba(0, 232, 255, .18), inset 0 1px 0 rgba(255, 255, 255, .12);
+      animation: icon-float 3.2s ease-in-out infinite;
+    }
+
+    @keyframes icon-float {
+      0%, 100% { transform: translateY(0); }
+      50%      { transform: translateY(-5px); }
+    }
+
+    .up-hint {
+      pointer-events: none;
+      font-size: 11.5px;
+      line-height: 1.75;
+      color: var(--ts);
+    }
+
+    .up-hint strong { color: var(--tw); font-weight: 600; }
+
+    /* ── 格式選擇:玻璃磁磚 ── */
+    .fmt-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+    }
+
+    .fmt-chip {
+      appearance: none;
+      position: relative;
+      border-radius: var(--r-sm);
+      border: 1px solid rgba(160, 200, 255, .12);
+      background: rgba(255, 255, 255, .025);
+      color: var(--ts);
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .5px;
+      padding: 8px 4px 7px;
+      text-align: center;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      transition: transform .16s ease, border-color .22s ease, box-shadow .25s ease, background .22s ease, color .22s ease;
+    }
+
+    .fmt-chip .fmt-sub {
+      font-size: 8.5px;
+      letter-spacing: .5px;
+      color: var(--tm);
+      transition: color .2s ease;
+    }
+
+    .fmt-chip:hover {
+      transform: translateY(-3px);
+      color: var(--tw);
+      border-color: rgba(0, 232, 255, .4);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, .3), var(--glow-cy);
+    }
+
+    .fmt-chip:hover .fmt-sub { color: var(--ts); }
+    .fmt-chip:active { transform: translateY(-1px) scale(.96); }
+    .fmt-chip:focus-visible { outline: 2px solid var(--b); outline-offset: 3px; }
+    .fmt-chip:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+
+    .fmt-chip.active {
+      color: var(--cy);
+      background: linear-gradient(160deg, rgba(0, 232, 255, .13), rgba(76, 201, 255, .05));
+      border-color: rgba(0, 232, 255, .55);
+      box-shadow: 0 0 18px rgba(0, 232, 255, .15), inset 0 1px 0 rgba(255, 255, 255, .12);
+    }
+
+    .fmt-chip.active .fmt-sub { color: var(--b); }
+
+    .avif-warn {
+      display: none;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: var(--r-sm);
+      border: 1px solid rgba(255, 194, 71, .3);
+      background: rgba(255, 194, 71, .06);
+      color: var(--amb);
+      font-size: 10.5px;
+      line-height: 1.7;
+    }
+
+    /* ── TIMEZONE 折疊區 ── */
+    .tz-sec-hd {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+    }
+
+    .tz-sec-hd .sec-hd { margin-bottom: 0; }
+
+    .tz-collapse-btn {
+      background: rgba(255, 255, 255, .04);
+      border: 1px solid rgba(160, 200, 255, .14);
+      border-radius: 8px;
+      color: var(--ts);
+      width: 26px;
+      height: 24px;
+      font-size: 10px;
+      cursor: pointer;
+      transition: transform .3s ease, color .2s ease, border-color .2s ease, box-shadow .2s ease;
+    }
+
+    .tz-collapse-btn:hover { color: var(--cy); border-color: rgba(0, 232, 255, .4); box-shadow: var(--glow-cy); }
+
+    .tz-collapsible {
+      max-height: 560px;
+      opacity: 1;
+      overflow: hidden;
+      transition: max-height .4s cubic-bezier(.22, 1, .36, 1), opacity .3s ease;
+    }
+
+    .tz-collapsible.collapsed {
+      max-height: 0;
+      opacity: 0;
+      pointer-events: none;
+      padding-top: 0 !important;
+      padding-bottom: 0 !important;
+      margin: 0 !important;
+    }
+
+    .tz-group { display: flex; flex-direction: column; gap: 10px; }
+
+    .tz-card {
+      border-radius: var(--r-md);
+      padding: 14px;
+      box-shadow: inset 0 1px 0 var(--glass-hi);
+    }
+
+    .tz-toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      cursor: pointer;
+    }
+
+    .tz-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+    .tz-kicker {
+      font-family: var(--hud);
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--cy);
+    }
+
+    .toggle-label-text { font-size: 11.5px; color: var(--tw); line-height: 1.5; }
+    .toggle-label-sub { font-size: 9.5px; color: var(--tm); letter-spacing: .5px; }
+
+    /* 開關(結構: input + track + thumb) */
+    .toggle-sw {
+      position: relative;
+      flex: none;
+      width: 42px;
+      height: 22px;
+      margin-top: 1px;
+    }
+
+    .toggle-sw input { position: absolute; opacity: 0; pointer-events: none; }
+
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, .4);
+      border: 1px solid var(--glass-br);
+      transition: background .25s ease, border-color .25s ease, box-shadow .25s ease;
+    }
+
+    .toggle-thumb {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--ts);
+      transition: transform .3s cubic-bezier(.34, 1.56, .64, 1), background .25s ease, box-shadow .25s ease;
+    }
+
+    .toggle-sw input:checked ~ .toggle-track {
+      background: rgba(0, 232, 255, .18);
+      border-color: rgba(0, 232, 255, .5);
+      box-shadow: inset 0 0 10px rgba(0, 232, 255, .15);
+    }
+
+    .toggle-sw input:checked ~ .toggle-thumb {
+      transform: translateX(20px);
+      background: var(--cy);
+      box-shadow: 0 0 10px rgba(0, 232, 255, .6);
+    }
+
+    .tz-select-wrap { margin-top: 12px; }
+
+    select, .cfg-input, input[type="text"], input[type="url"], input[type="password"] {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: var(--r-sm);
+      background: rgba(0, 0, 0, .32);
+      border: 1px solid rgba(160, 200, 255, .14);
+      color: var(--tw);
+      font-family: var(--mono);
+      font-size: 12px;
+      outline: none;
+      transition: border-color .2s ease, box-shadow .25s ease, background .2s ease;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+
+    body.light-theme select,
+    body.light-theme .cfg-input,
+    body.light-theme input[type="text"],
+    body.light-theme input[type="url"],
+    body.light-theme input[type="password"] {
+      background: rgba(255, 255, 255, .7);
+    }
+
+    select:hover, .cfg-input:hover, input[type="text"]:hover { border-color: rgba(0, 232, 255, .3); }
+
+    select:focus, .cfg-input:focus, input[type="text"]:focus, input[type="url"]:focus, input[type="password"]:focus {
+      border-color: rgba(0, 232, 255, .6);
+      box-shadow: 0 0 0 1px rgba(0, 232, 255, .25), var(--glow-cy);
+    }
+
+    select:disabled, input:disabled { opacity: .38; cursor: not-allowed; }
+
+    .tz-select-wrap {
+      position: relative;
+    }
+
+    .tz-select-wrap::after {
+      content: '▾';
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--cy);
+      font-size: 11px;
+      pointer-events: none;
+    }
+
+    .ts-input-wrap::after { content: ''; }
+
+    .ts-hint {
+      margin-top: 8px;
+      font-size: 9.5px;
+      color: var(--tm);
+      line-height: 1.6;
+    }
+
+    /* ── QUALITY:LED 柱 + 數位讀值 + 光暈滑桿 ── */
+    .q-display {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .q-seg-wrap {
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      flex: 1;
+      height: 26px;
+    }
+
+    .q-seg {
+      flex: 1;
+      min-width: 3px;
+      border-radius: 2px;
+      background: var(--br2);
+      transition: height .25s ease, background .2s ease;
+    }
+
+    .q-readout {
+      font-family: var(--hud);
+      font-weight: 700;
+      color: var(--cy);
+      text-shadow: 0 0 16px rgba(0, 232, 255, .45);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #qVal { font-size: 26px; }
+    #qSuffix { font-size: 13px; color: var(--ts); text-shadow: none; margin-left: 2px; }
+
+    input[type="range"] {
+      width: 100%;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 22px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 5px;
+      border-radius: 3px;
+      background: linear-gradient(90deg, rgba(0, 232, 255, .5), rgba(139, 124, 246, .5));
+      box-shadow: inset 0 0 4px rgba(0, 0, 0, .5);
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 17px;
+      height: 17px;
+      border-radius: 50%;
+      margin-top: -6px;
+      background: radial-gradient(circle at 35% 35%, #fff, var(--cy) 55%, var(--bd));
+      border: 1px solid rgba(255, 255, 255, .5);
+      box-shadow: 0 0 12px rgba(0, 232, 255, .6);
+      transition: transform .15s ease, box-shadow .2s ease;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); box-shadow: 0 0 18px rgba(0, 232, 255, .85); }
+
+    input[type="range"]::-moz-range-track {
+      height: 5px;
+      border-radius: 3px;
+      background: linear-gradient(90deg, rgba(0, 232, 255, .5), rgba(139, 124, 246, .5));
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--cy);
+      border: 1px solid rgba(255, 255, 255, .5);
+      box-shadow: 0 0 12px rgba(0, 232, 255, .6);
+    }
+
+    .q-note {
+      margin-top: 8px;
+      font-size: 9.5px;
+      color: var(--tm);
+      line-height: 1.6;
+    }
+
+    /* ── LIVE PREVIEW ── */
+    .pv-est {
+      margin-left: auto;
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: var(--amb);
+    }
+
+    .pv-wrap {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .pv-cell {
+      position: relative;
+      border-radius: var(--r-sm);
+      overflow: hidden;
+      border: 1px solid rgba(160, 200, 255, .12);
+      background: rgba(0, 0, 0, .3);
+      transition: border-color .2s ease, box-shadow .25s ease;
+    }
+
+    .pv-cell:hover { border-color: rgba(0, 232, 255, .45); box-shadow: var(--glow-cy); }
+
+    .pv-cell canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      cursor: zoom-in;
+    }
+
+    .pv-tag {
+      position: absolute;
+      left: 6px;
+      bottom: 6px;
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: var(--tw);
+      background: rgba(0, 0, 0, .55);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: 1px solid rgba(255, 255, 255, .12);
+    }
+
+    .pv-tag-c { color: var(--cy); border-color: rgba(0, 232, 255, .4); }
+
+    .pv-meta {
+      margin-top: 8px;
+      font-size: 10px;
+      color: var(--ts);
+      line-height: 1.6;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── EXECUTE:能量膠囊 ── */
+    .btn-exec {
+      width: 100%;
+      padding: 15px;
+      border-radius: var(--r-md);
+      border: 1px solid rgba(0, 232, 255, .5);
+      background: linear-gradient(120deg, rgba(0, 232, 255, .16), rgba(139, 124, 246, .14));
+      color: var(--cy);
+      font-family: var(--hud);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 5px;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      transition: transform .15s ease, box-shadow .3s ease, border-color .25s ease, color .25s ease, background .3s ease;
+    }
+
+    .btn-exec::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .14), transparent);
+      transition: left .55s ease;
+    }
+
+    .btn-exec:hover:not(:disabled)::before { left: 100%; }
+
+    .btn-exec:hover:not(:disabled) {
+      transform: translateY(-2px);
+      color: #fff;
+      border-color: var(--cy);
+      box-shadow: 0 0 26px rgba(0, 232, 255, .35), 0 10px 26px rgba(0, 0, 0, .35), inset 0 0 22px rgba(0, 232, 255, .12);
+    }
+
+    .btn-exec:active:not(:disabled) { transform: translateY(0) scale(.98); }
+
+    .btn-exec:not(:disabled) { animation: exec-ready 2.8s ease-in-out infinite; }
+
+    @keyframes exec-ready {
+      0%, 100% { box-shadow: 0 0 14px rgba(0, 232, 255, .18); }
+      50%      { box-shadow: 0 0 30px rgba(0, 232, 255, .34); }
+    }
+
+    .btn-exec:disabled {
+      border-color: rgba(160, 200, 255, .12);
+      background: rgba(255, 255, 255, .02);
+      color: var(--tm);
+      cursor: not-allowed;
+    }
+
+    .left-sig {
+      padding: 12px 20px 16px;
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: var(--tm);
+      text-align: center;
+    }
+
+    .left-sig-glow {
+      color: var(--cy);
+      text-shadow: 0 0 10px rgba(0, 232, 255, .5);
+    }
+
+    .left-sig-trigger {
+      appearance: none;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      font: inherit;
+      letter-spacing: inherit;
+      cursor: default;
+    }
+
+    .left-sig-trigger:focus-visible { border-radius: 2px; }
+
+    /* ── 固定頁尾:EXECUTE + 簽名永遠釘在左島底部,上方區塊捲動時不會擋住壓縮按鈕 ── */
+    .left-foot {
+      margin-top: auto;             /* 內容不足時把頁尾推到底 */
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+      background: linear-gradient(to top, var(--foot-bg) 0%, var(--foot-bg) 68%, transparent 100%);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-top: 1px solid rgba(160, 200, 255, .08);
+    }
+
+    /* ═══ 右島群:終端 + 輸出 + 統計 ═══ */
+    .right-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .term-wrap {
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      flex: 0 0 clamp(170px, 24vh, 250px);
+      min-height: 0;
+    }
+
+    .res-wrap {
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    .panel-hd {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid rgba(160, 200, 255, .08);
+      background: rgba(0, 0, 0, .18);
+      flex: none;
+    }
+
+    .ph-dots { display: flex; gap: 6px; }
+
+    .ph-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      opacity: .85;
+    }
+
+    .ph-r { background: var(--red); box-shadow: 0 0 6px rgba(255, 77, 109, .6); }
+    .ph-y { background: var(--amb); box-shadow: 0 0 6px rgba(255, 194, 71, .6); }
+    .ph-g { background: var(--g); box-shadow: 0 0 6px rgba(52, 245, 162, .6); }
+
+    .ph-title {
+      font-family: var(--hud);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      color: var(--ts);
+      flex: 1;
+    }
+
+    .ph-btn {
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(160, 200, 255, .18);
+      background: rgba(255, 255, 255, .03);
+      color: var(--ts);
+      cursor: pointer;
+      transition: color .2s ease, border-color .2s ease, box-shadow .25s ease, transform .15s ease, background .2s ease;
+    }
+
+    .ph-btn:hover {
+      color: var(--cy);
+      border-color: rgba(0, 232, 255, .5);
+      box-shadow: var(--glow-cy);
+      transform: translateY(-1px);
+    }
+
+    .ph-btn:active { transform: translateY(0) scale(.95); }
+
+    .ph-btn-g { color: var(--g); border-color: rgba(52, 245, 162, .35); }
+    .ph-btn-g:hover { color: var(--g); border-color: var(--g); box-shadow: var(--glow-g); }
+
+    .ph-btn-r { color: var(--red); border-color: rgba(255, 77, 109, .35); }
+    .ph-btn-r:hover { color: var(--red); border-color: var(--red); box-shadow: 0 0 14px rgba(255, 77, 109, .3); }
+
+    .ph-btn.glow { animation: dl-glow 1.6s ease-in-out infinite; }
+
+    /* 有結果前隱藏(JS 於首批完成時改為 inline-block) */
+    #btnDlAll { display: none; }
+
+    @keyframes dl-glow {
+      0%, 100% { box-shadow: 0 0 8px rgba(52, 245, 162, .25); }
+      50%      { box-shadow: 0 0 20px rgba(52, 245, 162, .55); }
+    }
+
+    /* ── 終端機 ── */
+    .terminal {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 12px 16px;
+      font-size: 11.5px;
+      line-height: 1.75;
+      background:
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, .014) 0 1px, transparent 1px 3px),
+        rgba(0, 0, 0, .28);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .log-line {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      animation: line-in .25s ease both;
+      white-space: nowrap;
+    }
+
+    @keyframes line-in {
+      from { opacity: 0; transform: translateX(-6px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    .l-ts { color: var(--tm); flex: none; font-size: 10px; }
+    .l-tag { flex: none; font-weight: 600; }
+    .l-tag.sys { color: var(--b); }
+    .l-tag.ok { color: var(--g); }
+    .l-tag.inf { color: var(--cy); }
+    .l-tag.wrn { color: var(--amb); }
+    .l-tag.err { color: var(--red); }
+
+    .l-msg { color: var(--tw); overflow: hidden; text-overflow: ellipsis; }
+    .l-msg.dim { color: var(--ts); }
+    .l-msg.ok { color: var(--g); }
+    .l-msg.err { color: var(--red); }
+    .l-msg.wrn, .l-msg.warn { color: var(--amb); }
+    .l-msg.inf { color: var(--b); }
+
+    /* 進度列 */
+    .prog-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 3px 0;
+    }
+
+    .prog-track {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, .06);
+      overflow: hidden;
+      min-width: 60px;
+    }
+
+    .prog-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg, var(--cy), var(--g));
+      box-shadow: 0 0 8px rgba(0, 232, 255, .5);
+      transition: width .3s ease;
+    }
+
+    .prog-status { flex: none; }
+
+    /* ── 輸出結果:虛擬網格 ── */
+    .res-grid {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      position: relative;
+      padding: 10px;
+    }
+
+    .res-virtual-canvas {
+      position: relative;
+      width: 100%;
+    }
+
+    .empty-state {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--hud);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 4px;
+      color: var(--tm);
+    }
+
+    .empty-blink {
+      display: inline-block;
+      width: 9px;
+      height: 17px;
+      margin-left: 8px;
+      background: var(--cy);
+      box-shadow: 0 0 10px rgba(0, 232, 255, .6);
+      animation: led-blink 1.1s steps(2) infinite;
+    }
+
+    /* 結果卡(絕對定位由 JS 控制;高度預算 308px) */
+    .result-card {
+      border-radius: var(--r-md);
+      overflow: hidden;
+      background: linear-gradient(170deg, rgba(255, 255, 255, .05), rgba(255, 255, 255, .015));
+      border: 1px solid rgba(160, 200, 255, .11);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 6px 18px rgba(0, 0, 0, .28);
+      display: flex;
+      flex-direction: column;
+      transition: transform .18s ease, box-shadow .25s ease, border-color .22s ease;
+      animation: card-in .3s ease both;
+    }
+
+    @keyframes card-in {
+      from { opacity: 0; transform: translateY(10px) scale(.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .result-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(0, 232, 255, .4);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 14px 30px rgba(0, 0, 0, .4), var(--glow-cy);
+      z-index: 2;
+    }
+
+    .rc-thumb {
+      width: 100%;
+      height: 150px;
+      object-fit: cover;
+      display: block;
+      cursor: zoom-in;
+      background: rgba(0, 0, 0, .35);
+      transition: transform .3s ease, filter .3s ease;
+    }
+
+    .result-card:hover .rc-thumb { transform: scale(1.045); filter: saturate(1.15); }
+
+    .rc-name {
+      padding: 7px 10px 0;
+      font-size: 10.5px;
+      color: var(--tw);
+      overflow: hidden;
+    }
+
+    .rc-name-track {
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .rc-name-text { display: inline-block; white-space: nowrap; }
+
+    .result-card.has-marquee .rc-name-text {
+      animation: rcMarquee 6s linear infinite alternate;
+      will-change: transform;
+    }
+
+    @keyframes rcMarquee {
+      0%, 12%   { transform: translateX(0); }
+      88%, 100% { transform: translateX(calc(var(--marquee-distance, 0px) * -1)); }
+    }
+
+    .rc-camera {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px 0;
+      min-width: 0;
+    }
+
+    .rc-chip {
+      flex: none;
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      opacity: .95;
+    }
+
+    .rc-chip.ok { color: var(--g); background: rgba(52, 245, 162, .07); }
+    .rc-chip.blue { color: var(--b); background: rgba(76, 201, 255, .07); }
+    .rc-chip.amber { color: var(--amb); background: rgba(255, 194, 71, .07); }
+    .rc-chip.dim { color: var(--tm); background: rgba(255, 255, 255, .02); }
+
+    .rc-model {
+      font-size: 9.5px;
+      color: var(--ts);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+
+    .rc-model.dim { color: var(--tm); }
+
+    .rc-sizes {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      padding: 5px 10px 0;
+      font-size: 10.5px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .rc-orig { color: var(--tm); text-decoration: line-through; text-decoration-color: rgba(255, 77, 109, .5); }
+    .rc-arr { color: var(--cy); }
+    .rc-new { color: var(--tw); font-weight: 600; }
+
+    .rc-inline-meta { margin-left: auto; display: flex; gap: 6px; align-items: baseline; }
+
+    .rc-ratio {
+      font-weight: 700;
+      color: var(--g);
+      text-shadow: 0 0 8px rgba(52, 245, 162, .4);
+    }
+
+    .rc-time { color: var(--tm); font-size: 9px; }
+
+    .rc-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 5px 10px 0;
+      min-width: 0;
+    }
+
+    .rc-foot-meta { display: flex; gap: 5px; min-width: 0; overflow: hidden; }
+
+    .rc-fmt {
+      flex: none;
+      font-family: var(--hud);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      background: linear-gradient(92deg, var(--cy), var(--vi));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .btn-dl {
+      display: block;
+      margin: 8px 10px 10px;
+      padding: 8px;
+      text-align: center;
+      text-decoration: none;
+      border-radius: var(--r-sm);
+      border: 1px solid rgba(52, 245, 162, .35);
+      background: rgba(52, 245, 162, .06);
+      color: var(--g);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      transition: background .2s ease, box-shadow .25s ease, transform .15s ease, border-color .2s ease;
+    }
+
+    .btn-dl:hover {
+      background: rgba(52, 245, 162, .14);
+      border-color: var(--g);
+      box-shadow: var(--glow-g);
+      transform: translateY(-1px);
+    }
+
+    .btn-dl:active { transform: translateY(0) scale(.97); }
+
+    /* ── 統計膠囊 ── */
+    .stats-bar {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin: 0 10px 10px;
+      border-radius: var(--r-md);
+      overflow: hidden;
+      flex: none;
+      opacity: .5;
+      transition: opacity .4s ease, box-shadow .4s ease;
+    }
+
+    .stats-bar.on { opacity: 1; box-shadow: inset 0 1px 0 var(--glass-hi), var(--glow-cy); }
+
+    .q-slot {
+      flex: 1;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border-right: 1px solid rgba(160, 200, 255, .08);
+      min-width: 0;
+    }
+
+    .q-slot:last-child { border-right: none; }
+
+    .q-slot.q-main { background: rgba(0, 232, 255, .045); }
+
+    .q-label {
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      color: var(--ts);
+      white-space: nowrap;
+    }
+
+    .q-value {
+      font-family: var(--hud);
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--tw);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .q-value.q-cyan { color: var(--b); }
+    .q-value.q-cyan-l { color: var(--cy); }
+    .q-value.q-dim { color: var(--ts); }
+
+    .q-value.q-glow {
+      color: var(--g);
+      text-shadow: 0 0 16px rgba(52, 245, 162, .55);
+    }
+
+    .q-sub {
+      font-size: 8px;
+      letter-spacing: 1px;
+      color: var(--tm);
+      white-space: nowrap;
+    }
+
+    /* ═══════════════ 放大比對視窗 ═══════════════ */
+    .zoom-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      background: rgba(3, 6, 12, .86);
+      backdrop-filter: blur(22px) saturate(1.4);
+      -webkit-backdrop-filter: blur(22px) saturate(1.4);
+      animation: overlay-in .22s ease both;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    @keyframes overlay-in {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+
+    .zoom-hdr {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 18px;
+      border-radius: var(--r-md);
+      flex: none;
+    }
+
+    .zoom-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--tw);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    .zoom-controls { display: flex; gap: 8px; flex: none; }
+
+    .zoom-btn {
+      font-family: var(--mono);
+      font-size: 11px;
+      padding: 7px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(160, 200, 255, .18);
+      background: rgba(255, 255, 255, .04);
+      color: var(--ts);
+      cursor: pointer;
+      transition: color .2s ease, border-color .2s ease, background .25s ease, box-shadow .25s ease, transform .15s ease;
+    }
+
+    .zoom-btn:hover { color: var(--tw); transform: translateY(-1px); }
+
+    .zoom-btn.active {
+      color: #031018;
+      background: linear-gradient(120deg, var(--cy), var(--b));
+      border-color: transparent;
+      box-shadow: 0 0 14px rgba(0, 232, 255, .35);
+    }
+
+    .zoom-close {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      padding: 7px 16px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 77, 109, .4);
+      background: rgba(255, 77, 109, .07);
+      color: var(--red);
+      cursor: pointer;
+      flex: none;
+      transition: background .2s ease, box-shadow .25s ease, transform .15s ease;
+    }
+
+    .zoom-close:hover {
+      background: rgba(255, 77, 109, .16);
+      box-shadow: 0 0 16px rgba(255, 77, 109, .3);
+      transform: translateY(-1px);
+    }
+
+    .zoom-content {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      gap: 14px;
+    }
+
+    .zoom-pane {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .zoom-pane-title {
+      font-family: var(--hud);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      color: var(--ts);
+      flex: none;
+    }
+
+    .zoom-img-wrap {
+      flex: 1;
+      min-height: 0;
+      border-radius: var(--r-md);
+      border: 1px solid rgba(160, 200, 255, .12);
+      background: rgba(0, 0, 0, .35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      transition: border-color .25s ease, box-shadow .25s ease;
+    }
+
+    .zoom-img-wrap:hover { border-color: rgba(0, 232, 255, .3); }
+
+    .zoom-img-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      cursor: zoom-in;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    /* 放大狀態(JS 切換,語意沿用) */
+    .zoom-img-wrap.zoomed-wrap {
+      display: block;
+      overflow: auto;
+      cursor: grab;
+      will-change: scroll-position;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .zoom-img-wrap.zoomed-wrap:active { cursor: grabbing; }
+
+    .zoom-img-wrap.zoomed-wrap img {
+      display: block;
+      margin: 0 auto;
+      max-width: none;
+      max-height: none;
+      width: auto;
+      height: auto;
+      cursor: grab;
+      user-select: none;
+      -webkit-user-drag: none;
+      will-change: transform;
+      transform: translate3d(0,0,0);
+    }
+
+    .zoom-img-wrap.zoomed-wrap img:active { cursor: grabbing; }
+
+    .zoom-pane.is-crop .zoom-img-wrap img {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .zoom-pane.is-crop .zoom-img-wrap.zoomed-wrap img {
+      width: 900px;
+      height: 900px;
+      max-width: none;
+      max-height: none;
+      object-fit: fill;
+    }
+
+    .zoom-overlay.has-zoomed-pane .zoom-pane:not(.zoomed-pane) { display: none; }
+
+    /* ═══════════════ 資訊頁(BATCH / CONFIG / ABOUT) ═══════════════ */
+    .info-shell {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 22px 20px 48px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .info-hero {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      border-radius: var(--r-lg);
+      padding: 30px 32px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .info-hero::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: radial-gradient(420px 200px at 12% 0%, rgba(0, 232, 255, .09), transparent 65%);
+    }
+
+    .info-kicker {
+      font-family: var(--hud);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 4px;
+      color: var(--cy);
+      margin-bottom: 12px;
+      text-transform: uppercase;
+    }
+
+    .info-hero h2 {
+      font-size: 24px;
+      font-weight: 600;
+      line-height: 1.45;
+      margin-bottom: 12px;
+      background: linear-gradient(94deg, var(--tw) 30%, var(--cy) 85%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      max-width: 720px;
+    }
+
+    .info-hero p {
+      font-size: 13px;
+      line-height: 1.9;
+      color: var(--ts);
+      max-width: 700px;
+    }
+
+    .info-badge {
+      flex: none;
+      font-family: var(--hud);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--cy);
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: 1px solid rgba(0, 232, 255, .35);
+      background: rgba(0, 232, 255, .06);
+      box-shadow: var(--glow-cy);
+      white-space: nowrap;
+    }
+
+    .info-contact {
+      display: inline-block;
+      margin-top: 16px;
+      font-size: 12px;
+      color: var(--g);
+      text-decoration: none;
+      padding: 9px 16px;
+      border-radius: var(--r-sm);
+      border: 1px solid rgba(52, 245, 162, .35);
+      background: rgba(52, 245, 162, .05);
+      transition: box-shadow .25s ease, transform .15s ease, background .2s ease;
+    }
+
+    .info-contact:hover { box-shadow: var(--glow-g); transform: translateY(-1px); background: rgba(52, 245, 162, .11); }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .info-card {
+      border-radius: var(--r-lg);
+      padding: 20px 22px;
+      transition: transform .2s ease, border-color .25s ease, box-shadow .3s ease;
+    }
+
+    .info-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(0, 232, 255, .3);
+      box-shadow: inset 0 1px 0 var(--glass-hi), var(--shadow-float), var(--glow-cy);
+    }
+
+    .info-card.wide { grid-column: span 2; }
+
+    .info-card h3 {
+      font-family: var(--hud);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 2.5px;
+      color: var(--ts);
+      margin-bottom: 12px;
+      text-transform: uppercase;
+    }
+
+    .info-card p {
+      font-size: 12px;
+      line-height: 1.9;
+      color: var(--ts);
+    }
+
+    .info-stat {
+      font-family: var(--hud);
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      background: linear-gradient(92deg, var(--cy), var(--b));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .build-identity-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 18px;
+      margin-top: 12px;
+    }
+
+    .build-identity-field {
+      min-width: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--br2);
+      border-radius: var(--r-sm);
+      background: rgba(0, 0, 0, .12);
+    }
+
+    .build-identity-field dt,
+    .build-identity-label {
+      font-family: var(--hud);
+      color: var(--ts);
+      font-size: 9px;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    .build-identity-field dd {
+      color: var(--tw);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+
+    .build-identity-state { color: var(--amb); }
+    .build-identity-state[data-state="VERIFIED"] { color: var(--g); }
+    .build-identity-state[data-state="MISMATCH"],
+    .build-identity-state[data-state="UNVERIFIED"] { color: var(--red); }
+    .build-identity-state[data-state="UNAVAILABLE"] { color: var(--amb); }
+
+    .info-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .info-list li {
+      font-size: 12px;
+      line-height: 1.8;
+      color: var(--ts);
+      padding-left: 18px;
+      position: relative;
+    }
+
+    .info-list li::before {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 9px;
+      width: 5px;
+      height: 5px;
+      border-radius: 1px;
+      transform: rotate(45deg);
+      background: var(--cy);
+      box-shadow: 0 0 6px rgba(0, 232, 255, .6);
+    }
+
+    .info-list strong { color: var(--tw); }
+
+    .info-pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+    .info-pill {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      padding: 6px 13px;
+      border-radius: 999px;
+      border: 1px solid rgba(139, 124, 246, .4);
+      color: var(--vi);
+      background: rgba(139, 124, 246, .07);
+      transition: box-shadow .25s ease, transform .15s ease;
+    }
+
+    .info-pill:hover { box-shadow: 0 0 14px rgba(139, 124, 246, .3); transform: translateY(-1px); }
+
+    /* 隱藏的 CHANGELOG 視圖：由左下角簽名連點五次開啟 */
+    .changelog-shell { max-width: 920px; }
+
+    .changelog-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .changelog-back {
+      appearance: none;
+      border: 1px solid rgba(0, 232, 255, .35);
+      border-radius: 999px;
+      padding: 8px 16px;
+      background: rgba(0, 232, 255, .06);
+      color: var(--cy);
+      font-family: var(--hud);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      cursor: pointer;
+      transition: background .2s ease, box-shadow .25s ease, transform .15s ease;
+    }
+
+    .changelog-back:hover {
+      background: rgba(0, 232, 255, .13);
+      box-shadow: var(--glow-cy);
+      transform: translateY(-1px);
+    }
+
+    .change-timeline {
+      --timeline-x: 116px;
+      list-style: none;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .change-timeline::before {
+      content: '';
+      position: absolute;
+      top: 20px;
+      bottom: 20px;
+      left: var(--timeline-x);
+      width: 1px;
+      background: linear-gradient(to bottom, var(--cy), rgba(139, 124, 246, .42), rgba(0, 232, 255, .1));
+      box-shadow: 0 0 10px rgba(0, 232, 255, .24);
+    }
+
+    .change-entry {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 48px;
+      position: relative;
+    }
+
+    .change-entry::before {
+      content: '';
+      position: absolute;
+      left: calc(var(--timeline-x) - 5px);
+      top: 19px;
+      width: 11px;
+      height: 11px;
+      border: 2px solid var(--cy);
+      border-radius: 50%;
+      background: var(--bg);
+      box-shadow: 0 0 12px rgba(0, 232, 255, .65);
+    }
+
+    .change-date {
+      padding-top: 14px;
+      color: var(--cy);
+      font-family: var(--hud);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.5;
+      letter-spacing: 1px;
+      text-align: right;
+    }
+
+    .change-card { padding: 18px 20px; }
+
+    .change-card h3 {
+      color: var(--tw);
+      font-family: var(--hud);
+      font-size: 13px;
+      letter-spacing: 1.5px;
+      margin-bottom: 12px;
+    }
+
+    .change-card .info-list { gap: 7px; }
+
+    /* Webhook 卡 */
+    .wh-toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      margin-bottom: 14px;
+    }
+
+    .wh-label { font-size: 12px; line-height: 1.7; color: var(--ts); flex: 1; }
+
+    .wh-status {
+      flex: none;
+      font-family: var(--hud);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--tm);
+    }
+
+    .wh-grid {
+      display: grid;
+      grid-template-columns: 1fr 220px 90px;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .cfg-btn {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      border-radius: var(--r-sm);
+      border: 1px solid rgba(0, 232, 255, .4);
+      background: rgba(0, 232, 255, .07);
+      color: var(--cy);
+      cursor: pointer;
+      transition: box-shadow .25s ease, background .2s ease, transform .15s ease;
+    }
+
+    .cfg-btn:hover { box-shadow: var(--glow-cy); background: rgba(0, 232, 255, .14); transform: translateY(-1px); }
+    .cfg-btn:active { transform: translateY(0) scale(.96); }
+
+    .wh-note { font-size: 10px; line-height: 1.8; color: var(--tm); }
+
+    /* ═══════════════ 通用互動 ═══════════════ */
+    button { font-family: inherit; }
+    button:active { transform: scale(.97); }
+
+    button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--cy);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    ::selection { background: rgba(0, 232, 255, .3); color: #eaffff; }
+    body.light-theme ::selection { background: rgba(11, 127, 196, .25); color: #10243a; }
+
+    /* 科技感捲軸 */
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(125, 156, 192, .28);
+      border-radius: 5px;
+      border: 2px solid transparent;
+      background-clip: content-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 232, 255, .5);
+      background-clip: content-box;
+      border: 2px solid transparent;
+    }
+
+    /* ═══════════════ 響應式 ═══════════════ */
+    @media (max-width: 1180px) {
+      .workspace { grid-template-columns: 330px minmax(0, 1fr); }
+      .brand-sub { display: none; }
+    }
+
+    @media (max-width: 1000px) {
+      .hud-r2 { padding: 10px 14px 12px; }
+      .inst { min-width: 104px; }
+      .info-grid { grid-template-columns: repeat(2, 1fr); }
+      .info-card.wide { grid-column: span 2; }
+    }
+
+    @media (max-width: 860px) {
+      .workspace { grid-template-columns: 300px minmax(0, 1fr); gap: 12px; padding: 12px; }
+      .hud { margin: 10px 12px 0; }
+      .nav-item { padding: 7px 12px; font-size: 11px; }
+    }
+
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      section[data-view-panel="compress"].is-active { overflow: visible; }
+      .workspace {
+        grid-template-columns: 1fr;
+        height: auto;
+      }
+      .left-col { overflow: visible; }
+      /* 手機:整頁捲動,頁尾回歸靜態,避免固定 EXECUTE 擋住下方的日誌/結果 */
+      .left-foot { position: static; background: none; backdrop-filter: none; -webkit-backdrop-filter: none; border-top: none; }
+      .term-wrap { flex: none; height: 220px; }
+      .res-wrap { min-height: 480px; }
+      .res-grid { min-height: 320px; }
+      .hud-r1 { flex-wrap: wrap; gap: 12px; padding: 12px 16px; }
+      .hud-nav { margin-left: 0; order: 3; width: 100%; justify-content: space-between; }
+      .hud-clock { margin-left: auto; }
+      .stats-bar { flex-wrap: wrap; }
+      .q-slot { flex: 1 1 33%; border-bottom: 1px solid rgba(160, 200, 255, .08); }
+      .wh-grid { grid-template-columns: 1fr; }
+      .info-grid { grid-template-columns: 1fr; }
+      .info-card.wide { grid-column: span 1; }
+      .info-hero { flex-direction: column; }
+    }
+
+    @media (max-width: 560px) {
+      .build-identity-grid { grid-template-columns: 1fr; }
+      .build-identity-field { padding: 9px 10px; }
+      .change-timeline { --timeline-x: 6px; }
+      .change-entry { display: block; padding-left: 28px; }
+      .change-entry::before { top: 6px; }
+      .change-date { padding: 0 0 8px; text-align: left; }
+      .change-card { padding: 16px; }
+    }
+
+    @media (max-width: 620px) {
+      /* 導覽列 4 顆 pill 在窄螢幕會擠出容器把 ABOUT 切掉:縮小 + 允許水平捲動不裁切 */
+      .hud-nav {
+        gap: 4px;
+        padding: 4px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .hud-nav::-webkit-scrollbar { display: none; }
+      .nav-item { padding: 6px 8px; font-size: 10px; letter-spacing: .5px; flex: none; }
+    }
+
+    @media (max-width: 560px) {
+      .fmt-grid { grid-template-columns: repeat(2, 1fr); }
+      .pv-wrap { grid-template-columns: 1fr; }
+      .zoom-content { flex-direction: column; }
+    }
+    /* macOS App visual language: quiet surfaces, system type and one compact
+       toolbar. Imported processing controls and their DOM hooks stay intact. */
+    :root {
+      --g: #53bd82; --gd: #399d68; --gdim: rgba(83, 189, 130, .10);
+      --b: #74aaff; --bd: #3977cf; --cy: #74aaff; --vi: #a99ae8;
+      --amb: #e2ae61; --red: #e47d7d;
+      --bg: #202126; --s1: #292b31; --s2: #30323a; --s3: #373a43;
+      --br: #383b44; --br2: #484c58; --br3: #5a5f6c;
+      --tm: #9a9eaa; --tw: #f0f1f4; --ts: #b9bdc7;
+      --mono: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+      --hud: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+      --glass: #292b31; --glass-2: #292b31; --foot-bg: #292b31;
+      --glass-br: rgba(255,255,255,.09); --glass-hi: transparent;
+      --shadow-float: none; --glow-cy: none; --glow-g: none;
+      --r-lg: 10px; --r-md: 9px; --r-sm: 7px;
+    }
+    body.light-theme {
+      --g: #237a49; --gd: #1c663d; --b: #286fca; --bd: #1e5eb2;
+      --cy: #286fca; --vi: #7466b9; --amb: #9c691d; --red: #bb4b4b;
+      --bg: #f5f5f7; --s1: #fff; --s2: #f4f5f7; --s3: #ebedf1;
+      --br: #e4e5e9; --br2: #d6d9df; --br3: #b9bec8;
+      --tm: #777d88; --tw: #25272d; --ts: #555b66;
+      --glass: #fff; --glass-2: #fff; --foot-bg: #fff;
+      --glass-br: #e2e4e8; --glass-hi: transparent; --shadow-float: none;
+    }
+    html::before, html::after, body::before, body::after { display: none !important; }
+    body { font-size: 13px; letter-spacing: normal; }
+    .hud { margin: 0; border-radius: 0; border-width: 0 0 1px; box-shadow: none; backdrop-filter: none; }
+    .hud-r1 { padding: 9px 16px; gap: 10px; }
+    .hud-r2 { display: none; }
+    .brand { font-size: 16px; font-weight: 650; letter-spacing: 0;
+      background: none; -webkit-background-clip: initial; background-clip: initial;
+      -webkit-text-fill-color: var(--tw); }
+    .brand-sub, .hud-clock { display: none; }
+    .nav-item { letter-spacing: 0; font-size: 12px; transform: none !important; }
+    .left-col, .term-wrap, .res-wrap, .stats-bar, .info-card, .info-hero,
+    .tz-card, .zoom-hdr { background: var(--s1); box-shadow: none; backdrop-filter: none;
+      -webkit-backdrop-filter: none; border: 1px solid var(--glass-br); }
+    .sec:has(#tzSecHd) { display: none !important; }
+    .metadata-note { margin-top: 10px; color: var(--ts); font-size: 12px; line-height: 1.5; }
+    .result-card { box-shadow: none; }
+  </style>
+</head>
+
+<body>
+
+  <!-- ═══════ HUD ═══════ -->
+  <div class="hud">
+
+    <!-- Row 1 -->
+    <div class="hud-r1">
+      <div class="brand">影像壓縮</div>
+      <div class="brand-sub">本機處理</div>
+      <div class="hud-nav">
+        <div class="nav-item on" data-view="compress" role="button" tabindex="0">壓縮</div>
+        <div class="nav-item" data-view="batch" role="button" tabindex="0">批次</div>
+        <div class="nav-item" data-view="config" role="button" tabindex="0">設定</div>
+        <div class="nav-item" data-view="about" role="button" tabindex="0">關於</div>
+      </div>
+      <div class="hud-tools">
+        <label class="theme-toggle" for="themeToggle">
+          <span class="theme-toggle-label">LIGHT</span>
+          <input type="checkbox" id="themeToggle" aria-label="切換淺色模式">
+          <span class="theme-switch"></span>
+        </label>
+        <div class="hud-clock" id="hudClock">00:00:00</div>
+      </div>
+    </div>
+
+    <!-- Row 2: instruments -->
+    <div class="hud-r2">
+
+      <div class="grp-label">ENGINE</div>
+      <div class="inst-group">
+        <div class="inst">
+          <div class="inst-led ld" id="ledEngine"></div>
+          <div class="inst-label">ENGINE STATUS</div>
+          <div class="inst-val amber" id="instEngine">LOADING</div>
+          <div class="inst-sub">codec runtime</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">CODECS LOADED</div>
+          <div class="inst-val dim" id="instCodecs">0 / 8</div>
+          <div class="inst-sub">jpeg·png·webp·avif·heif·jxl·zip</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">MEMORY</div>
+          <div class="inst-val blue" id="instMem">—</div>
+          <div class="inst-bar">
+            <div class="inst-bar-fill" id="memBar" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp-label">THREAD</div>
+      <div class="inst-group">
+        <div class="inst">
+          <div class="inst-label">WORKER POOL</div>
+          <div class="inst-val" style="color:var(--b)" id="instPoolSize">—</div>
+          <div class="inst-sub">background processes</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">MAX CONCURRENT</div>
+          <div class="inst-val blue" id="instConc">3</div>
+          <div class="inst-sub">parallel tasks</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">QUEUE</div>
+          <div class="inst-val dim" id="instQueue">0</div>
+          <div class="inst-bar">
+            <div class="inst-bar-fill" id="queueBar" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp-label">SESSION</div>
+      <div class="inst-group">
+        <div class="inst">
+          <div class="inst-label">FILES DONE</div>
+          <div class="inst-val" id="instDone">0</div>
+          <div class="inst-sub">this session</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">DATA SAVED</div>
+          <div class="inst-val" id="instSaved" style="color:var(--amb)">—</div>
+          <div class="inst-sub">compression gain</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">OUTPUT FORMAT</div>
+          <div class="inst-val blue" id="instFmt">JPEG</div>
+          <div class="inst-sub" id="instFmtSub">compatibility</div>
+        </div>
+      </div>
+
+      <div class="grp-label">SYS</div>
+      <div class="inst-group">
+        <div class="inst">
+          <div class="inst-label">HW ACCEL</div>
+          <div class="inst-val dim" id="instHw">—</div>
+          <div class="inst-sub" id="instHwSub">webcodecs probe</div>
+        </div>
+        <div class="inst">
+          <div class="inst-label">PRIVACY</div>
+          <div class="inst-val" style="color:var(--g)">LOCAL</div>
+          <div class="inst-sub">100% offline</div>
+        </div>
+        <div class="inst" style="border-right:none">
+          <div class="inst-label">UPTIME</div>
+          <div class="inst-val dim" id="instUptime">00:00</div>
+          <div class="inst-sub">session elapsed</div>
+        </div>
+      </div>
+
+      <div class="hud-spacer"></div>
+    </div>
+  </div>
+
+  <!-- ═══════ WORKSPACE ═══════ -->
+  <section class="app-view is-active" data-view-panel="compress">
+  <div class="workspace">
+
+    <!-- LEFT -->
+    <div class="left-col">
+
+      <div class="sec">
+        <div class="sec-hd">INPUT</div>
+        <div class="upload-zone" id="uploadZone">
+          <input type="file" id="fileInput" accept="image/*" multiple>
+          <div class="up-icon">↑</div>
+          <div class="up-hint">
+            <strong>拖曳影像</strong>或點擊選取<br>
+            JPG · PNG · WebP · AVIF · HEIF · GIF<br>
+            支援批次多檔
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-hd">FORMAT</div>
+        <div class="fmt-grid">
+          <button type="button" class="fmt-chip active" data-fmt="image/jpeg" data-sub="相容性" aria-pressed="true">JPEG<span class="fmt-sub">相容性</span></button>
+          <button type="button" class="fmt-chip" data-fmt="image/png" data-sub="無損" aria-pressed="false">PNG<span class="fmt-sub">無損</span></button>
+          <button type="button" class="fmt-chip" data-fmt="image/webp" data-sub="高效能" aria-pressed="false">WebP<span class="fmt-sub">高效能</span></button>
+          <button type="button" class="fmt-chip" data-fmt="image/avif" data-sub="極致" aria-pressed="false">AVIF<span class="fmt-sub">極致</span></button>
+          <button type="button" class="fmt-chip" data-fmt="image/heif" data-sub="Apple" aria-pressed="false">HEIF<span class="fmt-sub">Apple</span></button>
+          <button type="button" class="fmt-chip" data-fmt="image/jxl" data-sub="封存" aria-pressed="false">JXL<span class="fmt-sub">封存</span></button>
+        </div>
+        <div class="avif-warn" id="avifWarn">
+          ⚠ AVIF 使用 libaom-av1 編碼器<br>
+          每張影像約需 <strong>10–60 秒</strong>，請耐心等候。
+        </div>
+        <div class="avif-warn" id="heifWarn">
+          HEIF 使用 macOS ImageIO 原生 HEVC 編碼與解碼。<br>
+          品質可調；輸出不保留來源 EXIF。
+        </div>
+        <div class="avif-warn" id="jxlWarn">
+          ⚠ JPEG XL 封存格式(libjxl)。品質 100 = 像素無損。<br>
+          注意:非 JPEG bitstream 轉碼;多數瀏覽器尚無法預覽 JXL,<br>
+          且此編碼器不嵌入 EXIF/ICC(檔案本身有效)。
+        </div>
+        <p class="metadata-note">中繼資料：JPEG 來源轉 JPEG 或 WebP 時會複製可讀取的 EXIF、ICC、XMP；其他來源不保證完整提取。PNG、AVIF、HEIF、JXL 輸出目前不保留來源中繼資料。每張結果會顯示狀態。壓縮不修改時區或 GPS。</p>
+      </div>
+
+      <div class="sec">
+        <div class="tz-sec-hd" id="tzSecHd">
+          <div class="sec-hd">TIMEZONE</div>
+          <button class="tz-collapse-btn" id="tzCollapseBtn" title="收合/展開">▼</button>
+        </div>
+        <div class="tz-collapsible collapsed" id="tzCollapsible">
+          <div class="tz-group" style="padding-top:8px">
+            <div class="tz-card" id="tzCard">
+              <label class="tz-toggle-row" for="tzToggle">
+                <span class="toggle-sw">
+                  <input type="checkbox" id="tzToggle">
+                  <span class="toggle-track"></span>
+                  <span class="toggle-thumb"></span>
+                </span>
+                <span class="tz-copy">
+                  <span class="tz-kicker">Exif Rewrite</span>
+                  <span class="toggle-label-text">Override embedded timezone metadata</span>
+                  <span class="toggle-label-sub">JPEG EXIF only</span>
+                </span>
+              </label>
+              <div class="tz-select-wrap">
+                <select id="tzSelect" disabled>
+                  <option value="-12:00">UTC-12:00 (貝克島)</option>
+                  <option value="-11:00">UTC-11:00 (美屬薩摩亞)</option>
+                  <option value="-10:00">UTC-10:00 (夏威夷)</option>
+                  <option value="-09:00">UTC-09:00 (阿拉斯加)</option>
+                  <option value="-08:00">UTC-08:00 (美國太平洋/溫哥華)</option>
+                  <option value="-07:00">UTC-07:00 (美國山區/丹佛)</option>
+                  <option value="-06:00">UTC-06:00 (美國中部/芝加哥)</option>
+                  <option value="-05:00">UTC-05:00 (美國東部/紐約)</option>
+                  <option value="-04:00">UTC-04:00 (美東/聖地牙哥)</option>
+                  <option value="-03:00">UTC-03:00 (阿根廷/聖保羅)</option>
+                  <option value="-02:00">UTC-02:00 (南喬治亞島)</option>
+                  <option value="-01:00">UTC-01:00 (亞速群島)</option>
+                  <option value="+00:00">UTC+00:00 (格林威治/英國)</option>
+                  <option value="+01:00">UTC+01:00 (中歐/德國/法國)</option>
+                  <option value="+02:00">UTC+02:00 (東歐/開羅)</option>
+                  <option value="+03:00">UTC+03:00 (莫斯科/沙烏地)</option>
+                  <option value="+04:00">UTC+04:00 (杜拜/阿布達比)</option>
+                  <option value="+05:00">UTC+05:00 (巴基斯坦/馬爾地夫)</option>
+                  <option value="+06:00">UTC+06:00 (孟加拉/不丹)</option>
+                  <option value="+07:00">UTC+07:00 (泰國/印尼/越南)</option>
+                  <option value="+08:00" selected>UTC+08:00 (台灣/新加坡)</option>
+                  <option value="+09:00">UTC+09:00 (日本/韓國)</option>
+                  <option value="+10:00">UTC+10:00 (澳洲雪梨/關島)</option>
+                  <option value="+11:00">UTC+11:00 (索羅門群島)</option>
+                  <option value="+12:00">UTC+12:00 (紐西蘭/斐濟)</option>
+                  <option value="+13:00">UTC+13:00 (薩摩亞/東加)</option>
+                  <option value="+14:00">UTC+14:00 (吉里巴斯)</option>
+                </select>
+              </div>
+            </div>
+            <div class="tz-card" id="tsCard">
+              <label class="tz-toggle-row" for="tsToggle">
+                <span class="toggle-sw">
+                  <input type="checkbox" id="tsToggle">
+                  <span class="toggle-track"></span>
+                  <span class="toggle-thumb"></span>
+                </span>
+                <span class="tz-copy">
+                  <span class="tz-kicker">Batch Time Shift</span>
+                  <span class="toggle-label-text">批次時間平移(相機時鐘校正)</span>
+                  <span class="toggle-label-sub">EXIF 2.32 · JPEG only</span>
+                </span>
+              </label>
+              <div class="tz-select-wrap ts-input-wrap">
+                <input type="text" id="tsInput" value="+8" placeholder="+8 / -3:30 / +5:45" disabled
+                       spellcheck="false" autocomplete="off">
+              </div>
+              <div class="ts-hint" id="tsHint">平移 DateTime / DateTimeOriginal / DateTimeDigitized(EXIF 2.32)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-hd">QUALITY</div>
+        <div class="q-display">
+          <div class="q-seg-wrap" id="qSegs"></div>
+          <div class="q-readout" id="qReadout"><span id="qVal">82</span><span id="qSuffix">/100</span></div>
+        </div>
+        <input type="range" id="qualitySlider" min="1" max="100" value="82">
+        <div class="q-note" id="qNote">品質或壓縮努力度依所選格式調整。</div>
+      </div>
+
+      <div class="sec" id="previewSec" style="display:none">
+        <div class="sec-hd">LIVE PREVIEW <span class="pv-est" id="pvEst"></span></div>
+        <div class="pv-wrap">
+          <div class="pv-cell">
+            <canvas id="pvOrig" width="300" height="300"></canvas>
+            <div class="pv-tag">SOURCE</div>
+          </div>
+          <div class="pv-cell">
+            <canvas id="pvComp" width="300" height="300"></canvas>
+            <div class="pv-tag pv-tag-c">COMPRESSED</div>
+          </div>
+        </div>
+        <div class="pv-meta" id="pvMeta">—</div>
+      </div>
+
+      <div class="sec">
+        <div class="sec-hd">THREADS</div>
+        <select id="concurrencySelect">
+          <option value="1">1 thread — 低記憶體</option>
+          <option value="2">2 threads — 均衡</option>
+          <option value="3" selected>3 threads — 預設</option>
+          <option value="5">5 threads — 最高速</option>
+          <option value="10">10 threads — 需高性能</option>
+        </select>
+      </div>
+
+      <div class="left-foot">
+        <div class="sec" style="border-bottom:none;padding-bottom:10px;">
+          <button class="btn-exec" id="btnLaunch" disabled>▶ EXECUTE</button>
+        </div>
+        <div class="left-sig">DESIGN BY <button type="button" class="left-sig-glow left-sig-trigger" id="changelogTrigger" aria-label="設計者 STEVEN CHANG">STEVEN CHANG</button></div>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="right-col">
+      <div class="term-wrap">
+        <div class="panel-hd">
+          <div class="ph-dots">
+            <div class="ph-dot ph-r"></div>
+            <div class="ph-dot ph-y"></div>
+            <div class="ph-dot ph-g"></div>
+          </div>
+          <div class="ph-title">SYSTEM LOG</div>
+          <button class="ph-btn" onclick="clearLog()">CLEAR</button>
+        </div>
+        <div class="terminal" id="terminal"></div>
+      </div>
+
+      <div class="res-wrap">
+        <div class="panel-hd">
+          <div class="ph-dots">
+            <div class="ph-dot ph-r"></div>
+            <div class="ph-dot ph-y"></div>
+            <div class="ph-dot ph-g"></div>
+          </div>
+          <div class="ph-title">OUTPUT FILES</div>
+          <button class="ph-btn ph-btn-r" id="btnErrReport" style="display:none">⚠ ERROR REPORT</button>
+          <button class="ph-btn ph-btn-g" id="btnDlAll" onclick="downloadAll()">↓ DOWNLOAD ALL</button>
+        </div>
+        <div class="res-grid" id="resultsGrid">
+          <div class="empty-state">AWAITING INPUT <span class="empty-blink"></span></div>
+        </div>
+        <div class="stats-bar" id="statsBar">
+          <div class="q-slot">
+            <div class="q-label">BATCH ASSETS</div>
+            <div class="q-value q-cyan" id="statFiles">0</div>
+            <div class="q-sub">IMAGE_QUEUED</div>
+          </div>
+          <div class="q-slot">
+            <div class="q-label">RAW PAYLOAD</div>
+            <div class="q-value q-dim" id="statOrig">—</div>
+            <div class="q-sub">UNCOMPRESSED</div>
+          </div>
+          <div class="q-slot">
+            <div class="q-label">RESULT PAYLOAD</div>
+            <div class="q-value q-cyan-l" id="statComp">—</div>
+            <div class="q-sub">OPTIMIZED_SIZE</div>
+          </div>
+          <div class="q-slot">
+            <div class="q-label">STORAGE DELTA</div>
+            <div class="q-value" id="statDelta">—</div>
+            <div class="q-sub" id="statDeltaLb">PENDING</div>
+          </div>
+          <div class="q-slot q-main">
+            <div class="q-label">QUANTUM RATIO</div>
+            <div class="q-value q-glow" id="statSaved">0%</div>
+            <div class="q-sub" id="statStatus">CORE_IDLE</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </section>
+
+  <section class="app-view info-view" data-view-panel="batch">
+    <div class="info-shell">
+      <div class="info-hero">
+        <div>
+          <div class="info-kicker">Batch Workflow</div>
+          <h2>批次壓縮不是只有排隊，還應該清楚知道現在會怎麼跑。</h2>
+          <p>這一頁把目前 session 的檔案數、輸出格式、執行緒、時區覆寫狀態整理成摘要，也補上最適合的使用情境。你可以把它當成進行大量轉檔前的快速檢查區。</p>
+        </div>
+        <div class="info-badge">LOCAL / OFFLINE</div>
+      </div>
+      <div class="info-grid">
+        <div class="info-card">
+          <h3>Queue Snapshot</h3>
+          <div class="info-stat" id="batchQueuedStat">0 files</div>
+          <p id="batchQueueCopy">目前還沒有待處理檔案。拖入圖片後，這裡會告訴你這批素材會如何被排進 worker pool。</p>
+        </div>
+        <div class="info-card">
+          <h3>Output Strategy</h3>
+          <div class="info-stat" id="batchFormatStat">JPEG</div>
+          <p id="batchFormatCopy">目前格式偏向相容性，適合快速交付與一般分享。</p>
+        </div>
+        <div class="info-card">
+          <h3>Execution Profile</h3>
+          <div class="info-stat" id="batchThreadStat">3 threads</div>
+          <p id="batchThreadCopy">目前是均衡配置，兼顧速度與記憶體使用。</p>
+        </div>
+        <div class="info-card wide">
+          <h3>Recommended Use</h3>
+          <ul class="info-list">
+            <li><strong>BATCH</strong> 適合先確認大量照片會用什麼格式、品質、時區覆寫規則，再按 `EXECUTE` 一次完成。</li>
+            <li><strong>ZIP export</strong> 多檔下載時會自動打包，適合整理交件、網站素材或相簿備份。</li>
+            <li><strong>EXIF aware</strong> 需要保留拍攝資訊時，先看這裡的設定摘要最不容易出錯。</li>
+          </ul>
+        </div>
+        <div class="info-card">
+          <h3>Metadata Rewrite</h3>
+          <div class="info-stat" id="batchTimezoneStat">OFF</div>
+          <p id="batchTimezoneCopy">目前沒有改寫 EXIF 時區。</p>
+        </div>
+        <div class="info-card">
+          <h3>Estimated Output</h3>
+          <div class="info-stat" id="batchEstimateStat">—</div>
+          <p id="batchEstimateCopy">拖入圖片後,這裡會即時預估壓縮後的總體積(依複雜度取樣與歷史數據校準)。</p>
+        </div>
+        <div class="info-card wide">
+          <h3>Pipeline 執行管線</h3>
+          <ul class="info-list">
+            <li><strong>優先權排程</strong> 小體積 JPEG 先跑、巨檔與 HEIC/AVIF 靠後——進度條從一開始就有東西動,不會全部卡在最慢那張。</li>
+            <li><strong>記憶體防護</strong> 同時在編碼的原始檔總量超過 200MB 時自動減半並行、超過 400MB 降為單工,壓完自動恢復。大批 5000 萬像素的圖也不會把分頁撐爆。</li>
+            <li><strong>崩潰自癒</strong> 單一 Worker 崩潰會原地重生並自動重試該任務一次;重複崩潰觸發斷路器,明確報錯而不是無聲卡死。</li>
+            <li><strong>壞檔隔離</strong> 解不開的檔案進 Dead Letter Queue,不中斷批次;結束後可一鍵匯出含失敗原因的 JSON 報告。</li>
+          </ul>
+        </div>
+        <div class="info-card">
+          <h3>Large Batch 實務建議</h3>
+          <ul class="info-list">
+            <li>幾百張手機照 → JPEG/WebP + 3-5 執行緒</li>
+            <li>大量 HEIC 轉檔 → 執行緒 2-3(解碼吃記憶體)</li>
+            <li>AVIF 批次 → 睡前掛機,別開 10 執行緒</li>
+            <li>多檔下載自動打包成單一 ZIP</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="app-view info-view" data-view-panel="config">
+    <div class="info-shell">
+      <div class="info-hero">
+        <div>
+          <div class="info-kicker">Configuration</div>
+          <h2>把常用設定集中起來，讓 `CONFIG` 真的有存在價值。</h2>
+          <p>這裡不是再做一套新的表單，而是把目前壓縮引擎已選的格式、品質、執行緒與 EXIF 行為整理成一眼能懂的設定檔摘要。之後如果你要擴充預設集，這一頁也最適合作為入口。</p>
+        </div>
+        <div class="info-badge">LIVE SETTINGS</div>
+      </div>
+      <div class="info-grid">
+        <div class="info-card">
+          <h3>Format</h3>
+          <div class="info-stat" id="configFormatStat">JPEG</div>
+          <p id="configFormatCopy">目前偏向相容性，適合大多數裝置與平台。</p>
+        </div>
+        <div class="info-card">
+          <h3>Quality</h3>
+          <div class="info-stat" id="configQualityStat">82 / 100</div>
+          <p id="configQualityCopy">目前設定在畫質與壓縮率之間的平衡點。</p>
+        </div>
+        <div class="info-card">
+          <h3>Threads</h3>
+          <div class="info-stat" id="configThreadStat">3</div>
+          <p id="configThreadCopy">目前採用預設並行數，適合一般桌機或筆電。</p>
+        </div>
+        <div class="info-card wide">
+          <h3>What You Can Add Next</h3>
+          <ul class="info-list">
+            <li><strong>Preset profiles</strong> 例如社群圖、網站圖、封存圖，一鍵切換品質與格式。</li>
+            <li><strong>Auto rules</strong> 依檔案大小或來源裝置自動挑選 JPEG / WebP / AVIF。</li>
+            <li><strong>Naming policy</strong> 例如批次輸出檔名規則、時間戳或資料夾結構。</li>
+          </ul>
+        </div>
+        <div class="info-card">
+          <h3>Timezone Rewrite</h3>
+          <div class="info-stat" id="configTimezoneStat">OFF</div>
+          <p id="configTimezoneCopy">目前沒有覆寫嵌入式時區資料。</p>
+        </div>
+        <div class="info-card">
+          <h3>Offline / PWA</h3>
+          <div class="info-stat" id="cfgPwaStat">—</div>
+          <p id="cfgPwaCopy">Service Worker 狀態偵測中……</p>
+        </div>
+        <div class="info-card wide">
+          <h3>Quality Slider 語意對照</h3>
+          <ul class="info-list">
+            <li><strong>JPEG / WebP</strong> 直接對應編碼器品質。80-85 是畫質/體積甜蜜點;90+ 啟用 4:4:4 色度(檔案較大,細節最完整)。</li>
+            <li><strong>AVIF</strong> 映射為 CQ 等級(感知品質調校)。65 上下已能打平 JPEG 85 的觀感;90+ 同樣升 4:4:4。</li>
+            <li><strong>PNG</strong> 無損格式——滑桿控制的是「壓縮努力度」而非畫質,調低只會讓檔案稍大、速度稍快。</li>
+            <li><strong>JXL</strong> 100 = 像素完全無損(封存);99 以下切換為有損模式,體積驟降。若無損編碼因裝置資源中止，會自動以 99 近無損輸出並在結果標示。</li>
+            <li><strong>HEIF</strong> macOS 原生 HEVC；滑桿調整 ImageIO 壓縮品質，輸出不保留來源 EXIF。</li>
+            <li>切換格式時滑桿會自動跳到該格式的建議值,可再手動微調。</li>
+          </ul>
+        </div>
+        <div class="info-card wide wh-card">
+          <h3>Webhook Auto-Export</h3>
+          <label class="wh-toggle-row" for="whToggle">
+            <span class="toggle-sw">
+              <input type="checkbox" id="whToggle">
+              <span class="toggle-track"></span>
+              <span class="toggle-thumb"></span>
+            </span>
+            <span class="wh-label">批次完成後自動將輸出檔 + Metadata JSON POST 到自建伺服器</span>
+            <span class="wh-status" id="whStatus">OFF</span>
+          </label>
+          <div class="wh-grid">
+            <input type="url" id="whUrl" class="cfg-input" placeholder="https://your-server.example/hook"
+                   spellcheck="false" autocomplete="off">
+            <input type="password" id="whToken" class="cfg-input" placeholder="Bearer token(選填)"
+                   spellcheck="false" autocomplete="off" aria-describedby="whTokenNote">
+            <button class="cfg-btn" id="whTest">TEST</button>
+          </div>
+          <p class="wh-note" id="whTokenNote">Token 僅保留於目前分頁工作階段，重新載入即清除。</p>
+          <p class="wh-note">遠端接收端請使用 HTTPS；HTTP 僅允許本機 localhost。接收端需允許此 App 的本機頁面 origin。</p>
+          <p class="wh-note">隱私:預設關閉。僅在你主動設定並啟用時,批次結果才會離開瀏覽器。傳輸格式:multipart/form-data(file + metadata.json),重試 2 次,20s timeout。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="app-view info-view" data-view-panel="about">
+    <div class="info-shell">
+      <div class="info-hero">
+        <div>
+          <div class="info-kicker">About</div>
+          <h2>SYS_COMPRESS 是一個本地端、離線、偏專業工作流的影像壓縮工具。</h2>
+          <p>這是相片時區修改器內建的離線影像壓縮工作區。JPEG、PNG、WebP、AVIF、JXL 由本機 Web Worker 處理；HEIF 交由 macOS ImageIO 原生編解碼。支援批次轉檔、品質控制、預覽、ZIP 與選用的 Webhook。</p>
+          <a class="info-contact" href="mailto:steven87090799@gmail.com">Contact: steven87090799@gmail.com</a>
+        </div>
+        <div class="info-badge" id="aboutProductVersion">NEXPRESS / VERIFYING</div>
+      </div>
+      <div class="info-grid">
+        <article class="info-card wide" id="aboutBuildIdentityCard" aria-labelledby="aboutBuildHeading" aria-live="polite">
+          <h3 id="aboutBuildHeading">Current Running Build</h3>
+          <div class="build-identity-label" id="aboutRuntimeLabel">Runtime Generation Consistency</div>
+          <output class="info-stat build-identity-state" id="aboutBuildState" data-state="LOADING" aria-labelledby="aboutRuntimeLabel">LOADING</output>
+          <p id="aboutBuildReason">Verifying page-bound release metadata…</p>
+          <dl class="build-identity-grid">
+            <div class="build-identity-field"><dt>Application Version</dt><dd id="aboutAppVersion">UNKNOWN</dd></div>
+            <div class="build-identity-field"><dt>Release Generation</dt><dd id="aboutReleaseGeneration">UNKNOWN</dd></div>
+            <div class="build-identity-field"><dt>Build ID</dt><dd id="aboutBuildId">UNKNOWN</dd></div>
+            <div class="build-identity-field"><dt>Commit / Revision</dt><dd id="aboutRevision">UNKNOWN</dd></div>
+            <div class="build-identity-field"><dt>Build Time</dt><dd><time id="aboutBuildTime">UNKNOWN</time></dd></div>
+            <div class="build-identity-field"><dt>Release Channel</dt><dd id="aboutReleaseChannel">UNKNOWN</dd></div>
+          </dl>
+        </article>
+        <article class="info-card" id="aboutUpdateCard" aria-labelledby="aboutUpdateHeading" aria-live="polite">
+          <h3 id="aboutUpdateHeading">Update Available</h3>
+          <div class="info-stat" id="aboutUpdateState">NONE</div>
+          <p id="aboutUpdateDetails">No verified waiting build is currently available.</p>
+        </article>
+        <div class="info-card">
+          <h3>What It Does</h3>
+          <p>快速壓縮、批次輸出、保留支援格式的 EXIF 資訊、產生預覽卡與一鍵 ZIP 打包，整個流程都在這台 Mac 上完成。</p>
+        </div>
+        <div class="info-card">
+          <h3>Why It Exists</h3>
+          <p>比起只追求「能壓縮」，它更偏向給真的在整理大量素材的人使用，像是攝影選圖、網站資產優化、社群圖整理和交件前瘦身。</p>
+        </div>
+        <div class="info-card">
+          <h3>Highlights</h3>
+          <div class="info-pill-row">
+            <span class="info-pill">100% Offline</span>
+            <span class="info-pill">WASM + ImageIO</span>
+            <span class="info-pill">Batch Export</span>
+            <span class="info-pill">EXIF Aware</span>
+            <span class="info-pill">No Upload</span>
+          </div>
+        </div>
+        <div class="info-card wide">
+          <h3>Format Guide 格式選擇指南</h3>
+          <ul class="info-list">
+            <li><strong>JPEG</strong> 相容性之王。任何裝置、平台、印刷流程都收。交件給客戶、上傳社群、不確定對方環境時的安全預設。品質 90+ 自動切換 4:4:4 色度取樣，保住紅字與飽和色邊緣。</li>
+            <li><strong>PNG</strong> 無損。截圖、圖表、UI 素材、需要透明背景的圖。品質滑桿控制的是壓縮努力度（不影響畫質），照片類轉 PNG 通常會比來源更大。</li>
+            <li><strong>WebP</strong> 網站主力。同畫質下比 JPEG 小 25-35%，所有現代瀏覽器都支援。恆開 Sharp YUV 轉換，色彩邊緣乾淨。網站素材、部落格圖床首選。</li>
+            <li><strong>AVIF</strong> 壓縮率天花板，但每張編碼 10-60 秒。適合「壓一次、用很久」的場景：網站 hero 圖、長期封存的最終交付版。</li>
+            <li><strong>HEIF</strong> Apple 生態工作流。macOS 原生 HEVC 編碼，品質可調，並由 ImageIO 解碼產生縮圖。</li>
+            <li><strong>JXL</strong> 封存格式。品質 100 = 像素完全無損；低於 100 為有損模式。若無損模式中止，系統會換新編碼器並以 99 近無損重試，結果會明確標示。注意：此編碼器不嵌入 EXIF/ICC，且多數瀏覽器尚無法預覽。</li>
+          </ul>
+        </div>
+        <div class="info-card">
+          <h3>Engine 技術架構</h3>
+          <ul class="info-list">
+            <li><strong>MozJPEG</strong> progressive + trellis 最佳化</li>
+            <li><strong>OxiPNG</strong> 無損 PNG 重壓</li>
+            <li><strong>libwebp</strong> method 6 + Sharp YUV</li>
+            <li><strong>libaom</strong> AVIF / SSIM 感知調校</li>
+            <li><strong>libjxl</strong> JPEG XL 含無損模式</li>
+            <li><strong>macOS ImageIO</strong> 原生 HEVC → HEIF 容器，並處理 HEIC 輸入</li>
+          </ul>
+          <p>JPEG、PNG、WebP、AVIF、JXL 使用 WebAssembly 與 Web Worker；HEIF 由 App 的原生背景工作佇列處理。</p>
+        </div>
+        <div class="info-card">
+          <h3>Privacy 隱私承諾</h3>
+          <p>檔案只在這台 Mac 的 App、Web Worker 與回環位址間處理；沒有產品遙測或 CDN 請求。唯一會傳送輸出檔案的功能是你主動設定並啟用的 Webhook 匯出，它只會送到你指定的伺服器，Bearer token 僅保留於目前工作階段。App 內建所有執行資產，可離線使用。</p>
+        </div>
+        <div class="info-card">
+          <h3>Metadata 保留行為</h3>
+          <ul class="info-list">
+            <li><strong>JPEG 來源 → JPEG 輸出</strong> 複製現有 EXIF、ICC、XMP APP 區段；無法注入時該張輸出失敗。</li>
+            <li><strong>JPEG 來源 → WebP 輸出</strong> EXIF、ICC、標準 XMP 依 RFC 9649 重組寫入；延伸 XMP 無法安全重組時該張輸出失敗。</li>
+            <li><strong>Orientation</strong> 像素已在解碼時轉正,EXIF 方向值同步重設,不會出現雙重旋轉</li>
+            <li><strong>AVIF / JXL / HEIF / PNG</strong> 目前不注入來源 EXIF／ICC／XMP；不得視為保留時區與 GPS。HEIF 由 ImageIO 編碼為 sRGB。</li>
+          </ul>
+        </div>
+        <div class="info-card wide">
+          <h3>FAQ 常見問題</h3>
+          <ul class="info-list">
+            <li><strong>為什麼 AVIF 這麼慢?</strong> libaom 以窮舉搜尋換壓縮率,這是格式特性不是 bug。趕時間用 WebP,要極致體積用 AVIF。</li>
+            <li><strong>HEIC 檔案可以當輸入嗎?</strong> 可以。iPhone 的 .heic/.heif 會先在背景解碼再轉入任何輸出格式,EXIF 一併從 ISOBMFF 容器提取。</li>
+            <li><strong>預估大小準嗎?</strong> 預估來自解析曲線 × 複雜度取樣 × 你的歷史壓縮記錄(存在本機 localStorage),越用越準;實際結果以壓縮完成為準。</li>
+            <li><strong>批次中有壞檔會怎樣?</strong> 單一損毀檔案會被隔離到 Dead Letter Queue,批次照常完成,結束後可匯出 JSON 錯誤報告。</li>
+            <li><strong>輸出檔名規則?</strong> 同格式保留原檔名(含大小寫);跨格式只換副檔名,主檔名原樣保留。</li>
+          </ul>
+        </div>
+        <div class="info-card wide">
+          <h3>Recommended Navigation</h3>
+          <ul class="info-list">
+            <li><strong>COMPRESS</strong> 實際丟檔案、調整格式與品質、執行壓縮。</li>
+            <li><strong>BATCH</strong> 開始大量處理前，看這批素材會怎麼被執行與輸出。</li>
+            <li><strong>CONFIG</strong> 快速確認目前設定組合，之後也可以擴充成預設集入口。</li>
+            <li><strong>ABOUT</strong> 給第一次打開工具的人，快速理解它能做什麼。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="app-view info-view" data-view-panel="changelog" aria-labelledby="changelogTitle">
+    <div class="info-shell changelog-shell">
+      <div class="info-hero">
+        <div>
+          <div class="info-kicker">Project History</div>
+          <h2 id="changelogTitle">C H A N G E L O G</h2>
+          <p>從第一版壓縮引擎到目前版本，依日期整理每一次功能新增、問題修正、效能優化與發布作業。</p>
+        </div>
+        <div class="changelog-actions">
+          <div class="info-badge">2026 / PRESENT</div>
+          <button type="button" class="changelog-back" id="changelogBack">← BACK</button>
+        </div>
+      </div>
+
+      <ol class="change-timeline">
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-18">07 月 18 日</time>
+          <article class="info-card change-card">
+            <h3>隱藏開發時間軸與大型圖片相容性</h3>
+            <ul class="info-list">
+              <li>新增隱藏的 <strong>CHANGELOG</strong> 頁面，以長時間軸呈現網站完整開發歷程。</li>
+              <li>將左下角設計者名字做成隱藏入口，連續點擊五次即可開啟，並加入返回工作區按鈕。</li>
+              <li>補上桌面與手機版時間軸版面，以及入口互動的自動化回歸測試。</li>
+              <li>移除 7 月 15 日加入的固定解碼記憶體硬限制，恢復大型圖片與上千張批次可排隊執行；記憶體壓力改由原本的動態並行調節處理。</li>
+              <li>重整啟動日誌為五階段流程，依序顯示 Runtime、瀏覽器能力、Codec／Worker、PWA 與最終摘要，並加入各模組用途、狀態與載入耗時。</li>
+              <li>Cloudflare Worker 對 HTML、Service Worker、Build 資訊與 runtime 資產改用強制重新驗證；遠端分頁啟動與回到前景時會主動檢查新世代，避免保留舊頁面。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-17">07 月 17 日</time>
+          <article class="info-card change-card">
+            <h3>文件與瀏覽器測試穩定化</h3>
+            <ul class="info-list">
+              <li>完善繁體中文 README，整理功能、架構、開發指令與部署驗證流程。</li>
+              <li>統一 Playwright 測試等待應用程式 API、預估器、預覽校準與 PWA 狀態真正就緒。</li>
+              <li>穩定 Pull Request 的跨瀏覽器驗證，更新 ABOUT build metadata 並合併版本身分追蹤功能。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-16">07 月 16 日</time>
+          <article class="info-card change-card">
+            <h3>可追溯 Build 身分與預覽估算</h3>
+            <ul class="info-list">
+              <li>修正 Live Preview 對高解析圖片的尺寸估算，避免 crop 樣本造成明顯低估。</li>
+              <li>ABOUT 新增實際執行版本、Release Generation、Build ID、Commit、建置時間與發布頻道。</li>
+              <li>建立頁面、主程式、Service Worker 與 build-info 的一致性驗證，避免混用不同世代資產。</li>
+              <li>縮短 Pull Request CI 等待時間並刷新部署 metadata。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-15">07 月 15 日</time>
+          <article class="info-card change-card">
+            <h3>Production Hardening</h3>
+            <ul class="info-list">
+              <li>強化瀏覽器 runtime、錯誤恢復、Service Worker 更新狀態與失敗狀態的可觀測性。</li>
+              <li>完成 production readiness 證據、架構與建置文件，並將主要文件翻譯為繁體中文。</li>
+              <li>加入專案代理開發指引，明確定義版本、資產、Worker 與 PWA 不可破壞的合約。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-09">07 月 09 日</time>
+          <article class="info-card change-card">
+            <h3>外部稽核修正與追蹤</h3>
+            <ul class="info-list">
+              <li>依外部稽核結果修正縮放預覽的捲動同步抖動與單檔下載延遲。</li>
+              <li>移除無效程式碼並發布 v3.1.5。</li>
+              <li>啟用 Cloudflare Workers Traces，補足正式環境請求追蹤能力。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-08">07 月 08 日</time>
+          <article class="info-card change-card">
+            <h3>手機介面、縮放操作與可觀測性</h3>
+            <ul class="info-list">
+              <li>調整手機版固定執行區、格式按鈕尺寸與導覽列裁切，改善窄螢幕操作。</li>
+              <li>重新設計 Zoom Overlay 單圖模式為專業 A/B 比較切換，並修正初始化 TDZ 錯誤。</li>
+              <li>修正上傳區子元素攔截點擊、非同步捲動回饋迴圈與 GPU 繪製延遲；最後回復較穩定的同步策略。</li>
+              <li>移除 Service Worker 不存在的 libheif.wasm 預快取項目，修復離線安裝並發布 v3.1.4。</li>
+              <li>加入隱私導向 METRICS 指南、Cloudflare 請求日誌 Worker，並開啟正式環境 Logs。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-07">07 月 07 日</time>
+          <article class="info-card change-card">
+            <h3>穩定性稽核與資訊頁擴充</h3>
+            <ul class="info-list">
+              <li>完成 v3.1.2 強韌性稽核：Worker crash-loop 斷路、codec 計數與 PWA 預快取修正。</li>
+              <li>擴充格式指南、引擎、隱私、metadata、FAQ、批次 pipeline 與品質滑桿說明。</li>
+              <li>第二輪稽核修正 20 項問題，涵蓋 ZIP 同名檔、批次死鎖、幽靈結果卡、記憶體洩漏與規格相容性，發布 v3.1.3。</li>
+              <li>更新 README 與架構文件，將部署改由 Cloudflare Git integration 負責並啟用 Workers Logs。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-06">07 月 06 日</time>
+          <article class="info-card change-card">
+            <h3>VOID CONSOLE 與品質引擎</h3>
+            <ul class="info-list">
+              <li>修正 EXIF Make／Model 從 ExifSubIFD 讀取、JXL 重試、IFD 優先順序、預覽 race condition 與 URL 記憶體洩漏。</li>
+              <li>建立同步縮放、平移、拖曳與點擊單側放大的 Zoom Overlay。</li>
+              <li>將整體介面重建為 <strong>VOID CONSOLE</strong> 液態玻璃深色科技風，加入極光背景與互動動畫。</li>
+              <li>修正尺寸預估模型，改用解析度外推 crop 樣本並避免校準資料污染。</li>
+              <li>調校 JPEG／AVIF 高品質 4:4:4、WebP Sharp YUV 與 AVIF SSIM，提升色彩邊緣與感知品質。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-07-04">07 月 04 日</time>
+          <article class="info-card change-card">
+            <h3>v3.0 Production Hardening</h3>
+            <ul class="info-list">
+              <li>新增 JPEG XL（JXL）編碼與封存模式。</li>
+              <li>加入 EXIF 2.32 批次時區覆寫、拍攝時間平移與 Orientation 正規化。</li>
+              <li>建立優先權排程、記憶體壓力控制、Worker 崩潰重試、Dead Letter Queue 與錯誤報告。</li>
+              <li>新增 PWA 離線能力、Webhook 自動匯出、Live Preview、大小預估與完整測試流程。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-03-28">03 月 28 日</time>
+          <article class="info-card change-card">
+            <h3>行動版與自動部署</h3>
+            <ul class="info-list">
+              <li>改善手機版結果卡尺寸、資訊排列與下載操作。</li>
+              <li>預設啟用 Cloudflare 部署工作流程。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-03-27">03 月 27 日</time>
+          <article class="info-card change-card">
+            <h3>部署流程控制</h3>
+            <ul class="info-list"><li>將 Cloudflare deploy workflow 改為可切換，方便依環境決定是否自動發布。</li></ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-03-23">03 月 23 日</time>
+          <article class="info-card change-card">
+            <h3>品牌與專案說明</h3>
+            <ul class="info-list">
+              <li>加入本機 favicon、圖示與 Cloudflare 部署流程。</li>
+              <li>重寫 README，使文件內容與當時功能保持一致。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-03-22">03 月 22 日</time>
+          <article class="info-card change-card">
+            <h3>格式、EXIF、介面與測試全面擴充</h3>
+            <ul class="info-list">
+              <li>以 DataView 重寫 EXIF 解析並深入掃描 HEIC／ISOBMFF metadata，修正 HEIC 上傳、離線解碼、縮圖與時區資料。</li>
+              <li>確保縮圖顯示實際壓縮 Blob；完整保留 JPEG APP1–APP15、EXIF／ICC，跨格式只替換副檔名且維持原主檔名。</li>
+              <li>修正 Worker stall、finalBuffer、重複 TASK_START、重複 listener、損壞 IFD／thumbnail 越界與 piexif 相容性問題。</li>
+              <li>加入壓縮結果 Quantum Dashboard、虛擬化結果格、HEIF 快速／完整兩階段預覽與 30 張 DOM 上限。</li>
+              <li>重做 toggle、結果卡、Light Theme、BATCH／CONFIG／ABOUT 資訊頁與視圖切換。</li>
+              <li>本機化 JSZip、字型與 WASM 依賴，加入 cache buster、動態模組載入與完整壓力／單元測試；當日測試達 29/29 通過。</li>
+            </ul>
+          </article>
+        </li>
+        <li class="change-entry">
+          <time class="change-date" datetime="2026-03-21">03 月 21 日</time>
+          <article class="info-card change-card">
+            <h3>NEXPRESS 誕生</h3>
+            <ul class="info-list">
+              <li>建立第一版瀏覽器影像壓縮引擎與 HUD 儀表板，整合 JPEG、PNG、WebP、AVIF 與 HEIF／HEIC。</li>
+              <li>加入 EXIF 保留、原始檔名維持、JPEG 時區覆寫與原生時區顯示。</li>
+              <li>加入批次 ZIP、DOWNLOAD ALL 提示、品質 82 的 JPEG 預設值與最高 10 執行緒選項。</li>
+              <li>將解碼移入 Worker，建立動態 WASM worker pool，修正 UI freeze、race condition 與記憶體洩漏。</li>
+              <li>本機化 WASM 依賴並建立 Playwright 壓力／單元測試，修正 Safari／Firefox 不支援 performance.memory 的相容性。</li>
+              <li>加入品質、執行緒、EXIF 時區操作日誌，以及無時區 JPEG 的提示標籤。</li>
+            </ul>
+          </article>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <script src="./vendor/jszip.min.js?v=3.2.1&b=nexpress-3.2.1-g3.2.1-04361249b1d3-f4fee95b300cb982"></script>
+  <!-- 固定 URL:Date.now() buster 會讓 Service Worker / HTTP 快取永遠 miss,離線模式失效 -->
+  <script type="module" src="./main.js?v=3.2.1&b=nexpress-3.2.1-g3.2.1-04361249b1d3-f4fee95b300cb982"></script>
+
+  <script>
+    /* ── Clock & uptime ── */
+    const startTime = Date.now();
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function tick() {
+      const now = new Date();
+      document.getElementById('hudClock').textContent =
+        `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+      const up = Math.floor((Date.now() - startTime) / 1000);
+      document.getElementById('instUptime').textContent =
+        `${pad(Math.floor(up / 60))}:${pad(up % 60)}`;
+    }
+    setInterval(tick, 1000); tick();
+
+    /* ── Quality LED segments ── */
+    const SEG_COUNT = 24;
+    const segsWrap = document.getElementById('qSegs');
+    for (let i = 0; i < SEG_COUNT; i++) {
+      const s = document.createElement('div');
+      s.className = 'q-seg';
+      s.dataset.i = i;
+      segsWrap.appendChild(s);
+    }
+
+    function renderSegs(val) {
+      const pct = val / 100;
+      const lit = Math.round(pct * SEG_COUNT);
+      const hColor = pct < .35 ? '#ff4d6d' : pct < .65 ? '#ffc247' : '#00e8ff';
+      const hGlow = pct < .35 ? 'rgba(255,77,109,.5)' : pct < .65 ? 'rgba(255,194,71,.5)' : 'rgba(0,232,255,.5)';
+      segsWrap.querySelectorAll('.q-seg').forEach((s, i) => {
+        const active = i < lit;
+        const h = 4 + (i / SEG_COUNT) * 20;
+        s.style.height = h + 'px';
+        s.style.background = active ? hColor : 'var(--br2)';
+        s.style.boxShadow = active && i === lit - 1 ? `0 0 6px ${hGlow}` : 'none';
+      });
+    }
+
+    document.getElementById('qualitySlider').addEventListener('input', function () {
+      document.getElementById('qVal').textContent = this.value;
+      renderSegs(parseInt(this.value));
+    });
+    renderSegs(82);
+
+    /* ── Memory polling ── */
+    function pollMem() {
+      if (!performance.memory) {
+        document.getElementById('instMem').textContent = 'N/A';
+        document.getElementById('instMem').className = 'inst-val dim';
+        return;
+      }
+      const used = performance.memory.usedJSHeapSize;
+      const total = performance.memory.jsHeapSizeLimit;
+      const mb = (used / 1048576).toFixed(0);
+      const pct = Math.min(100, (used / total) * 100);
+      document.getElementById('instMem').textContent = mb + ' MB';
+      document.getElementById('memBar').style.width = pct + '%';
+    }
+    setInterval(pollMem, 2000); pollMem();
+
+    /* ── Expose renderSegs globally for main.js smart quality ── */
+    window.renderSegs = renderSegs;
+
+  </script>
+
+</body>
+
+</html>

@@ -1,10 +1,10 @@
 # 相片時區修改器 3.5.0
 
-原生 macOS SwiftUI 工具，支援 JPEG、TIFF、Sony ARW。只有在使用者明確確認後才補寫三個 EXIF 時區欄位或手動新增 GPS；不換算或修改拍攝時間。
+原生 macOS SwiftUI 工具。修圖前在「相片處理」批次處理 JPEG、TIFF、Sony ARW 的時區與 GPS；修圖匯出後在獨立的「影像壓縮」頁處理輸出圖片。壓縮頁不修改時區或 GPS。
 
 ## 這版的寫入規則
 
-介面與核心預設一致：處理三個標準 EXIF 欄位，預設僅補缺漏，預設輸出獨立副本。「覆寫所選時區」才會替換既有偏移。
+介面與核心預設一致：處理三個標準 EXIF 欄位，預設僅補缺漏，預設輸出獨立副本。「覆寫所選時區」才會替換既有偏移。照片內嵌 XMP 與已存在的同名 `.xmp` 中，對應日期缺少時區時會補上相同偏移，保留原本的日期與鐘點。EXIF 與 XMP 已有不同偏移時，預設逐張報告衝突；明確覆寫才會同步指定偏移。沒有既有 sidecar 時不建立新的 sidecar。
 
 | 時區標籤 | 對應日期（不會修改） |
 |---|---|
@@ -12,7 +12,13 @@
 | `ExifIFD:OffsetTimeDigitized` | `ExifIFD:CreateDate` |
 | `ExifIFD:OffsetTime` | `IFD0:ModifyDate` |
 
-所有已讀取的日期與次秒必須在寫入前後相同。缺少的建立或修改日期不會被捏造；非法拍攝日期會被拒絕。固定 UTC 偏移不是城市時區，不會自動推斷夏令時間。
+EXIF 日期與次秒必須在寫入前後相同；XMP 日期只能變更時區尾碼，不能平移原有鐘點。缺少的建立或修改日期不會被捏造；非法拍攝日期會被拒絕。固定 UTC 偏移不是城市時區，不會自動推斷夏令時間。
+
+## 批次 GPS
+
+「加入 GPS 位置」使用一組手動輸入的經緯度，處理本次匯入掃描的**全部**支援照片；啟用包含子資料夾時涵蓋其中照片。搜尋、篩選和單張選取只影響時區處理範圍，不會縮小 GPS 批次。預設只補完全沒有 EXIF、內嵌 XMP、同名 `.xmp` GPS 的照片。已有完整或部分 GPS 會保留原值；無法可靠讀取 sidecar 的照片逐張失敗並寫明原因。
+
+另外勾選「GPS 覆蓋」才會改寫既有座標。照片和既有 XMP sidecar 的位置一起準備、讀回驗證；遇到無法安全同步的 XMP 位置結構會拒絕該照片，而不宣稱只改一處為成功。照片與 sidecar 在原檔模式各有耐久備份；多檔發佈失敗會嘗試回復並留下交易紀錄供人工核對。兩張照片共用同一個 XMP sidecar 時，為避免歸屬不明，兩張都會拒絕自動寫入。
 
 ## 效能與安全界線
 
@@ -24,9 +30,13 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## ON1 / Lightroom / Immich / Google 相簿
 
-唯讀診斷 EXIF、內嵌 XMP 與 XMP sidecar 的時間衝突，**不會為了讓軟體顯示相同而偷改拍攝時間或 XMP**。副本模式預設原樣複製同名 `.xmp`、`.on1`、`.acr` 伴隨檔，同名衝突會停止該張照片的發布。
+現有內嵌 XMP 與 `.xmp` 會同步補齊或明確覆寫時區及 GPS。`.on1`、`.acr` 等專有伴隨檔仍原樣複製，不改其私有內容；副本同名衝突會停止該張照片的發布。XMP 日期的原本鐘點不平移，其他修圖設定與非位置欄位以寫入前後的可讀中繼資料比對保護。
 
-雲端圖庫、編目資料庫或既有 XMP 不一定自動更新。本版不宣稱已在 CI 內啟動 ON1／Lightroom／Immich／Google Photos。ON1 提供 A/B/C/C0 實機驗證流程與自動判讀腳本，見 [ON1 acceptance](docs/ON1_ACCEPTANCE.md)。
+雲端圖庫與編目資料庫不一定自動更新。本版不宣稱已在 CI 內啟動 ON1／Lightroom／Immich／Google Photos。ON1 提供 A/B/C/C0 實機驗證流程與自動判讀腳本，見 [ON1 acceptance](docs/ON1_ACCEPTANCE.md)。
+
+## 影像壓縮與中繼資料
+
+壓縮頁包含 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL、批次、預覽、ZIP、設定與選用的 Webhook。HEIF 由 macOS ImageIO 原生編解碼。JPEG 來源轉 JPEG 會複製現有 EXIF／ICC／XMP APP 區段；JPEG 來源轉 WebP 會重組 EXIF／ICC／標準 XMP。注入失敗時該張不輸出。非 JPEG 來源目前無法保證完整提取全部中繼資料；PNG、AVIF、HEIF、JXL 輸出目前不保留來源 EXIF／ICC／XMP。每張壓縮結果會標示保留狀態，不會把沒有保留時區／GPS 的結果說成已保留。詳見 [影像壓縮整合說明](docs/COMPRESSION_INTEGRATION.md)。
 
 ## 復原與異常提交
 
@@ -55,5 +65,7 @@ PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
 成品位於 `dist/相片時區修改器.app`，只包含 arm64 架構並要求 macOS 27.0+。預設是 ad-hoc 簽章，不是 Apple 公證發行版；Intel 與 macOS 26 以下不再列為支援或 CI 驗證平台。
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
+
+修改 Swift 後要快速檢查能否編譯，可先執行 `swift build --build-system native -c debug --arch arm64`；它不會重新打包或安裝 App。要自己產生可安裝版再執行 `./build.sh`，解壓 `dist/PhotoTimezone-macOS-local.zip` 後將 App 放進「應用程式」。這樣可把日常修改與完整打包分開，減少不必要的重複建置與等待。推送到 `main` 後 CI 會自行執行完整測試與正式打包；尚未完成的 CI 不代表新版本已可下載。
 
 實作與驗證界線見 [REPAIR_NOTES_3.5.md](REPAIR_NOTES_3.5.md)。舊版資料見 [歷史文件](docs/README-3.4.1-historical.md)，其 HASH 政策不適用於 3.5.0。

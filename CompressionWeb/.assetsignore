@@ -1,0 +1,15 @@
+node_modules
+tests
+scripts
+*.md
+.production-verification
+test-results
+待確認刪除
+.env*
+cf-worker.mjs
+wrangler.toml
+package.json
+package-lock.json
+playwright.config.js
+.git
+.gitignore

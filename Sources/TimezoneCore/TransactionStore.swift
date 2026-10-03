@@ -22,6 +22,9 @@ struct TransactionManifest: Codable {
     var canonicalBackupIdentity: FileIdentity? = nil
     /// App-owned hidden sidecar staging files. Optional for journal compatibility.
     var sidecarCandidateIdentities: [String: FileIdentity]? = nil
+    /// Durable original-sidecar backups for an integrated multi-file write.
+    /// Optional so recovery can decode records created by older versions.
+    var sidecarBackups: [String: URL]? = nil
     let originalDates: [String: String]
     let oldOffsets: [String: String]
     let newOffsets: [String: String]
