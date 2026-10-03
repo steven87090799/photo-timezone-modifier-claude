@@ -44,7 +44,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## 建置與測試
 
-macOS 13+，需 Swift 6 工具鏈與系統 `/usr/bin/perl`。
+Apple Silicon（M 系列）macOS 27+，需 Swift 6.4 工具鏈與系統 `/usr/bin/perl`。
 
 ```bash
 ./scripts/test.sh

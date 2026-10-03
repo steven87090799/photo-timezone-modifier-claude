@@ -2,14 +2,21 @@ import AppKit
 import SwiftUI
 import TimezoneCore
 
+// Match RecoveryView's state pattern so standalone CLT builds do not require
+// the SDK's SwiftUIMacros plugin.
+@MainActor
+private final class DiagnosticsStorageState: ObservableObject {
+    @Published var storage: StorageUsage?
+    @Published var storageMessage = ""
+    @Published var storageBusy = false
+    @Published var confirmAdminCleanup = false
+    @Published var confirmCandidateCleanup = false
+}
+
 struct DiagnosticsView: View {
     @ObservedObject var model: PhotoViewModel
     @StateObject private var metrics = ProcessDiagnostics()
-    @State private var storage: StorageUsage?
-    @State private var storageMessage = ""
-    @State private var storageBusy = false
-    @State private var confirmAdminCleanup = false
-    @State private var confirmCandidateCleanup = false
+    @StateObject private var state = DiagnosticsStorageState()
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
@@ -83,25 +90,25 @@ struct DiagnosticsView: View {
                 }
 
                 section("儲存空間", symbol: "externaldrive") {
-                    if let storage {
-                        detail("App logs", "\(storage.logFiles) 個 · \(formatBytes(storage.logBytes))")
-                        detail("交易歷史", "\(storage.historyFiles) 個 · \(formatBytes(storage.historyBytes))")
-                        detail("待確認交易", "\(storage.activeTransactions) 個 · \(formatBytes(storage.activeTransactionBytes))")
-                        detail("照片備份", "\(storage.photoBackups) 個 · \(formatBytes(storage.photoBackupBytes))")
-                        detail("孤立候選", "\(storage.orphanCandidates) 個 · \(formatBytes(storage.orphanCandidateBytes))")
+                    if let usage = state.storage {
+                        detail("App logs", "\(usage.logFiles) 個 · \(formatBytes(usage.logBytes))")
+                        detail("交易歷史", "\(usage.historyFiles) 個 · \(formatBytes(usage.historyBytes))")
+                        detail("待確認交易", "\(usage.activeTransactions) 個 · \(formatBytes(usage.activeTransactionBytes))")
+                        detail("照片備份", "\(usage.photoBackups) 個 · \(formatBytes(usage.photoBackupBytes))")
+                        detail("孤立候選", "\(usage.orphanCandidates) 個 · \(formatBytes(usage.orphanCandidateBytes))")
                     } else {
-                        Text(storageBusy ? "正在計算…" : "尚未計算儲存空間。")
+                        Text(state.storageBusy ? "正在計算…" : "尚未計算儲存空間。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    if !storageMessage.isEmpty {
-                        Text(storageMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    if !state.storageMessage.isEmpty {
+                        Text(state.storageMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                     HStack {
-                        Button("重新計算") { refreshStorage() }.disabled(storageBusy || model.isRunning)
-                        Button("清除 Logs／可移除交易記錄") { confirmAdminCleanup = true }
-                            .disabled(storageBusy || model.isRunning)
-                        Button("清理孤立暫存候選") { confirmCandidateCleanup = true }
-                            .disabled(storageBusy || model.isRunning || model.items.isEmpty)
+                        Button("重新計算") { refreshStorage() }.disabled(state.storageBusy || model.isRunning)
+                        Button("清除 Logs／可移除交易記錄") { state.confirmAdminCleanup = true }
+                            .disabled(state.storageBusy || model.isRunning)
+                        Button("清理孤立暫存候選") { state.confirmCandidateCleanup = true }
+                            .disabled(state.storageBusy || model.isRunning || model.items.isEmpty)
                     }
                     Text("照片 _original、before-write、before-restore 備份只統計，不會由這裡自動刪除。交易來源證明也會保留。孤立候選清理只處理目前相片資料夾中、未被 active transaction 引用的 PhotoTimezone UUID 暫存檔。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -123,14 +130,14 @@ struct DiagnosticsView: View {
         }
         .onDisappear { metrics.stop() }
         .confirmationDialog("清除 App logs 與可移除的歷史交易記錄？",
-                            isPresented: $confirmAdminCleanup, titleVisibility: .visible) {
+                            isPresented: $state.confirmAdminCleanup, titleVisibility: .visible) {
             Button("清除記錄", role: .destructive) { cleanAdministrativeHistory() }
             Button("取消", role: .cancel) {}
         } message: {
             Text("不會刪除照片備份，也不會刪除用來證明 _original 來源的必要交易記錄。")
         }
         .confirmationDialog("清理未被交易引用的暫存候選？",
-                            isPresented: $confirmCandidateCleanup, titleVisibility: .visible) {
+                            isPresented: $state.confirmCandidateCleanup, titleVisibility: .visible) {
             Button("清理暫存候選", role: .destructive) { cleanOrphanCandidates() }
             Button("取消", role: .cancel) {}
         } message: {
@@ -173,53 +180,53 @@ struct DiagnosticsView: View {
     }
 
     private func refreshStorage() {
-        guard !storageBusy, !model.isRunning else { return }
+        guard !state.storageBusy, !model.isRunning else { return }
         let urls = model.items.map(\.url)
-        storageBusy = true
-        storageMessage = ""
+        state.storageBusy = true
+        state.storageMessage = ""
         Task { @MainActor in
             do {
-                storage = try await Task.detached(priority: .utility) {
+                state.storage = try await Task.detached(priority: .utility) {
                     try StorageMaintenance.snapshot(photoURLs: urls)
                 }.value
             } catch {
-                storageMessage = error.localizedDescription
+                state.storageMessage = error.localizedDescription
             }
-            storageBusy = false
+            state.storageBusy = false
         }
     }
 
     private func cleanAdministrativeHistory() {
-        guard !storageBusy, !model.isRunning else { return }
-        storageBusy = true
+        guard !state.storageBusy, !model.isRunning else { return }
+        state.storageBusy = true
         Task { @MainActor in
             do {
                 let result = try await Task.detached(priority: .utility) {
                     try StorageMaintenance.cleanAdministrativeHistory()
                 }.value
-                storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
+                state.storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
             } catch {
-                storageMessage = error.localizedDescription
+                state.storageMessage = error.localizedDescription
             }
-            storageBusy = false
+            state.storageBusy = false
             refreshStorage()
         }
     }
 
     private func cleanOrphanCandidates() {
-        guard !storageBusy, !model.isRunning else { return }
+        guard !state.storageBusy, !model.isRunning else { return }
         let urls = model.items.map(\.url)
-        storageBusy = true
+        state.storageBusy = true
         Task { @MainActor in
             do {
                 let result = try await Task.detached(priority: .utility) {
                     try StorageMaintenance.cleanOrphanCandidates(photoURLs: urls)
                 }.value
-                storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
+                state.storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
             } catch {
-                storageMessage = error.localizedDescription
+                state.storageMessage = error.localizedDescription
             }
-            storageBusy = false
+            state.storageBusy = false
             refreshStorage()
         }
     }

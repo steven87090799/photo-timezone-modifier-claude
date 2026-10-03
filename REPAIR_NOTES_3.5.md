@@ -168,3 +168,37 @@ application execution remains a real-Mac acceptance step using docs/ON1_ACCEPTAN
 Power-loss behavior is not fully certifiable. Intel and macOS 26-or-earlier are
 intentionally unsupported rather than unverified targets. Prior Linux stress results
 above are historical and are not release qualification.
+
+## PR #3 / #4 comparison and merge review (2026-10-03)
+
+PR #4 was closed by its author and is an alternative implementation of the
+same follow-up. PR #3 retains its functional goals (trusted backups, crash
+candidate handling, timezone validation, root protection, sidecar indexing,
+storage UI, ARW regression and ON1 acceptance), with additional bounds checks,
+provenance-preserving cleanup and byte-exact whole-file restore validation.
+Merging both implementations would reintroduce competing provenance stores
+and storage/index APIs. The active PR #3 is the integration candidate.
+
+Review reproduced a GPS safety regression: its index discarded matching XMP
+symlinks/nonregular entries before validation, silently treating them as absent.
+The two new pre-fix regressions produced seven failed assertions, including an
+actual unwanted GPS write and backup creation on a generated fixture. Matching
+entries now reach FileIdentity validation and fail closed. Unrelated invalid
+companions do not block other photos. The index maps case-insensitive basename
+keys to candidates, retaining PR #4's filename matching and avoiding a linear
+scan of every sidecar for each photo. A third regression covers basename case.
+
+DiagnosticsView also repeated the State macro issue on standalone macOS 27
+Command Line Tools. Its storage state now follows RecoveryView's existing
+StateObject / ObservableObject pattern. The full native App and test targets
+compile without requiring the missing SwiftUIMacros plugin. README's stale
+macOS 13 build prerequisite was aligned with the actual macOS 27 / Swift 6.4
+baseline of both branches.
+
+Local full native run: 99 discovered tests in six suites, 97 passed, two opt-in
+thousand-photo tests skipped; 40.392 seconds. The pinned Sony ILCE-7M4 ARW
+write/GPS/backup/restore regression passed (18.897 seconds). It checks image
+hashes only as an independent test oracle; production timezone/GPS writes
+remain metadata-only. Generated/vendor/public fixture copies were used;
+existing user photographs and backups were not modified. Actual ON1 execution
+and power-loss resilience remain outside these automated results.

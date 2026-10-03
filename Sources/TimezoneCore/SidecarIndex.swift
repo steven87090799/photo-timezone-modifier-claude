@@ -41,7 +41,7 @@ final class SidecarIndex {
 
     private struct CachedDirectory {
         let stamp: DirectoryStamp
-        let sidecars: [URL]
+        let sidecars: [String: [URL]]
     }
 
     private let capacity: Int
@@ -56,7 +56,7 @@ final class SidecarIndex {
     func find(beside photo: URL) throws -> [URL] {
         let directory = photo.deletingLastPathComponent().standardizedFileURL
         let stamp = try DirectoryStamp.read(directory)
-        let candidates: [URL]
+        let candidates: [String: [URL]]
         if let cached = cache[directory.path], cached.stamp == stamp {
             candidates = cached.sidecars
             touch(directory.path)
@@ -64,13 +64,13 @@ final class SidecarIndex {
             candidates = try refresh(directory)
         }
 
-        let stem = photo.deletingPathExtension().lastPathComponent
-        let fullName = photo.lastPathComponent
+        let stem = photo.deletingPathExtension().lastPathComponent.lowercased()
+        let fullName = photo.lastPathComponent.lowercased()
         var result: [URL] = []
         var seenFiles = Set<String>()
-        for url in candidates {
-            let base = url.deletingPathExtension().lastPathComponent
-            guard base == stem || base == fullName else { continue }
+        for url in (candidates[stem] ?? []) + (candidates[fullName] ?? []) {
+            // Matching symlinks, directories and unreadable entries make GPS
+            // absence unknown; never discard them before FileIdentity checks.
             let identity = try FileIdentity.read(url)
             guard seenFiles.insert("\(identity.device):\(identity.inode)").inserted else { continue }
             result.append(url)
@@ -78,22 +78,19 @@ final class SidecarIndex {
         return result.sorted { $0.path < $1.path }
     }
 
-    private func refresh(_ directory: URL) throws -> [URL] {
+    private func refresh(_ directory: URL) throws -> [String: [URL]] {
         let fm = FileManager.default
         for _ in 0..<2 {
             let before = try DirectoryStamp.read(directory)
             let urls = try fm.contentsOfDirectory(
                 at: directory,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                includingPropertiesForKeys: nil,
                 options: []
             )
-            var sidecars: [URL] = []
-            sidecars.reserveCapacity(min(urls.count, 32))
+            var sidecars: [String: [URL]] = [:]
             for url in urls where Self.extensions.contains(url.pathExtension.lowercased()) {
-                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                if values.isRegularFile == true && values.isSymbolicLink != true {
-                    sidecars.append(url.standardizedFileURL)
-                }
+                let base = url.deletingPathExtension().lastPathComponent.lowercased()
+                sidecars[base, default: []].append(url.standardizedFileURL)
             }
             let after = try DirectoryStamp.read(directory)
             guard before == after else { continue }

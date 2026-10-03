@@ -187,7 +187,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(try tool.execute(["-overwrite_original", "-EXIF:GPSSpeed=0", exifPartial.path]).status, 0)
         let structured = try makeSeededPhoto("review-structured.jpg")
         expectEqual(try tool.execute(["-overwrite_original", "-XMP-iptcExt:LocationShownGPSLatitude=25.033", structured.path]).status, 0)
-        let sidecarPhoto = try makeSeededPhoto("review-sidecar.jpg")
+        let sidecarPhoto = try makeSeededPhoto("REVIEW-SIDECAR.jpg")
         let sidecar = try makeFile("review-sidecar.xmp", contents: Data("""
         <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSSpeed="0"/></rdf:RDF></x:xmpmeta>
         """.utf8))
@@ -213,6 +213,22 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         _ = try assertJob(await run([unknown], operation: .addGPS(location: location)), skipped: 1)
         expectEqual(try Data(contentsOf: unknown), unknownBytes)
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: unknown).path))
+    }
+
+    @Test func testPR3ReviewLinkedXMPCannotBypassGPSSafety() async throws {
+        let photo = try makeSeededPhoto("linked-gps.jpg")
+        let originalBytes = try Data(contentsOf: photo)
+        let target = try makeFile("external-gps.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="25,1.98N"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let sidecarBytes = try Data(contentsOf: target)
+        try FileManager.default.createSymbolicLink(at: photo.deletingPathExtension().appendingPathExtension("xmp"),
+            withDestinationURL: target)
+        _ = try assertJob(await run([photo], operation: .addGPS(
+            location: GPSCoordinate(latitude: 35, longitude: 139))), failed: 1)
+        expectEqual(try Data(contentsOf: photo), originalBytes)
+        expectEqual(try Data(contentsOf: target), sidecarBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
     }
 
     @Test func testReviewRescanRefreshesChangedFileIdentity() async throws {
