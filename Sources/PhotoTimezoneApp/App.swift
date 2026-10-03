@@ -388,7 +388,7 @@ private struct PhotoMainView: View {
                 Text("相片預覽").font(.title3.weight(.semibold))
                 Spacer()
                 if !model.items.isEmpty {
-                    Text("\(model.items.count) 張 · 缺拍攝時區 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
+                    Text("\(model.items.count) 張 · 時區欄位未齊 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

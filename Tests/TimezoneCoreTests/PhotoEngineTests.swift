@@ -57,6 +57,52 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try tool.validateVersion()
     }
 
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW_FIXTURE"] != nil))
+    func testRealSonyA7IVARWTimezoneGPSBackupAndRestore() async throws {
+        guard let path = ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW_FIXTURE"] else { return }
+        let fixture = URL(fileURLWithPath: path)
+        try FileSafety.ensureRegular(fixture)
+        let photo = temporaryDirectory.appendingPathComponent("ILCE-7M4-real.ARW")
+        try FileManager.default.copyItem(at: fixture, to: photo)
+
+        let originalDigest = try digest(of: photo)
+        let before = try tool.snapshot(photo)
+        expectEqual(before.metadata.fileType, "ARW")
+        expectTrue(before.metadata.make?.uppercased() == "SONY")
+        expectTrue(before.metadata.cameraModel?.contains("ILCE-7M4") == true)
+        let originalDates = before.metadata.dateTags
+        let imageHash = try tool.imageDataSHA256(photo)
+
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 345), mode: .replaceAll,
+            options: WriteOptions(sonyCompatibility: true)
+        )), succeeded: 1)
+        let timezoneResult = try tool.snapshot(photo)
+        expectEqual(timezoneResult.metadata.dateTags, originalDates)
+        assertOffsets(timezoneResult.metadata, original: "+05:45", digitized: "+05:45", time: "+05:45")
+        expectEqual(try tool.imageDataSHA256(photo), imageHash)
+        expectEqual(try digest(of: originalBackup(for: photo)), originalDigest)
+
+        _ = try assertJob(await run([photo], operation: .restore), succeeded: 1)
+        expectEqual(try digest(of: photo), originalDigest)
+
+        let restored = try tool.snapshot(photo)
+        expectEqual(restored.metadata.dateTags, originalDates)
+        expectFalse(restored.metadata.hasAnyGPS)
+        let restoredOffsets = (restored.metadata.offsetOriginal, restored.metadata.offsetDigitized, restored.metadata.offsetTime)
+        _ = try assertJob(await run([photo], operation: .addGPS(
+            location: GPSCoordinate(latitude: 25.0330, longitude: 121.5654, altitudeMeters: 12.5),
+            options: WriteOptions(sonyCompatibility: true)
+        )), succeeded: 1)
+        let gpsResult = try tool.snapshot(photo)
+        expectEqual(gpsResult.metadata.dateTags, originalDates)
+        expectEqual(gpsResult.metadata.offsetOriginal, restoredOffsets.0)
+        expectEqual(gpsResult.metadata.offsetDigitized, restoredOffsets.1)
+        expectEqual(gpsResult.metadata.offsetTime, restoredOffsets.2)
+        expectTrue(gpsResult.metadata.hasCompleteGPSCoordinate)
+        expectEqual(try tool.imageDataSHA256(photo), imageHash)
+    }
+
     @Test func testImportantExifPreviewFieldsAreReadFromStandardTags() throws {
         let photo = try makeSeededPhoto("important-exif-preview.jpg")
         let output = try tool.execute([
@@ -141,7 +187,7 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(try tool.execute(["-overwrite_original", "-EXIF:GPSSpeed=0", exifPartial.path]).status, 0)
         let structured = try makeSeededPhoto("review-structured.jpg")
         expectEqual(try tool.execute(["-overwrite_original", "-XMP-iptcExt:LocationShownGPSLatitude=25.033", structured.path]).status, 0)
-        let sidecarPhoto = try makeSeededPhoto("review-sidecar.jpg")
+        let sidecarPhoto = try makeSeededPhoto("REVIEW-SIDECAR.jpg")
         let sidecar = try makeFile("review-sidecar.xmp", contents: Data("""
         <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSSpeed="0"/></rdf:RDF></x:xmpmeta>
         """.utf8))
@@ -167,6 +213,22 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         _ = try assertJob(await run([unknown], operation: .addGPS(location: location)), skipped: 1)
         expectEqual(try Data(contentsOf: unknown), unknownBytes)
         expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: unknown).path))
+    }
+
+    @Test func testPR3ReviewLinkedXMPCannotBypassGPSSafety() async throws {
+        let photo = try makeSeededPhoto("linked-gps.jpg")
+        let originalBytes = try Data(contentsOf: photo)
+        let target = try makeFile("external-gps.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="25,1.98N"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let sidecarBytes = try Data(contentsOf: target)
+        try FileManager.default.createSymbolicLink(at: photo.deletingPathExtension().appendingPathExtension("xmp"),
+            withDestinationURL: target)
+        _ = try assertJob(await run([photo], operation: .addGPS(
+            location: GPSCoordinate(latitude: 35, longitude: 139))), failed: 1)
+        expectEqual(try Data(contentsOf: photo), originalBytes)
+        expectEqual(try Data(contentsOf: target), sidecarBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: photo).path))
     }
 
     @Test func testReviewRescanRefreshesChangedFileIdentity() async throws {
@@ -538,8 +600,12 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     @Test func testMissingPhotoCanBeDiscoveredAndRecoveredFromBackup() async throws {
         let photo = try makeSeededPhoto("orphan.jpg")
         let original = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), succeeded: 1)
         let backup = originalBackup(for: photo)
-        try FileManager.default.moveItem(at: photo, to: backup)
+        expectEqual(try Data(contentsOf: backup), original)
+        try FileManager.default.removeItem(at: photo)
         let preview = await run([temporaryDirectory], operation: .inspect)
         let rows = try assertJob(preview, failed: 1)
         expectEqual(rows[0].url.lastPathComponent, photo.lastPathComponent)
@@ -556,12 +622,36 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
     @Test func testBackupFileCanBeSelectedDirectlyForMissingPhotoRecovery() async throws {
         let photo = try makeSeededPhoto("direct.tiff", format: .tiff)
         let original = try Data(contentsOf: photo)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), succeeded: 1)
         let backup = originalBackup(for: photo)
-        try FileManager.default.moveItem(at: photo, to: backup)
+        try FileManager.default.removeItem(at: photo)
         let restored = await run([backup], operation: .restore)
         let items = try assertJob(restored, succeeded: 1)
         expectEqual(items[0].url.path, photo.path)
         expectEqual(try Data(contentsOf: photo), original)
+    }
+
+    @Test func testPreexistingValidOriginalWithoutProvenanceIsNeverTrusted() async throws {
+        let photo = try makeSeededPhoto("foreign-backup.jpg")
+        let sourceBytes = try Data(contentsOf: photo)
+        let unrelated = try makeSeededPhoto("unrelated.jpg", original: "+01:00")
+        let foreignBytes = try Data(contentsOf: unrelated)
+        let backup = originalBackup(for: photo)
+        try foreignBytes.write(to: backup)
+
+        let write = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll
+        )), failed: 1)
+        expectTrue(write[0].detail.contains("provenance"))
+        expectEqual(try Data(contentsOf: photo), sourceBytes)
+        expectEqual(try Data(contentsOf: backup), foreignBytes)
+
+        let restore = try assertJob(await run([photo], operation: .restore), failed: 1)
+        expectTrue(restore[0].detail.contains("provenance"))
+        expectEqual(try Data(contentsOf: photo), sourceBytes)
+        expectEqual(try Data(contentsOf: backup), foreignBytes)
     }
 
     @Test func testReadTimeoutTerminatesAnUnresponsiveChild() throws {
@@ -817,6 +907,15 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("a.jpg").path))
     }
 
+    @Test func testRestoreByteVerificationDetectsSameSizeMutation() throws {
+        let original = try makeFile("restore-byte-source.bin", contents: Data([0, 1, 2, 3, 4, 5]))
+        let candidate = try makeFile("restore-byte-candidate.bin", contents: Data([0, 1, 2, 3, 4, 5]))
+        expectTrue(try SafeFileTransaction.contentsAreIdentical(original, candidate))
+
+        try Data([0, 1, 9, 3, 4, 5]).write(to: candidate)
+        expectFalse(try SafeFileTransaction.contentsAreIdentical(original, candidate))
+    }
+
     @Test func testPreparedBackupWithoutReplacementLeavesOriginalIntact() throws {
         let photo = try makeSeededPhoto("interrupted.jpg")
         let original = try Data(contentsOf: photo)
@@ -953,6 +1052,82 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
+    @Test func testSonySR2StructuralSpanRelocationIsBoundedAndCompatibilityGated() throws {
+        var beforeMetadata = PhotoMetadata(
+            dateTimeOriginal: originalDate,
+            offsetOriginal: "+02:00",
+            offsetDigitized: "+02:00",
+            offsetTime: "+02:00",
+            fileType: "ARW",
+            createDate: createdDate,
+            modifyDate: modifiedDate,
+            dateTags: ["ExifIFD:DateTimeOriginal": originalDate]
+        )
+        beforeMetadata.make = "SONY"
+        beforeMetadata.fileSize = 100_000
+
+        var afterMetadata = beforeMetadata
+        afterMetadata.fileSize = 101_000
+
+        let beforeTags = [
+            "SR2:SR2SubIFDOffset": "1000",
+            "SR2:SR2SubIFDLength": "2000",
+            "SR2:SR2SubIFDKey": "12345",
+            "IFD2:JpgFromRawStart": "5000",
+            "Sony:HiddenDataOffset": "8000",
+            "Sony:HiddenDataLength": "1000",
+            "SubIFD:TileOffsets": "[10000,20000]"
+        ]
+        let afterTags = [
+            "SR2:SR2SubIFDOffset": "1200",
+            "SR2:SR2SubIFDLength": "2100",
+            "SR2:SR2SubIFDKey": "12345",
+            "IFD2:JpgFromRawStart": "5200",
+            "Sony:HiddenDataOffset": "8300",
+            "Sony:HiddenDataLength": "1100",
+            "SubIFD:TileOffsets": "[10200,20200]"
+        ]
+        let before = ExifTool.Snapshot(metadata: beforeMetadata, warnings: "", embeddedTags: beforeTags)
+        let after = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: afterTags)
+
+        let notices = try MetadataVerifier.verify(
+            before: before, after: after, assignments: [],
+            options: WriteOptions(sonyCompatibility: true)
+        )
+        expectTrue(notices.contains { $0.contains("SR2:SR2SubIFDLength") })
+        expectTrue(notices.contains { $0.contains("IFD2:JpgFromRawStart") })
+        expectTrue(notices.contains { $0.contains("Sony:HiddenDataOffset") })
+        expectTrue(notices.contains { $0.contains("Sony:HiddenDataLength") })
+        expectTrue(notices.contains { $0.contains("SubIFD:TileOffsets") })
+
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(
+                before: before, after: after, assignments: [],
+                options: WriteOptions(sonyCompatibility: false)
+            )
+        }
+
+        var invalidTags = afterTags
+        invalidTags["SR2:SR2SubIFDLength"] = "200000"
+        let invalid = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: invalidTags)
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(
+                before: before, after: invalid, assignments: [],
+                options: WriteOptions(sonyCompatibility: true)
+            )
+        }
+
+        var invalidHiddenTags = afterTags
+        invalidHiddenTags["Sony:HiddenDataLength"] = "200000"
+        let invalidHidden = ExifTool.Snapshot(metadata: afterMetadata, warnings: "", embeddedTags: invalidHiddenTags)
+        #expect(throws: PhotoError.self) {
+            try MetadataVerifier.verify(
+                before: before, after: invalidHidden, assignments: [],
+                options: WriteOptions(sonyCompatibility: true)
+            )
+        }
+    }
+
     @Test func testConflictingXMPIsReportedAndNeverRewritten() async throws {
         let photo = try makeSeededPhoto("conflict.jpg")
         expectEqual(try tool.execute(["-overwrite_original", "-XMP-exif:DateTimeOriginal=\(originalDate)+09:00", photo.path]).status, 0)
@@ -1054,8 +1229,63 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try store.save(manifest)
         expectTrue(try store.unfinished().isEmpty)
         expectEqual(try Data(contentsOf: photo), bytes)
-        expectEqual(try Data(contentsOf: stage), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: stage.path))
         expectTrue(FileManager.default.fileExists(atPath: store.history.appendingPathComponent("\(manifest.id).json").path))
+    }
+
+    @Test func testStorageMaintenanceKeepsPhotoBackupsAndProvenanceButRemovesSafeClutter() throws {
+        let photo = try makeSeededPhoto("storage.jpg")
+        let backup = originalBackup(for: photo)
+        try SafeFileTransaction.copyAndSync(photo, to: backup)
+
+        let support = try makeDirectory("storage-support")
+        let logs = support.appendingPathComponent("Logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try Data("log".utf8).write(to: logs.appendingPathComponent("job-test.jsonl"))
+
+        let store = try TransactionStore(directory: support.appendingPathComponent("Transactions"))
+        let sourceIdentity = try FileIdentity.read(photo)
+        let provenanceID = UUID()
+        let protectedRecord = TransactionManifest(
+            version: 2, id: provenanceID, source: photo, target: photo,
+            candidate: temporaryDirectory.appendingPathComponent("consumed-candidate.jpg"),
+            backup: backup, sourceIdentity: sourceIdentity, targetIdentityBefore: sourceIdentity,
+            candidateIdentity: nil, canonicalBackupIdentity: try FileIdentity.read(backup),
+            originalDates: [:], oldOffsets: [:], newOffsets: [:],
+            sidecarTargets: [], publishedSidecars: [], phase: .committed, detail: "provenance"
+        )
+        try store.finish(protectedRecord)
+
+        let disposableRecord = TransactionManifest(
+            version: 2, id: UUID(), source: photo, target: photo,
+            candidate: temporaryDirectory.appendingPathComponent("consumed-other.jpg"),
+            backup: nil, sourceIdentity: sourceIdentity, targetIdentityBefore: sourceIdentity,
+            candidateIdentity: nil, originalDates: [:], oldOffsets: [:], newOffsets: [:],
+            sidecarTargets: [], publishedSidecars: [], phase: .committed, detail: "removable"
+        )
+        try store.finish(disposableRecord)
+
+        let orphan = photo.deletingLastPathComponent()
+            .appendingPathComponent(".photo-timezone-\(UUID().uuidString).jpg")
+        try SafeFileTransaction.copyCandidate(photo, to: orphan)
+
+        let before = try StorageMaintenance.snapshot(photoURLs: [photo], support: support)
+        expectTrue(before.photoBackups >= 1)
+        expectTrue(before.orphanCandidates >= 1)
+        expectTrue(before.historyFiles >= 2)
+        expectTrue(before.logFiles >= 1)
+
+        let admin = try StorageMaintenance.cleanAdministrativeHistory(support: support)
+        expectTrue(admin.removedFiles >= 2)
+        expectTrue(FileManager.default.fileExists(atPath: backup.path))
+        expectTrue(FileManager.default.fileExists(
+            atPath: store.history.appendingPathComponent("\(provenanceID.uuidString).json").path
+        ))
+
+        let candidates = try StorageMaintenance.cleanOrphanCandidates(photoURLs: [photo], support: support)
+        expectTrue(candidates.removedFiles >= 1)
+        expectFalse(FileManager.default.fileExists(atPath: orphan.path))
+        expectTrue(FileManager.default.fileExists(atPath: backup.path))
     }
 
     @Test func testRecoveryAfterRenameBlocksAutomaticRetry() async throws {
@@ -1167,11 +1397,14 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let summary = try requireValue(job.summaries.first, "Missing finished event", file: file, line: line)
         expectEqual(job.summaries.count, 1, "Exactly one finished event", file: file, line: line)
         if case .finished? = job.events.last {} else { recordFailure("Finished must be the last event", file: file, line: line) }
-        expectEqual(summary.total, succeeded + skipped + failed + cancelled, file: file, line: line)
-        expectEqual(summary.succeeded, succeeded, file: file, line: line)
-        expectEqual(summary.skipped, skipped, file: file, line: line)
-        expectEqual(summary.failed, failed, file: file, line: line)
-        expectEqual(summary.cancelled, cancelled, file: file, line: line)
+        let terminalDetails = job.updates.map {
+            "\($0.item.url.lastPathComponent): \($0.item.status.rawValue) — \($0.item.detail)"
+        }.joined(separator: " | ")
+        expectEqual(summary.total, succeeded + skipped + failed + cancelled, terminalDetails, file: file, line: line)
+        expectEqual(summary.succeeded, succeeded, terminalDetails, file: file, line: line)
+        expectEqual(summary.skipped, skipped, terminalDetails, file: file, line: line)
+        expectEqual(summary.failed, failed, terminalDetails, file: file, line: line)
+        expectEqual(summary.cancelled, cancelled, terminalDetails, file: file, line: line)
         expectEqual(summary.total, summary.succeeded + summary.skipped + summary.failed + summary.cancelled,
                        "Every discovered item must have a terminal outcome", file: file, line: line)
         expectFalse(summary.message.isEmpty, file: file, line: line)

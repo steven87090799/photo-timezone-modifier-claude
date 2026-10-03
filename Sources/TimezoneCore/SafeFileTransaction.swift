@@ -40,6 +40,36 @@ enum SafeFileTransaction {
         try syncFile(destination)
     }
 
+    /// Compare two regular files without loading them into memory. The identities
+    /// are verified again after reading so a concurrent replacement/change cannot
+    /// make a restore candidate look valid.
+    static func contentsAreIdentical(_ lhs: URL, _ rhs: URL) throws -> Bool {
+        let lhsIdentity = try FileIdentity.read(lhs)
+        let rhsIdentity = try FileIdentity.read(rhs)
+        guard lhsIdentity.size == rhsIdentity.size else { return false }
+
+        let left = try FileHandle(forReadingFrom: lhs)
+        let right = try FileHandle(forReadingFrom: rhs)
+        defer {
+            try? left.close()
+            try? right.close()
+        }
+
+        let chunkSize = 1024 * 1024
+        while true {
+            let leftChunk = try left.read(upToCount: chunkSize) ?? Data()
+            let rightChunk = try right.read(upToCount: chunkSize) ?? Data()
+            guard leftChunk == rightChunk else { return false }
+            if leftChunk.isEmpty {
+                break
+            }
+        }
+
+        try lhsIdentity.verify(lhs)
+        try rhsIdentity.verify(rhs)
+        return true
+    }
+
     static func publishExclusive(_ temporary: URL, to destination: URL) throws {
         #if canImport(Darwin)
         let result = temporary.path.withCString { from in
@@ -100,6 +130,9 @@ public enum CopyDestination {
     public static func validate(_ destination: URL, roots: [URL]) throws {
         guard !roots.isEmpty else { throw PhotoError("尚未選取來源相片或資料夾。") }
         let destination = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard destination.path != "/" else {
+            throw PhotoError("檔案系統根目錄不可作為輸出目的地；請選擇一般資料夾。")
+        }
         let values = try destination.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true,
               FileManager.default.isWritableFile(atPath: destination.path) else {
@@ -107,6 +140,9 @@ public enum CopyDestination {
         }
         for root in roots {
             let root = root.standardizedFileURL.resolvingSymlinksInPath()
+            guard root.path != "/" else {
+                throw PhotoError("檔案系統根目錄不可作為來源；請選擇實際相片資料夾。")
+            }
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue {
@@ -153,6 +189,9 @@ public enum CopyDestination {
         let source = source.standardizedFileURL
         let destination = destination.standardizedFileURL.resolvingSymlinksInPath()
         let sorted = roots.map(\.standardizedFileURL).sorted { $0.path.count < $1.path.count }
+        guard !sorted.contains(where: { $0.path == "/" }) else {
+            throw PhotoError("Filesystem root cannot be mapped into a copy destination.")
+        }
         for root in sorted {
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
@@ -169,7 +208,8 @@ public enum CopyDestination {
     }
 
     static func contains(_ directory: URL, _ child: URL) -> Bool {
-        child.path == directory.path || child.path.hasPrefix(directory.path + "/")
+        if directory.path == "/" { return child.path.hasPrefix("/") }
+        return child.path == directory.path || child.path.hasPrefix(directory.path + "/")
     }
 }
 

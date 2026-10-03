@@ -21,14 +21,32 @@ enum MetadataVerifier {
         let changed = Set(expected.keys).union(actual.keys).filter { expected[$0] != actual[$0] }.sorted()
         var relocations: [String] = []
         for key in changed {
-            guard let prior = expected[key], let updated = actual[key],
-                  permittedPointer(key, metadata: old, options: options),
-                  validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
-                  pointerCount(prior) == pointerCount(updated) else {
-                throw PhotoError("Non-offset metadata changed: \(key). Candidate was rejected; original not changed.")
+            if permittedStructuralSpanChange(
+                key, before: expected, after: actual, metadata: old, options: options,
+                oldLimit: old.fileSize, newLimit: new.fileSize
+            ), let updated = actual[key] {
+                expected[key] = updated
+                relocations.append(key)
+                continue
             }
-            expected[key] = updated
-            relocations.append(key)
+            if let prior = expected[key], let updated = actual[key],
+               permittedPointer(key, metadata: old, options: options) {
+                let oldValid = validPointers(prior, limit: old.fileSize)
+                let newValid = validPointers(updated, limit: new.fileSize)
+                let sameCount = pointerCount(prior) == pointerCount(updated)
+                guard oldValid, newValid, sameCount else {
+                    throw PhotoError(
+                        "Pointer relocation failed validation: \(key). " +
+                        "before[\(pointerSummary(prior, limit: old.fileSize))] " +
+                        "after[\(pointerSummary(updated, limit: new.fileSize))] " +
+                        "sameCount=\(sameCount). Candidate was rejected; original not changed."
+                    )
+                }
+                expected[key] = updated
+                relocations.append(key)
+                continue
+            }
+            throw PhotoError("Non-offset metadata changed: \(key). Candidate was rejected; original not changed.")
         }
         guard expected == actual else { throw PhotoError("Metadata verification did not match the authorized operation.") }
         // Existing source warnings are reported, but a new warning is never accepted silently.
@@ -97,10 +115,27 @@ enum MetadataVerifier {
                 relocations.append(key)
                 continue
             }
+            if permittedStructuralSpanChange(
+                key, before: expected, after: actual, metadata: old, options: options,
+                oldLimit: old.fileSize, newLimit: new.fileSize
+            ), let updated = actual[key] {
+                expected[key] = updated
+                relocations.append(key)
+                continue
+            }
             if let prior = expected[key], let updated = actual[key],
-               permittedPointer(key, metadata: old, options: options),
-               validPointers(prior, limit: old.fileSize), validPointers(updated, limit: new.fileSize),
-               pointerCount(prior) == pointerCount(updated) {
+               permittedPointer(key, metadata: old, options: options) {
+                let oldValid = validPointers(prior, limit: old.fileSize)
+                let newValid = validPointers(updated, limit: new.fileSize)
+                let sameCount = pointerCount(prior) == pointerCount(updated)
+                guard oldValid, newValid, sameCount else {
+                    throw PhotoError(
+                        "GPS 結構位址驗證失敗：\(key)。" +
+                        "before[\(pointerSummary(prior, limit: old.fileSize))] " +
+                        "after[\(pointerSummary(updated, limit: new.fileSize))] " +
+                        "sameCount=\(sameCount)。候選檔已拒絕，原檔未更動。"
+                    )
+                }
                 expected[key] = updated
                 relocations.append(key)
                 continue
@@ -129,9 +164,43 @@ enum MetadataVerifier {
         if metadata.fileType == "JPEG", key == "IFD1:ThumbnailOffset" { return true }
         if metadata.fileType == "TIFF", (group.hasPrefix("IFD") || group.hasPrefix("SubIFD")),
            ["StripOffsets", "TileOffsets", "ThumbnailOffset"].contains(tag) { return true }
+        // ExifTool may relocate embedded preview/JPEG payloads when a TIFF-based
+        // Sony RAW file gains EXIF fields. These values are offsets, not payload
+        // metadata: accept only the explicit pointer tags below, and only after
+        // verifying that both old/new offsets remain inside their respective files.
         let sonyPointers: Set<String> = ["MPImage2:MPImageStart", "IFD0:PreviewImageStart",
-            "IFD1:ThumbnailOffset", "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets"]
+            "IFD1:ThumbnailOffset", "IFD2:JpgFromRawStart", "Sony:HiddenDataOffset",
+            "SR2:SR2SubIFDOffset", "SubIFD:StripOffsets", "SubIFD:TileOffsets"]
         return sony && options.sonyCompatibility && sonyPointers.contains(key)
+    }
+
+    /// Sony ARW contains a small set of private blocks described by explicit
+    /// offset/length pairs. ExifTool may relocate/rebuild these containers while
+    /// preserving all decoded tags. Treat only the exact pairs below as structural,
+    /// and require both old/new spans to remain fully inside their respective files.
+    private static func permittedStructuralSpanChange(
+        _ key: String, before: [String: String], after: [String: String],
+        metadata: PhotoMetadata, options: WriteOptions,
+        oldLimit: Int64?, newLimit: Int64?
+    ) -> Bool {
+        guard metadata.make?.uppercased() == "SONY", options.sonyCompatibility else {
+            return false
+        }
+        let pair: (offset: String, length: String)
+        switch key {
+        case "SR2:SR2SubIFDLength":
+            pair = ("SR2:SR2SubIFDOffset", "SR2:SR2SubIFDLength")
+        case "Sony:HiddenDataLength":
+            pair = ("Sony:HiddenDataOffset", "Sony:HiddenDataLength")
+        default:
+            return false
+        }
+        guard let oldOffset = before[pair.offset], let oldLength = before[pair.length],
+              let newOffset = after[pair.offset], let newLength = after[pair.length] else {
+            return false
+        }
+        return validSpan(offset: oldOffset, length: oldLength, limit: oldLimit)
+            && validSpan(offset: newOffset, length: newLength, limit: newLimit)
     }
 
     private static func pointerValues(_ canonical: String) -> [Int64]? {
@@ -146,15 +215,41 @@ enum MetadataVerifier {
             return values.count == numbers.count ? values : nil
         }
         if let text = value as? String {
-            let parts = text.split(separator: " ")
+            let parts = text.split { $0.isWhitespace || $0 == "," }
             let values = parts.compactMap { Int64($0) }
             return values.count == parts.count && !values.isEmpty ? values : nil
         }
         return nil
     }
+    private static func pointerSummary(_ value: String, limit: Int64?) -> String {
+        guard let values = pointerValues(value), !values.isEmpty else {
+            let sample = String(value.prefix(96)).replacingOccurrences(of: "\n", with: "\\n")
+            return "unparsed; canonical=\(sample)"
+        }
+        let minimum = values.min() ?? -1
+        let maximum = values.max() ?? -1
+        let bound = limit.map(String.init) ?? "nil"
+        let inRange = limit.map { fileSize in
+            values.allSatisfy { $0 >= 0 && $0 < fileSize }
+        } ?? false
+        return "count=\(values.count), min=\(minimum), max=\(maximum), fileSize=\(bound), inRange=\(inRange)"
+    }
+
     private static func pointerCount(_ value: String) -> Int { pointerValues(value)?.count ?? 0 }
+    private static func scalarInteger(_ value: String) -> Int64? {
+        guard let values = pointerValues(value), values.count == 1 else { return nil }
+        return values[0]
+    }
     private static func validPointers(_ value: String, limit: Int64?) -> Bool {
         guard let limit, let values = pointerValues(value), !values.isEmpty else { return false }
         return values.allSatisfy { $0 >= 0 && $0 < limit }
+    }
+    private static func validSpan(offset: String, length: String, limit: Int64?) -> Bool {
+        guard let limit, limit >= 0,
+              let start = scalarInteger(offset), let count = scalarInteger(length),
+              start >= 0, count >= 0, start <= limit, count <= limit - start else {
+            return false
+        }
+        return true
     }
 }

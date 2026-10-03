@@ -32,6 +32,7 @@ public struct PhotoEngine: Sendable {
     ) {
         let fm = FileManager.default
         let tool = ExifTool(url: exiftoolURL, persistent: true)
+        let sidecarIndex = SidecarIndex()
         var items: [PhotoItem] = []
         var journal: Journal?
         var generalError: String?
@@ -130,7 +131,7 @@ public struct PhotoEngine: Sendable {
                                     }
                                 }
                                 var diagnosed = metadata
-                                for sidecar in try SidecarSupport.find(beside: item.url) where sidecar.pathExtension.lowercased() == "xmp" {
+                                for sidecar in try SidecarSupport.find(beside: item.url, index: sidecarIndex) where sidecar.pathExtension.lowercased() == "xmp" {
                                     let read = try tool.readSidecar(sidecar, cancellation: cancellation)
                                     diagnosed.sidecarGPSDetected = diagnosed.sidecarGPSDetected || read.hasGPS
                                     diagnosed.gpsSafetyUncertain = diagnosed.gpsSafetyUncertain || !read.gpsCheckReliable
@@ -147,21 +148,21 @@ public struct PhotoEngine: Sendable {
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .writeCopy(let offset, let mode, _, _, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, cancellation: cancellation)
+                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPS(let location, let options):
                                 try autoreleasepool {
                                     try writeGPS(item: &item, tool: tool, location: location, options: options,
-                                                 plan: nil, store: store, cancellation: cancellation)
+                                                 plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPSCopy(let location, _, _, let options):
                                 try autoreleasepool {
                                     try writeGPS(item: &item, tool: tool, location: location, options: options,
-                                                 plan: plan, store: store, cancellation: cancellation)
+                                                 plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .restore:
                                 try restore(item: &item, tool: tool, store: store, cancellation: cancellation)
@@ -219,7 +220,7 @@ public struct PhotoEngine: Sendable {
 
     private func write(
         item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode, options: WriteOptions,
-        plan: DestinationPlan?, store: TransactionStore, cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, sidecarIndex: SidecarIndex, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
         let sourceIdentity = try FileIdentity.read(item.url)
@@ -237,7 +238,7 @@ public struct PhotoEngine: Sendable {
         ]
         let requested = allFields.filter { (mode == .replaceAll || $0.1 == nil) && $0.1 != offset.value }
         let assignments = requested.map { ($0.0, offset.value) }
-        let sidecars = try SidecarSupport.find(beside: item.url)
+        let sidecars = try SidecarSupport.find(beside: item.url, index: sidecarIndex)
         var notices: [String] = []
         let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
             .map { try tool.readSidecar($0, cancellation: cancellation) }
@@ -312,14 +313,20 @@ public struct PhotoEngine: Sendable {
             let oldest = URL(fileURLWithPath: item.url.path + "_original")
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
+                try store.verifyCanonicalOriginalBackup(oldest, source: item.url)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
                 backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
             } else { backup = oldest }
         } else { backup = nil }
-        var manifest = TransactionManifest(version: 1, id: UUID(), source: item.url, target: target,
+        let sidecarCandidateIdentities = try Dictionary(uniqueKeysWithValues:
+            stagedSidecars.map { ($0.stage.path, try FileIdentity.read($0.stage)) }
+        )
+        var manifest = TransactionManifest(version: 2, id: UUID(), source: item.url, target: target,
             candidate: stage, backup: backup, sourceIdentity: sourceIdentity,
             targetIdentityBefore: plan == nil ? sourceIdentity : nil,
-            candidateIdentity: try FileIdentity.read(stage), originalDates: before.dateTags,
+            candidateIdentity: try FileIdentity.read(stage),
+            sidecarCandidateIdentities: sidecarCandidateIdentities,
+            originalDates: before.dateTags,
             oldOffsets: Dictionary(uniqueKeysWithValues: allFields.compactMap { tag, value in value.map { (tag, $0) } }),
             newOffsets: Dictionary(uniqueKeysWithValues: allFields.compactMap { tag, value in
                 let newValue = assignments.first { $0.0 == tag }?.1 ?? value
@@ -335,13 +342,17 @@ public struct PhotoEngine: Sendable {
                 try SafeFileTransaction.copyAndSync(item.url, to: temp)
                 try sourceIdentity.verify(item.url)
                 try SafeFileTransaction.publishExclusive(temp, to: backup)
+                if backup.standardizedFileURL.path == item.url.standardizedFileURL.path + "_original" {
+                    manifest.canonicalBackupIdentity = try FileIdentity.read(backup)
+                }
                 manifest.phase = .backupDurable
+                try store.save(manifest)
             }
             // No cancellation after this boundary: finish the durable transaction.
             try sourceIdentity.verify(item.url)
             try parentIdentity.verify(parent)
             try plan?.verify()
-            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
+            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url, index: sidecarIndex)
             for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
             for read in sidecarReads { try read.identity.verify(read.url) }
             do {
@@ -388,7 +399,7 @@ public struct PhotoEngine: Sendable {
 
     private func writeGPS(
         item: inout PhotoItem, tool: ExifTool, location: GPSCoordinate, options: WriteOptions,
-        plan: DestinationPlan?, store: TransactionStore, cancellation: CancellationToken
+        plan: DestinationPlan?, store: TransactionStore, sidecarIndex: SidecarIndex, cancellation: CancellationToken
     ) throws {
         let fm = FileManager.default
         let sourceIdentity = try FileIdentity.read(item.url)
@@ -400,7 +411,7 @@ public struct PhotoEngine: Sendable {
         var before = originalSnapshot.metadata
         try sourceIdentity.verify(item.url)
 
-        let sidecars = try SidecarSupport.find(beside: item.url)
+        let sidecars = try SidecarSupport.find(beside: item.url, index: sidecarIndex)
         let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
             .map { try tool.readSidecar($0, cancellation: cancellation) }
         before.sidecarGPSDetected = sidecarReads.contains { $0.hasGPS }
@@ -510,6 +521,7 @@ public struct PhotoEngine: Sendable {
             let oldest = URL(fileURLWithPath: item.url.path + "_original")
             if fm.fileExists(atPath: oldest.path) {
                 try FileSafety.ensureRegular(oldest)
+                try store.verifyCanonicalOriginalBackup(oldest, source: item.url)
                 _ = try tool.inspect(oldest, cancellation: cancellation, strictOffsets: false)
                 backup = URL(fileURLWithPath: item.url.path + ".before-write-\(UUID().uuidString).backup")
             } else {
@@ -528,11 +540,16 @@ public struct PhotoEngine: Sendable {
             value.map { (tag, $0) }
         })
 
+        let sidecarCandidateIdentities = try Dictionary(uniqueKeysWithValues:
+            stagedSidecars.map { ($0.stage.path, try FileIdentity.read($0.stage)) }
+        )
         var manifest = TransactionManifest(
-            version: 1, id: UUID(), source: item.url, target: target,
+            version: 2, id: UUID(), source: item.url, target: target,
             candidate: stage, backup: backup, sourceIdentity: sourceIdentity,
             targetIdentityBefore: plan == nil ? sourceIdentity : nil,
-            candidateIdentity: try FileIdentity.read(stage), originalDates: before.dateTags,
+            candidateIdentity: try FileIdentity.read(stage),
+            sidecarCandidateIdentities: sidecarCandidateIdentities,
+            originalDates: before.dateTags,
             oldOffsets: preservedOffsets, newOffsets: preservedOffsets,
             sidecarTargets: stagedSidecars.map(\.target), publishedSidecars: [],
             phase: .prepared,
@@ -551,13 +568,17 @@ public struct PhotoEngine: Sendable {
                 try SafeFileTransaction.copyAndSync(item.url, to: temp)
                 try sourceIdentity.verify(item.url)
                 try SafeFileTransaction.publishExclusive(temp, to: backup)
+                if backup.standardizedFileURL.path == item.url.standardizedFileURL.path + "_original" {
+                    manifest.canonicalBackupIdentity = try FileIdentity.read(backup)
+                }
                 manifest.phase = .backupDurable
+                try store.save(manifest)
             }
 
             try sourceIdentity.verify(item.url)
             try parentIdentity.verify(parent)
             try plan?.verify()
-            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url)
+            try SidecarSupport.verifyUnchanged(sidecars, beside: item.url, index: sidecarIndex)
             for sidecar in stagedSidecars { try sidecar.identity.verify(sidecar.source) }
             for read in sidecarReads { try read.identity.verify(read.url) }
 
@@ -615,6 +636,7 @@ public struct PhotoEngine: Sendable {
         guard fm.fileExists(atPath: backup.path) else {
             item.status = .skipped; item.detail = "No _original backup; nothing changed."; return
         }
+        try store.verifyCanonicalOriginalBackup(backup, source: item.url)
         let backupIdentity = try FileIdentity.read(backup)
         let before = try tool.snapshot(backup, cancellation: cancellation, strictOffsets: false)
         let currentIdentity = fm.fileExists(atPath: item.url.path) ? try FileIdentity.read(item.url) : nil
@@ -624,22 +646,22 @@ public struct PhotoEngine: Sendable {
         let stage = SafeFileTransaction.temporaryPhoto(beside: item.url)
         defer { try? fm.removeItem(at: stage) }
         try SafeFileTransaction.copyAndSync(backup, to: stage)
-        let candidate = try tool.snapshot(stage, cancellation: cancellation, strictOffsets: false)
-        guard before.embeddedTags == candidate.embeddedTags, before.metadata.dateTags == candidate.metadata.dateTags else {
-            throw PhotoError("Restore candidate metadata differs from the backup; no original was changed.")
+        guard try SafeFileTransaction.contentsAreIdentical(backup, stage) else {
+            throw PhotoError("Restore candidate bytes differ from the backup; no original was changed.")
         }
+        let candidate = try tool.snapshot(stage, cancellation: cancellation, strictOffsets: false)
         try backupIdentity.verify(backup)
         try currentIdentity?.verify(item.url)
         if cancellation.isCancelled { throw CancellationError() }
         let currentCopy = currentIdentity.map { _ in URL(fileURLWithPath: item.url.path + ".before-restore-\(UUID().uuidString).backup") }
         let parent = item.url.deletingLastPathComponent().resolvingSymlinksInPath()
         let parentIdentity = try DirectoryIdentity.read(parent)
-        var manifest = TransactionManifest(version: 1, id: UUID(), source: backup, target: item.url,
+        var manifest = TransactionManifest(version: 2, id: UUID(), source: backup, target: item.url,
             candidate: stage, backup: currentCopy ?? backup, sourceIdentity: backupIdentity,
             targetIdentityBefore: currentIdentity,
             candidateIdentity: try FileIdentity.read(stage), originalDates: before.metadata.dateTags,
             oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [], phase: .prepared,
-            detail: "Whole-file restore, not an offset-only undo. Metadata-only verification.")
+            detail: "Whole-file restore, not an offset-only undo. Candidate verified byte-for-byte against the canonical backup.")
         item.transactionID = manifest.id; item.backupURL = currentCopy ?? backup
         try store.save(manifest)
         var published = false
@@ -675,7 +697,7 @@ public struct PhotoEngine: Sendable {
             throw error
         }
         item.status = .success
-        item.detail = "Whole-file restore completed; backup and previous version retained. Metadata verified without a content hash."
+        item.detail = "Whole-file restore completed; backup and previous version retained. Restore candidate verified byte-for-byte against the canonical backup."
     }
 
 }

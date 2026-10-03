@@ -33,7 +33,7 @@ public enum FileDiscovery {
                     let destination = URL(fileURLWithPath: String(url.path.dropLast("_original".count)))
                     if extensions.contains(destination.pathExtension.lowercased()),
                        !manager.fileExists(atPath: destination.path) {
-                        add(destination, status: .failed, detail: "原檔遺失，但找到 _original 備份，可使用還原功能。")
+                        add(destination, status: .failed, detail: "原檔遺失且找到 _original；還原時會先驗證 PhotoTimezone 備份來源。")
                     } else if explicit {
                         add(url, status: .skipped, detail: "請選擇對應的原檔進行還原。")
                     }
@@ -54,6 +54,10 @@ public enum FileDiscovery {
                 continue
             }
             let input = input.standardizedFileURL
+            if input.path == "/" {
+                add(input, status: .failed, detail: "不支援掃描整個檔案系統根目錄；請選擇實際相片資料夾。")
+                continue
+            }
             do {
                 let values = try input.resourceValues(forKeys: keys)
                 if values.isDirectory == true && values.isSymbolicLink != true {
@@ -90,7 +94,7 @@ public enum FileDiscovery {
                 let backup = URL(fileURLWithPath: input.path + "_original")
                 if !manager.fileExists(atPath: input.path), extensions.contains(input.pathExtension.lowercased()),
                    (try? FileSafety.ensureRegular(backup)) != nil {
-                    add(input, status: .failed, detail: "原檔遺失，但找到 _original 備份，可使用還原功能。")
+                    add(input, status: .failed, detail: "原檔遺失且找到 _original；還原時會先驗證 PhotoTimezone 備份來源。")
                 } else {
                     add(input, status: .failed, detail: "無法讀取項目：\(error.localizedDescription)")
                 }

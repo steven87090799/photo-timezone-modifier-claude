@@ -30,26 +30,50 @@ The chosen fixed offset must be appropriate for each associated timestamp.
 | F06 defaults | GUI/API are fixed to all three standard EXIF offset fields; Sony compatibility on, copied sidecars on, fill-missing and copy output by default in GUI. |
 | F07 malformed values | Strict capture calendar/offset checks; absent ancillary dates are reported, never invented. |
 | F08 stale preview | Device/inode/size/mtime/ctime identities checked across preview, staging and commit; final path race not claimed eliminated. |
-| F09 sidecars | Detect .xmp/.on1/.acr, copy unchanged, preserve shared companions, reject collisions and changed sources. |
+| F09 sidecars | Directory-level bounded index, case-insensitive .xmp/.on1/.acr detection, unchanged copying, shared-companion preservation, collision/change rejection. |
 | F10 catalogue costs | Background actor, cached natural ordering and independently throttled projections. |
 | F11 event queue | Bounded/lossless queue with producer backpressure and termination wake-up; cancelled consumer tested. |
 | F12 memory bounds | 16 MiB stdout / 256 KiB stderr; 8 MiB xattrs and XMP diagnostic budget; session recycling. |
 | F13 destination cost | Once-per-job root index and ancestor lookup instead of rebuilding all roots per photo. |
 | F14 filesystem attrs | Nanosecond mtime and typed birthtime/mode comparison, bounded xattrs; ctime naturally changes on replacement. |
 | F15 restore | Correct max(current,backup) capacity; explicit whole-file restore, retained current version. Field-only undo is NOT implemented. |
-| F16 tests | Portable core and real ExifTool fixture tests; new fault/state/bounds regressions; stress requires first-pass success. |
+| F16 tests | Native macOS 27 arm64 regression plus pinned real Sony ILCE-7M4 ARW fixture; stress remains opt-in and requires first-pass success. |
 | F17 repeated I/O | Removed all production file/image hashes; one recycled ExifTool worker per job; clone/copy candidate and necessary sync retained. |
 | F18 log export | Detached staged file copy rather than full Data read on MainActor. |
 | F19 thumbnails | CGImage result without PNG round trip, identity-keyed cache, stale/cancelled result guard, no forced full ARW sidebar decode. |
 | F20 telemetry | App-only telemetry remains explicitly labeled; child RSS/CPU aggregation is not implemented. |
 | F21 footprint | Runtime allowlist, full lib and license retained, no duplicate PNG in app; -Osize and stripped symbols. |
 | F22 cancellation | Read/worker cancellation, safe commit boundary retained; no interruption between publication and bookkeeping. |
-| F23 retained files | Active/history manifests and explicit review; backups/orphan candidates are not automatically deleted. Retention UI not implemented. |
+| F23 retained files | Durable backup provenance, exact pre-publication candidate cleanup, storage accounting, explicit cleanup of logs/non-provenance history/orphan staging; photo backups are never auto-deleted. |
 | F24 misleading preview | External-open action explicitly named, disabled during work; not described as guaranteed read-only. |
 | F25 aliases | Device/inode deduplication, original hardlink replacement refused, copy mode remains available. |
 | F26 Int.min | Overflow-safe formatting and rejection before mutation; regression test. |
-| F27 releases | Native macOS CI and universal build retained; Linux core validation does not certify macOS UI, signing or real RAW compatibility. |
+| F27 releases | Shipping/test baseline intentionally narrowed to Apple Silicon + macOS 27+. Intel, Linux runtime support and macOS 26-or-earlier compatibility are not product targets. |
 | F28 architecture | ViewModel separated, dedicated transport/verifier/identity/transaction/destination/catalogue modules; ARW UTI declaration aligned. |
+
+## 2026-10-02 safety/platform follow-up
+
+- Canonical `_original` backups are no longer trusted by filename alone. New transactions
+  pin the backup FileIdentity; committed legacy transaction records are accepted only
+  through a constrained compatibility path. Unrelated pre-existing `_original` files
+  block automatic restore/original replacement instead of being adopted.
+- The `backupDurable` phase is persisted immediately after a backup is published.
+  Pre-publication crash recovery may delete a staging file only when path, UUID name,
+  candidate identity and unchanged destination all prove it is the transaction's disposable
+  candidate. Photos and backups remain untouched.
+- Sidecar lookup uses a bounded directory index and lower-cased extension matching, reducing
+  repeated NAS/SMB probes and supporting mixed-case XMP/ON1/ACR extensions.
+- UTC offset validation is sign-aware: existing values are accepted only from -12:00 through
+  +14:00. Conflicting populated EXIF offset fields are surfaced as diagnostics rather than
+  silently normalized in fill-missing mode.
+- Filesystem root cannot be selected as a source or copy destination.
+- Diagnostics now reports logs, transaction records, photo backup size and orphan staging.
+  Cleanup is explicit; required backup-provenance records and all photo backups are retained.
+- Product support is deliberately narrowed to arm64 Apple Silicon on macOS 27+. CI uses the
+  macOS 27/Xcode 27 ARM image and a pinned real Sony ILCE-7M4 ARW fixture. Production still
+  performs no photo-content HASH; hashes in fixture tests are independent test oracles only.
+- ON1 cannot be licensed/executed in GitHub CI. A repeatable A/B/C/C0 real-application
+  acceptance harness is provided in docs/ON1_ACCEPTANCE.md and scripts/verify-on1-acceptance.sh.
 
 ## ExifTool lifecycle patch
 
@@ -74,11 +98,10 @@ JPEG three-offset read/write smoke check with its original dates unchanged.
 
 ## Validation that must not be overstated
 
-Development host: Linux x86_64 / Swift 6.2.1 / system Perl / ExifTool 13.59 plus
-the documented transport patch. SwiftUI can be syntax-parsed here but cannot
-be fully typechecked or executed without an Apple SDK. Native CI results must
-be checked separately. Synthetic tiny JPEG/TIFF stress is NOT a real-camera
-RAW benchmark. Older macOS 3.4.x measurements in VALIDATION.md are historical,
+The initial 3.5 repair was also exercised on Linux, but that result is now historical only.
+The supported build/test baseline is Apple Silicon on macOS 27+ with Swift 6.4+.
+CI additionally downloads a pinned, SHA-256-verified Sony ILCE-7M4 real ARW fixture.
+Synthetic tiny JPEG/TIFF stress is NOT a real-camera RAW benchmark. Older macOS 3.4.x measurements in VALIDATION.md are historical,
 not new 3.5.0 measurements, and cannot be compared as if measured on one host.
 
 ON1 Photo RAW, Lightroom, Immich and Google Photos were not run on this host.
@@ -140,6 +163,42 @@ breaking ad-hoc signature validation. This is a local build-environment limitati
 
 The three-offset contract, no clock/date changes, metadata-only production
 verification, copy defaults and backup/publication safeguards are preserved.
-Real camera RAW/application acceptance, power-loss behavior and Intel hardware
-execution remain unverified by these fixture tests. Prior Linux stress results
-above are historical and were not rerun for this follow-up.
+Real-camera ARW regression is now part of the macOS 27 CI path. Proprietary ON1
+application execution remains a real-Mac acceptance step using docs/ON1_ACCEPTANCE.md.
+Power-loss behavior is not fully certifiable. Intel and macOS 26-or-earlier are
+intentionally unsupported rather than unverified targets. Prior Linux stress results
+above are historical and are not release qualification.
+
+## PR #3 / #4 comparison and merge review (2026-10-03)
+
+PR #4 was closed by its author and is an alternative implementation of the
+same follow-up. PR #3 retains its functional goals (trusted backups, crash
+candidate handling, timezone validation, root protection, sidecar indexing,
+storage UI, ARW regression and ON1 acceptance), with additional bounds checks,
+provenance-preserving cleanup and byte-exact whole-file restore validation.
+Merging both implementations would reintroduce competing provenance stores
+and storage/index APIs. The active PR #3 is the integration candidate.
+
+Review reproduced a GPS safety regression: its index discarded matching XMP
+symlinks/nonregular entries before validation, silently treating them as absent.
+The two new pre-fix regressions produced seven failed assertions, including an
+actual unwanted GPS write and backup creation on a generated fixture. Matching
+entries now reach FileIdentity validation and fail closed. Unrelated invalid
+companions do not block other photos. The index maps case-insensitive basename
+keys to candidates, retaining PR #4's filename matching and avoiding a linear
+scan of every sidecar for each photo. A third regression covers basename case.
+
+DiagnosticsView also repeated the State macro issue on standalone macOS 27
+Command Line Tools. Its storage state now follows RecoveryView's existing
+StateObject / ObservableObject pattern. The full native App and test targets
+compile without requiring the missing SwiftUIMacros plugin. README's stale
+macOS 13 build prerequisite was aligned with the actual macOS 27 / Swift 6.4
+baseline of both branches.
+
+Local full native run: 99 discovered tests in six suites, 97 passed, two opt-in
+thousand-photo tests skipped; 40.392 seconds. The pinned Sony ILCE-7M4 ARW
+write/GPS/backup/restore regression passed (18.897 seconds). It checks image
+hashes only as an independent test oracle; production timezone/GPS writes
+remain metadata-only. Generated/vendor/public fixture copies were used;
+existing user photographs and backups were not modified. Actual ON1 execution
+and power-loss resilience remain outside these automated results.

@@ -1,6 +1,18 @@
-> 3.5.0: see REPAIR_NOTES_3.5.md and docs/validation-3.5.json. The measurements below describe older releases, not the current build.
+> 3.5.0: see REPAIR_NOTES_3.5.md and docs/validation-3.5.json. Historical measurements below remain for reference and do not expand the current support matrix.
 
 # 本機驗證紀錄
+
+## 2026-10-02 安全修復與平台基線
+
+- 正式支援範圍收斂為 **Apple Silicon（arm64）+ macOS 27.0 或更新版本**；Intel、Linux runtime 與 macOS 26 以下不再列為產品支援或 release qualification。
+- CI 改用 macOS 27 / Xcode 27 ARM runner，並在測試前下載 raw.pixls.us 的 Sony ILCE-7M4（A7 IV）真實 ARW；檔名與 SHA-256 固定，傳輸內容不符就中止。正式照片處理仍不計算照片 HASH，CI fixture HASH 只作獨立測試 oracle。
+- `_original` 不再只憑檔名信任；新 transaction pin FileIdentity，既有 committed transaction 有受限相容路徑。找不到可信 provenance 的既有 `_original` 不會自動還原或被程式接管。
+- backup 發布後立刻 durable-save `backupDurable`；若 crash 發生在照片發布前，只有 UUID 路徑、candidate identity、未變目的檔與 sidecar publication 狀態都吻合時才清除 disposable staging。
+- sidecar 改為 bounded directory index，副檔名大小寫不敏感；filesystem root 不能作來源或輸出目的地；既有 offset 合法範圍統一為 UTC−12:00～UTC+14:00。
+- 診斷頁新增 logs、transaction、照片備份與 orphan candidate 用量；清理操作不會自動刪 `_original`／before-write／before-restore 照片備份，必要 provenance 交易記錄也保留。
+- ON1 真實應用程式驗證改為可重複的 A/B/C/C0 流程，見 `docs/ON1_ACCEPTANCE.md` 與 `scripts/verify-on1-acceptance.sh`。GitHub CI 不宣稱有執行商業版 ON1。
+- 本節的「通過／失敗」數字只在對應 PR 的 macOS 27 CI 完成後更新；未完成前不把修改本身當成驗證結果。
+
 
 ## 3.4.1（2026-09-30）
 

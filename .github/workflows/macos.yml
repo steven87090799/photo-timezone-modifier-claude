@@ -20,32 +20,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  portable-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
+  test-and-build-macos:
+    # Shipping/test baseline is Apple Silicon running macOS 27+.
+    runs-on: xcode-27
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Full portable regression suite
+
+      - name: Fetch pinned real Sony A7 IV ARW fixture
+        shell: bash
+        run: |
+          fixture="$(bash ./scripts/fetch-real-arw-fixture.sh)"
+          echo "PHOTO_TIMEZONE_REAL_ARW_FIXTURE=$fixture" >> "$GITHUB_ENV"
+
+      - name: Full native regression suite
+        timeout-minutes: 15
         env:
           PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh
+
       - name: Optional thousand-photo stability test
         if: github.event_name == 'workflow_dispatch' && inputs.stress
+        timeout-minutes: 15
         env:
           PHOTO_TIMEZONE_STRESS: '1'
         run: ./scripts/test.sh --filter testThousand
-
-  test-and-build-macos:
-    runs-on: macos-15
-    timeout-minutes: 22
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Full native regression suite
-        timeout-minutes: 10
-        env:
-          PHOTO_TIMEZONE_STRESS: '0'
-        run: ./scripts/test.sh
 
       - name: Identify automatic build
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -68,7 +67,7 @@ jobs:
   publish-app:
     # PRs get downloadable Actions artifacts; only main can publish Releases.
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [portable-tests, test-and-build-macos]
+    needs: [test-and-build-macos]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -88,7 +87,7 @@ jobs:
           tag="build-$GITHUB_SHA"
           notes="$RUNNER_TEMP/app-release-notes.md"
           cat > "$notes" <<EOF
-          自動建置的 macOS 13+ Apple Silicon App，適用 M 系列晶片。
+          自動建置的 macOS 27+ Apple Silicon App，適用 M 系列晶片。
           下載 PhotoTimezone-macOS.zip，解壓縮後將 App 放到「應用程式」。
 
           提交：$GITHUB_SHA

@@ -2,9 +2,21 @@ import AppKit
 import SwiftUI
 import TimezoneCore
 
+// Match RecoveryView's state pattern so standalone CLT builds do not require
+// the SDK's SwiftUIMacros plugin.
+@MainActor
+private final class DiagnosticsStorageState: ObservableObject {
+    @Published var storage: StorageUsage?
+    @Published var storageMessage = ""
+    @Published var storageBusy = false
+    @Published var confirmAdminCleanup = false
+    @Published var confirmCandidateCleanup = false
+}
+
 struct DiagnosticsView: View {
     @ObservedObject var model: PhotoViewModel
     @StateObject private var metrics = ProcessDiagnostics()
+    @StateObject private var state = DiagnosticsStorageState()
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
@@ -16,15 +28,7 @@ struct DiagnosticsView: View {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("PhotoTimezone/Logs", isDirectory: true)
     }
-    private var architecture: String {
-        #if arch(arm64)
-        "Apple Silicon（arm64）"
-        #elseif arch(x86_64)
-        "Intel（x86_64）"
-        #else
-        "其他"
-        #endif
-    }
+    private var architecture: String { "Apple Silicon（arm64）" }
 
     var body: some View {
         ScrollView {
@@ -59,7 +63,7 @@ struct DiagnosticsView: View {
                     detail("ExifTool", "內附固定版本 \(EngineResources.version)")
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
-                    detail("可處理格式", "JPEG、TIFF、Sony ARW；僅補寫時區，不轉換原格式")
+                    detail("可處理格式", "JPEG、TIFF、Sony ARW；可補寫三欄時區或手動新增 GPS，不轉換原格式")
                     Text("3.5：三欄時區、中繼資料驗證、有界記憶體與交易復原記錄。\n3.4.1：Sony 相容模式預設開啟，保留嚴格模式開關與逐張驗證。\n3.4：預設只補 EXIF 拍攝時區，不加減拍攝鐘點。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -85,6 +89,31 @@ struct DiagnosticsView: View {
                     }
                 }
 
+                section("儲存空間", symbol: "externaldrive") {
+                    if let usage = state.storage {
+                        detail("App logs", "\(usage.logFiles) 個 · \(formatBytes(usage.logBytes))")
+                        detail("交易歷史", "\(usage.historyFiles) 個 · \(formatBytes(usage.historyBytes))")
+                        detail("待確認交易", "\(usage.activeTransactions) 個 · \(formatBytes(usage.activeTransactionBytes))")
+                        detail("照片備份", "\(usage.photoBackups) 個 · \(formatBytes(usage.photoBackupBytes))")
+                        detail("孤立候選", "\(usage.orphanCandidates) 個 · \(formatBytes(usage.orphanCandidateBytes))")
+                    } else {
+                        Text(state.storageBusy ? "正在計算…" : "尚未計算儲存空間。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !state.storageMessage.isEmpty {
+                        Text(state.storageMessage).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    HStack {
+                        Button("重新計算") { refreshStorage() }.disabled(state.storageBusy || model.isRunning)
+                        Button("清除 Logs／可移除交易記錄") { state.confirmAdminCleanup = true }
+                            .disabled(state.storageBusy || model.isRunning)
+                        Button("清理孤立暫存候選") { state.confirmCandidateCleanup = true }
+                            .disabled(state.storageBusy || model.isRunning || model.items.isEmpty)
+                    }
+                    Text("照片 _original、before-write、before-restore 備份只統計，不會由這裡自動刪除。交易來源證明也會保留。孤立候選清理只處理目前相片資料夾中、未被 active transaction 引用的 PhotoTimezone UUID 暫存檔。")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+
                 section("安全界線", symbol: "checkmark.shield") {
                     Text("三個 EXIF 時區欄位為預設處理對象，不改日期或次秒。僅比對可讀中繼資料與檔案屬性；不計算照片 HASH，不宣稱影像或私有位元組全同。備份、候選副本與提交前交易記錄仍保留。")
                     Text("ExifTool 可能重排檔案內部位址；軟體無法保證磁碟故障、突然斷電或未知相機私有資料下絕對零風險。正式處理前請保留另一份獨立備份。")
@@ -95,8 +124,25 @@ struct DiagnosticsView: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .top)
         }
-        .onAppear { metrics.start() }
+        .onAppear {
+            metrics.start()
+            refreshStorage()
+        }
         .onDisappear { metrics.stop() }
+        .confirmationDialog("清除 App logs 與可移除的歷史交易記錄？",
+                            isPresented: $state.confirmAdminCleanup, titleVisibility: .visible) {
+            Button("清除記錄", role: .destructive) { cleanAdministrativeHistory() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("不會刪除照片備份，也不會刪除用來證明 _original 來源的必要交易記錄。")
+        }
+        .confirmationDialog("清理未被交易引用的暫存候選？",
+                            isPresented: $state.confirmCandidateCleanup, titleVisibility: .visible) {
+            Button("清理暫存候選", role: .destructive) { cleanOrphanCandidates() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只會處理目前相片所在資料夾中的 PhotoTimezone UUID 暫存候選；照片與備份不會刪除。")
+        }
         .accessibilityIdentifier("diagnosticsPage")
     }
 
@@ -127,6 +173,62 @@ struct DiagnosticsView: View {
             Text(value).textSelection(.enabled)
         }
         .font(.callout)
+    }
+
+    private func formatBytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+
+    private func refreshStorage() {
+        guard !state.storageBusy, !model.isRunning else { return }
+        let urls = model.items.map(\.url)
+        state.storageBusy = true
+        state.storageMessage = ""
+        Task { @MainActor in
+            do {
+                state.storage = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.snapshot(photoURLs: urls)
+                }.value
+            } catch {
+                state.storageMessage = error.localizedDescription
+            }
+            state.storageBusy = false
+        }
+    }
+
+    private func cleanAdministrativeHistory() {
+        guard !state.storageBusy, !model.isRunning else { return }
+        state.storageBusy = true
+        Task { @MainActor in
+            do {
+                let result = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.cleanAdministrativeHistory()
+                }.value
+                state.storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
+            } catch {
+                state.storageMessage = error.localizedDescription
+            }
+            state.storageBusy = false
+            refreshStorage()
+        }
+    }
+
+    private func cleanOrphanCandidates() {
+        guard !state.storageBusy, !model.isRunning else { return }
+        let urls = model.items.map(\.url)
+        state.storageBusy = true
+        Task { @MainActor in
+            do {
+                let result = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.cleanOrphanCandidates(photoURLs: urls)
+                }.value
+                state.storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
+            } catch {
+                state.storageMessage = error.localizedDescription
+            }
+            state.storageBusy = false
+            refreshStorage()
+        }
     }
 
     private func copySummary() {

@@ -1,7 +1,8 @@
 import Foundation
 
 public enum TimeValidation {
-    /// Existing metadata may use minute offsets outside the GUI's 15-minute grid.
+    /// Existing metadata may use minute offsets outside the GUI's 15-minute grid,
+    /// but the EXIF/UI safety range is fixed to UTC-12:00 ... UTC+14:00.
     public static func isOffset(_ value: String?) -> Bool {
         guard let value else { return false }
         let bytes = Array(value.utf8)
@@ -9,7 +10,11 @@ public enum TimeValidation {
               [1, 2, 4, 5].allSatisfy({ (48...57).contains(bytes[$0]) }) else { return false }
         let hours = Int(bytes[1] - 48) * 10 + Int(bytes[2] - 48)
         let minutes = Int(bytes[4] - 48) * 10 + Int(bytes[5] - 48)
-        return minutes < 60 && (hours < 14 || (hours == 14 && minutes == 0))
+        guard minutes < 60 else { return false }
+        if bytes[0] == 45 {
+            return hours < 12 || (hours == 12 && minutes == 0)
+        }
+        return hours < 14 || (hours == 14 && minutes == 0)
     }
 
     public static func isCaptureDate(_ value: String?) -> Bool {
@@ -44,6 +49,16 @@ public enum TimeValidation {
     static func issues(_ metadata: PhotoMetadata, dates: [String: String]? = nil) -> [String] {
         var result: [String] = []
         let dates = dates ?? metadata.dateTags
+        let populatedOffsets: [(String, String)] = [
+            ("OffsetTimeOriginal", metadata.offsetOriginal),
+            ("OffsetTimeDigitized", metadata.offsetDigitized),
+            ("OffsetTime", metadata.offsetTime)
+        ].compactMap { name, value in value.map { (name, $0) } }
+        if Set(populatedOffsets.map(\.1)).count > 1 {
+            result.append("EXIF timezone fields disagree: " +
+                populatedOffsets.map { "\($0.0)=\($0.1)" }.joined(separator: ", ") +
+                ". Existing values were not silently normalized.")
+        }
         let pairs: [(String, String?, String?)] = [
             ("DateTimeOriginal", metadata.dateTimeOriginal, metadata.offsetOriginal),
             ("DateCreated", metadata.dateTimeOriginal, metadata.offsetOriginal),

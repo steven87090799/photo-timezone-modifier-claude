@@ -53,10 +53,11 @@ struct CoreRegressionTests {
         for date in ["2023:02:29 01:00:00", "0000:00:00 00:00:00", "2024:01:01 24:00:00", "2024:01:01", "2024-01-01T00:00:00"] {
             #expect(!TimeValidation.isCaptureDate(date))
         }
-        for offset in ["+00:00", "-00:00", "+14:00", "-03:30", "+05:45", "+12:34"] {
+        for offset in ["+00:00", "-00:00", "+14:00", "-12:00", "-03:30", "+05:45", "+12:34"] {
             #expect(TimeValidation.isOffset(offset))
         }
-        for offset in ["", "UTC+8", "+8:00", "+14:01", "+08:60", " 08:00", "+08:00 "] {
+        for offset in ["", "UTC+8", "+8:00", "+14:01", "-12:01", "-13:00", "-14:00",
+                       "+08:60", " 08:00", "+08:00 "] {
             #expect(!TimeValidation.isOffset(offset))
         }
     }
@@ -183,6 +184,14 @@ struct CoreRegressionTests {
             offsetTime: nil, fileType: "JPEG", createDate: nil, modifyDate: nil, dateTags: [:])
         sidecarOnly.sidecarGPSDetected = true
         #expect(sidecarOnly.hasAnyGPS)
+    }
+
+    @Test func inconsistentEXIFOffsetsAreReportedWithoutNormalization() {
+        let metadata = PhotoMetadata(dateTimeOriginal: "2024:02:29 12:34:56", offsetOriginal: "+08:00",
+            offsetDigitized: "+09:00", offsetTime: "+08:00", fileType: "JPEG",
+            createDate: "2024:02:29 12:34:56", modifyDate: "2024:02:29 12:34:56", dateTags: [:])
+        let issues = TimeValidation.issues(metadata)
+        #expect(issues.contains { $0.contains("timezone fields disagree") })
     }
 
     @Test func xmpISOFormattingDoesNotInventAClockConflict() {
