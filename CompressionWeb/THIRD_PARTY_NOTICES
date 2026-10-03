@@ -21,10 +21,6 @@ Component                              Version     Declared license / source
   JPEG XL codec                                     BSD-3-Clause upstream
 piexifjs                               1.0.6       MIT; github.com/hMatoba/piexifjs
   note: bundled API reports 1.0.4 internally
-JSZip                                  3.10.1      MIT or GPL-3.0; github.com/Stuk/jszip
-  bundled pako                                      MIT
-@fontsource/jetbrains-mono              5.2.8       OFL-1.1; github.com/fontsource/font-files
-@fontsource/orbitron                    5.2.8       OFL-1.1; github.com/fontsource/font-files
 
 Build provenance
 ----------------
@@ -34,4 +30,7 @@ Build provenance
 - HEIF encoding and decoding use macOS ImageIO. The elheif and heic-to
   browser assets are not included.
 - scripts/build-metadata-lib.mjs hashes the embedded runtime assets for
-  the About page build identity.
+  the invisible engine build identity.
+
+- The NEXPRESS web UI, fonts, icons, Service Worker and JSZip are not bundled.
+  The macOS UI is native SwiftUI; ZIP output uses system ditto.

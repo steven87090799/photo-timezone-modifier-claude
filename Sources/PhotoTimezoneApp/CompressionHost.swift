@@ -19,15 +19,33 @@ private enum CompressionHostError: LocalizedError {
 
 /// A loopback-only origin lets WebKit run module workers and WASM from bundled files.
 /// Image bytes sent to the native endpoints never leave this Mac.
-private final class CompressionLocalServer {
+final class CompressionLocalServer {
     let port: UInt16
     private let listener: Int32
     private let root: URL
     private let imageQueue = DispatchQueue(label: "tw.steven.phototimezone.compression.image")
     private let maxBodyBytes = 256 * 1024 * 1024
+    private let registryLock = NSLock()
+    private var sources: [String: URL] = [:]
+    private var outputs: [String: URL] = [:]
+
+    func register(id: String, source: URL, output: URL) {
+        registryLock.lock(); defer { registryLock.unlock() }
+        sources[id] = source; outputs[id] = output
+    }
+
+    func unregister(_ id: String) {
+        registryLock.lock(); defer { registryLock.unlock() }
+        sources.removeValue(forKey: id); outputs.removeValue(forKey: id)
+    }
+
+    private func registered(_ id: String, output: Bool = false) -> URL? {
+        registryLock.lock(); defer { registryLock.unlock() }
+        return output ? outputs[id] : sources[id]
+    }
 
     init(root: URL, preferredPort: UInt16) throws {
-        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("index.html").path) else {
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent("engine.html").path) else {
             throw CompressionHostError.missingAssets
         }
         self.root = root.resolvingSymlinksInPath()
@@ -139,6 +157,23 @@ private final class CompressionLocalServer {
         }
         let path = String(target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
         if method == "GET" || method == "HEAD" {
+            if path.hasPrefix("/native/source/"), let file = registered(String(path.dropFirst(15))),
+               let data = try? Data(contentsOf: file, options: .mappedIfSafe) {
+                respond(client, status: 200, type: "application/octet-stream", body: data)
+                return
+            }
+            if path.hasPrefix("/native/raster/"), let file = registered(String(path.dropFirst(15))) {
+                let query = URLComponents(string: "http://localhost" + target)?.queryItems ?? []
+                let size = Int(query.first { $0.name == "size" }?.value ?? "0") ?? 0
+                let preserve = query.first { $0.name == "profile" }?.value == "original"
+                do {
+                    let raster = try imageQueue.sync { try CompressionImages.raster(file, maxPixel: min(max(size, 0), 1600), preserveOriginal: preserve) }
+                    respond(client, status: 200, type: "application/octet-stream", body: raster.bytes,
+                        headers: ["X-Image-Width": String(raster.width), "X-Image-Height": String(raster.height),
+                                  "X-Profile-Mode": raster.originalProfile ? "original" : "srgb", "X-Frame-Count": String(raster.frames)])
+                } catch { respond(client, status: 422, type: "text/plain", body: Data(error.localizedDescription.utf8)) }
+                return
+            }
             if path == "/native/health" {
                 let supported = (CGImageDestinationCopyTypeIdentifiers() as? [String])?.contains("public.heic") == true
                 let body = Data("{\"heif\":\(supported)}".utf8)
@@ -149,7 +184,7 @@ private final class CompressionLocalServer {
             return
         }
         guard method == "POST",
-              path == "/native/heif/encode" || path == "/native/heif/decode",
+              path == "/native/heif/encode" || path == "/native/heif/decode" || path.hasPrefix("/native/result/"),
               let lengthText = headers["content-length"], let bodyLength = Int(lengthText),
               bodyLength > 0, bodyLength <= maxBodyBytes else {
             respond(client, status: 400, type: "text/plain", body: Data("Unsupported request".utf8))
@@ -167,6 +202,16 @@ private final class CompressionLocalServer {
             guard count > 0 else { return }
             body.append(contentsOf: chunk.prefix(count))
         }
+        if path.hasPrefix("/native/result/") {
+            guard let file = registered(String(path.dropFirst(15)), output: true) else {
+                respond(client, status: 404, type: "text/plain", body: Data("Unknown task".utf8)); return
+            }
+            do {
+                try body.write(to: file, options: .atomic)
+                respond(client, status: 200, type: "text/plain", body: Data("OK".utf8))
+            } catch { respond(client, status: 422, type: "text/plain", body: Data(error.localizedDescription.utf8)) }
+            return
+        }
         let output: Data? = imageQueue.sync {
             path.hasSuffix("/encode") ? encodeHEIC(body, headers: headers) : decodeHEIC(body, headers: headers)
         }
@@ -183,7 +228,7 @@ private final class CompressionLocalServer {
             respond(client, status: 403, type: "text/plain", body: Data("Forbidden".utf8))
             return
         }
-        let relative = decoded == "/" ? "index.html" : String(decoded.dropFirst())
+        let relative = decoded == "/" ? "engine.html" : String(decoded.dropFirst())
         let file = root.appendingPathComponent(relative).resolvingSymlinksInPath()
         guard file.path.hasPrefix(root.path + "/"),
               let data = try? Data(contentsOf: file, options: .mappedIfSafe) else {
@@ -204,7 +249,7 @@ private final class CompressionLocalServer {
         respond(client, status: 200, type: type, body: headOnly ? Data() : data)
     }
 
-    private func respond(_ client: Int32, status: Int, type: String, body: Data) {
+    private func respond(_ client: Int32, status: Int, type: String, body: Data, headers: [String: String] = [:]) {
         let reason: String
         switch status {
         case 200: reason = "OK"
@@ -214,7 +259,8 @@ private final class CompressionLocalServer {
         case 422: reason = "Unprocessable Content"
         default: reason = "Error"
         }
-        let header = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+        let extra = headers.map { "\($0.key): \($0.value)\r\n" }.joined()
+        let header = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\(extra)Connection: close\r\n\r\n"
         sendAll(client, Data(header.utf8))
         sendAll(client, body)
     }
@@ -240,7 +286,9 @@ private final class CompressionLocalServer {
               width <= maxBodyBytes / 4 / height,
               rgba.count == width * height * 4,
               let provider = CGDataProvider(data: rgba as CFData) else { return nil }
-        let space = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let colorSource = headers["x-color-source"].flatMap { registered($0) }
+        let space = colorSource.map { CompressionImages.colorSpace($0, preserveOriginal: headers["x-profile-mode"] == "original") }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
         let bitmap = CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue).union(.byteOrder32Big)
         guard let image = CGImage(
             width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
@@ -276,110 +324,5 @@ private final class CompressionLocalServer {
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
-    }
-}
-
-final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
-    @Published var error: String?
-    let webView: WKWebView
-    private var server: CompressionLocalServer?
-    private var loaded = false
-
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        webView = WKWebView(frame: .zero, configuration: configuration)
-        super.init()
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-    }
-
-    func loadIfNeeded() {
-        guard !loaded else { return }
-        do {
-            let bundled = Bundle.main.resourceURL?.appendingPathComponent("CompressionWeb")
-            let source = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-                .appendingPathComponent("CompressionWeb")
-            let root = bundled.flatMap {
-                FileManager.default.fileExists(atPath: $0.appendingPathComponent("index.html").path) ? $0 : nil
-            } ?? source
-            let saved = UserDefaults.standard.integer(forKey: "compressionLocalPort")
-            let preferred = saved > 0 && saved <= UInt16.max ? UInt16(saved) : UInt16.random(in: 40_000...60_000)
-            let server = try CompressionLocalServer(root: root, preferredPort: preferred)
-            UserDefaults.standard.set(Int(server.port), forKey: "compressionLocalPort")
-            self.server = server
-            let url = URL(string: "http://127.0.0.1:\(server.port)/")!
-            webView.load(URLRequest(url: url))
-            loaded = true
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if action.shouldPerformDownload {
-            decisionHandler(.download)
-        } else if let url = action.request.url, url.scheme == "mailto" {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
-        } else if action.targetFrame == nil, let url = action.request.url,
-                  url.scheme == "https" {
-            NSWorkspace.shared.open(url)
-            decisionHandler(.cancel)
-        } else if let url = action.request.url, let server,
-                  url.scheme == "http", url.host == "127.0.0.1",
-                  url.port == Int(server.port) {
-            decisionHandler(.allow)
-        } else {
-            decisionHandler(.cancel)
-        }
-    }
-
-    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        download.delegate = self
-    }
-
-    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        download.delegate = self
-    }
-
-    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
-                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = suggestedFilename
-        panel.canCreateDirectories = true
-        panel.begin { result in completionHandler(result == .OK ? panel.url : nil) }
-    }
-
-    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
-        panel.begin { result in completionHandler(result == .OK ? panel.urls : nil) }
-    }
-}
-
-private struct CompressionWebView: NSViewRepresentable {
-    let host: CompressionHost
-    func makeNSView(context: Context) -> WKWebView { host.webView }
-    func updateNSView(_ view: WKWebView, context: Context) {}
-}
-
-struct CompressionView: View {
-    @ObservedObject var host: CompressionHost
-
-    var body: some View {
-        Group {
-            if let error = host.error {
-                ContentUnavailableView("無法開啟壓縮頁", systemImage: "photo.on.rectangle.angled", description: Text(error))
-            } else {
-                CompressionWebView(host: host)
-            }
-        }
-        .onAppear { host.loadIfNeeded() }
     }
 }

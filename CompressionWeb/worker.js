@@ -16,7 +16,7 @@
  *  - PREVIEW_ENCODE:300×300 中央區域快速編碼(Side-by-Side 即時預覽)
  */
 
-import { shiftExifDateString, sniffGifAnimation } from './runtime-policy.js?v=3.2.1&b=nexpress-3.2.1-g3.2.1-04361249b1d3-f4fee95b300cb982';
+import { shiftExifDateString, sniffGifAnimation } from './runtime-policy.js?v=3.2.1&b=nexpress-3.2.1-g3.2.1-b2164523ee87-6238d2451b2394d8';
 
 // The page passes its generated release/build identity in the Worker URL.
 // Invalid identity fails closed instead of inventing a plausible generation.
@@ -165,6 +165,8 @@ async function nativeHeifEncode(imageData, quality) {
       'X-Image-Width': String(imageData.width),
       'X-Image-Height': String(imageData.height),
       'X-Image-Quality': String(quality),
+      ...(imageData.nativeSourceToken ? { 'X-Color-Source': imageData.nativeSourceToken,
+        'X-Profile-Mode': imageData.profileMode || 'srgb' } : {}),
     },
     body: rgba,
   });
@@ -173,7 +175,8 @@ async function nativeHeifEncode(imageData, quality) {
 }
 
 self.onmessage = async (e) => {
-  const { type, id, file, format, quality, modifyTz, tzOffset, timeShiftMinutes, jxlRecovery, requestToken } = e.data;
+  const { type, id, file, format, quality, modifyTz, tzOffset, timeShiftMinutes, jxlRecovery, requestToken,
+    rgba, width, height, nativeSourceToken, profileMode } = e.data;
 
   if (type === 'COMPRESS') {
     if (!initDone) {
@@ -187,6 +190,7 @@ self.onmessage = async (e) => {
     }
     await processTask({
       id, file, format, quality, modifyTz, tzOffset, timeShiftMinutes, jxlRecovery,
+      rgba, width, height, nativeSourceToken, profileMode,
     });
   } else if (type === 'PREVIEW_ENCODE') {
     await processPreview(e.data);
@@ -217,14 +221,15 @@ self.onmessage = async (e) => {
 };
 
 // ── 主壓縮邏輯（優化參數版）────────────────────────────────
-async function processTask({ id, file, format, quality, modifyTz, tzOffset, timeShiftMinutes, jxlRecovery = false }) {
+async function processTask({ id, file, format, quality, modifyTz, tzOffset, timeShiftMinutes, jxlRecovery = false,
+  rgba, width, height, nativeSourceToken, profileMode }) {
   try {
     self.postMessage({ type: 'TASK_START', id, status: 'INITIALIZING...', pct: 10 });
 
     let sourceForBitmap = file;
 
-    if (file.type === 'image/heic' || file.type === 'image/heif' ||
-        file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif')) {
+    if (!rgba && (file.type === 'image/heic' || file.type === 'image/heif' ||
+        file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif'))) {
       try {
         self.postMessage({ type: 'TASK_PROGRESS', id, status: 'HEIC DECODING...', pct: 15 });
         sourceForBitmap = await nativeHeifDecode(file);
@@ -234,7 +239,7 @@ async function processTask({ id, file, format, quality, modifyTz, tzOffset, time
     }
 
     // 2. Extract ALL APP markers (Exif, ICC, XMP) from the ORIGINAL file
-    let appMarkers = await extractAppMarkers(file);
+    let appMarkers = nativeSourceToken ? [] : await extractAppMarkers(file);
     let exifPayloadForWebP = null;
     let appliedTz = null;
     let appliedShift = null;
@@ -279,7 +284,9 @@ async function processTask({ id, file, format, quality, modifyTz, tzOffset, time
 
     // 3. 在背景執行緒將 File 解碼為 ImageData
     self.postMessage({ type: 'TASK_PROGRESS', id, status: 'DECODING...', pct: 30 });
-    const imageData = await fileToImageData(sourceForBitmap);
+    const imageData = rgba ? new ImageData(new Uint8ClampedArray(rgba), width, height) : await fileToImageData(sourceForBitmap);
+    imageData.nativeSourceToken = nativeSourceToken;
+    imageData.profileMode = profileMode;
     if (!imageData || !imageData.data) {
       throw new Error(`無法從檔案取得影像數據 (ImageData 為空)`);
     }
@@ -1378,11 +1385,13 @@ function injectMetadataToWebP(webpBuf, exifPayload, iccProfile, xmpPacket, width
 // 讓主執行緒能在拖動 Quality 滑桿時做無延遲畫質/大小比對。
 // ══════════════════════════════════════════════════════════
 
-async function processPreview({ id, rgba, width, height, format, quality }) {
+async function processPreview({ id, rgba, width, height, format, quality, nativeSourceToken, profileMode }) {
   const t0 = performance.now();
   try {
     if (!initDone) throw new Error('engine not ready');
     const img = new ImageData(new Uint8ClampedArray(rgba), width, height);
+    img.nativeSourceToken = nativeSourceToken;
+    img.profileMode = profileMode;
     let buffer;
     const q = Math.min(Math.max(quality, 1), 100);
     switch (format) {

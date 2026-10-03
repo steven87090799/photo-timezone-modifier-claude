@@ -36,7 +36,9 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## 影像壓縮與中繼資料
 
-壓縮頁包含 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL、批次、預覽、ZIP、設定與選用的 Webhook。HEIF 由 macOS ImageIO 原生編解碼。JPEG 來源轉 JPEG 會複製現有 EXIF／ICC／XMP APP 區段；JPEG 來源轉 WebP 會重組 EXIF／ICC／標準 XMP。注入失敗時該張不輸出。非 JPEG 來源目前無法保證完整提取全部中繼資料；PNG、AVIF、HEIF、JXL 輸出目前不保留來源 EXIF／ICC／XMP。每張壓縮結果會標示保留狀態，不會把沒有保留時區／GPS 的結果說成已保留。詳見 [影像壓縮整合說明](docs/COMPRESSION_INTEGRATION.md)。
+壓縮頁採用與相片處理一致的原生 SwiftUI 介面：左側設定、中央批次清單與進度、右側預覽與每張結果。保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存、CSV 報告及選用 Webhook。切換分頁會保留工作狀態。HEIF／HEIC 由 macOS ImageIO 原生編解碼。
+
+輸出時透過內建 ExifTool 複製並核對一般 EXIF、XMP、IPTC 與 ICC，包括原有時區及 GPS；本頁沒有修改時區或 GPS 的控制。JPEG、PNG、WebP、HEIF 優先保留來源 RGB ICC；AVIF、JPEG XL 使用 sRGB 像素與色彩描述，逐張明示轉換。容器不支援或無法核對的欄位會列在結果中，不能視為完整保留；ICC 不符而可能造成錯色時拒絕該張輸出。高位元及動畫輸入仍有限制，詳見 [影像壓縮整合說明](docs/COMPRESSION_INTEGRATION.md)。
 
 ## 復原與異常提交
 
