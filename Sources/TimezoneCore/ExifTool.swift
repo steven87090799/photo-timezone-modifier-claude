@@ -290,13 +290,14 @@ final class ExifTool {
         let url: URL
         let identity: FileIdentity
         let dates: [String: String]
+        let tags: [String: String]
         let hasGPS: Bool
         let gpsCheckReliable: Bool
         let warning: String
         func issues(for photo: PhotoMetadata) -> [String] {
             var result = TimeValidation.issues(photo, dates: dates).map { "\(url.lastPathComponent): \($0)" }
             if hasGPS {
-                result.append("\(url.lastPathComponent): XMP sidecar contains GPS metadata; it was left unchanged.")
+                result.append("\(url.lastPathComponent): XMP sidecar contains GPS metadata.")
             }
             if !warning.isEmpty { result.append(warning) }
             return result
@@ -306,12 +307,10 @@ final class ExifTool {
     func readSidecar(_ file: URL, cancellation: CancellationToken? = nil) throws -> SidecarSnapshot {
         let identity = try FileIdentity.read(file)
         guard identity.size <= 8 * 1024 * 1024 else {
-            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], tags: [:], hasGPS: false, gpsCheckReliable: false,
                 warning: "XMP sidecar exceeds the 8 MiB diagnostic budget; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
-        let output = try execute(["-charset", "filename=UTF8", "-j", "-G1:4", "-s",
-            "-XMP-exif:DateTimeOriginal", "-XMP-xmp:CreateDate", "-XMP-xmp:ModifyDate", "-XMP-photoshop:DateCreated",
-            "-XMP:*GPS*", "-FileType", "-Warning", "-Error",
+        let output = try execute(["-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s", "-n", "-U", "-struct",
             file.path], timeout: 120, cancellation: cancellation)
         try identity.verify(file)
         guard output.status == 0,
@@ -322,15 +321,20 @@ final class ExifTool {
               !record.keys.contains(where: {
                   $0.hasPrefix("ExifTool:") && ["Error", "Warning"].contains(String($0.split(separator: ":").last ?? ""))
               }) else {
-            return SidecarSnapshot(url: file, identity: identity, dates: [:], hasGPS: false, gpsCheckReliable: false,
+            return SidecarSnapshot(url: file, identity: identity, dates: [:], tags: [:], hasGPS: false, gpsCheckReliable: false,
                 warning: "XMP sidecar could not be diagnosed; GPS presence could not be verified and manual GPS insertion is blocked: \(file.lastPathComponent)")
         }
         let dates = record.filter { key, _ in
             key.hasPrefix("XMP") && ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated"]
                 .contains(String(key.split(separator: ":").last ?? ""))
         }.mapValues { String(describing: $0) }
+        var tags: [String: String] = [:]
+        for (key, value) in record where key != "SourceFile" && key.split(separator: ":").first?.hasPrefix("XMP") == true {
+            let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys])
+            tags[key] = String(decoding: data, as: UTF8.self)
+        }
         return SidecarSnapshot(url: file, identity: identity, dates: dates,
-            hasGPS: Self.containsXMPGPS(record), gpsCheckReliable: true, warning: "")
+            tags: tags, hasGPS: Self.containsXMPGPS(record), gpsCheckReliable: true, warning: "")
     }
 
     /// Snapshots use -struct while previews flatten structured XMP. Cover both,

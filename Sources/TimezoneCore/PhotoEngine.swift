@@ -68,6 +68,18 @@ public struct PhotoEngine: Sendable {
             items = FileDiscovery.collect(inputs: inputs, recursive: recursive, cancellation: cancellation,
                                           allowDirectories: !inspectedFilesOnly) { onEvent(.phase($0)) }
             onEvent(.discovered(items))
+            var sidecarOwners: [String: Set<String>] = [:]
+            switch operation {
+            case .write, .writeCopy:
+                for photo in items where photo.status == .pending {
+                    for sidecar in (try? SidecarSupport.find(beside: photo.url, index: sidecarIndex)) ?? []
+                    where sidecar.pathExtension.lowercased() == "xmp" {
+                        sidecarOwners[sidecar.path, default: []].insert(photo.url.path)
+                    }
+                }
+            default: break
+            }
+            let sharedSidecarPhotos = Set(sidecarOwners.values.filter { $0.count > 1 }.flatMap { $0 })
             var inspectionCache: [String: Result<(PhotoMetadata, String), Error>] = [:]
             var inspectionIdentities: [String: FileIdentity] = [:]
             for index in items.indices {
@@ -89,13 +101,22 @@ public struct PhotoEngine: Sendable {
                                 try FileSafety.ensureRegular(item.url)
                                 // A rescan establishes a fresh identity. Only a
                                 // mutation must match the previously approved preview.
-                                if case .inspect = operation {} else {
+                                if case .inspect = operation {} else if case .restore = operation {
                                     try expectedIdentities[item.url.path]?.verify(item.url)
+                                } else {
+                                    if let expected = expectedIdentities[item.url.path] {
+                                        try expected.verify(item.url)
+                                    } else if inspectedFilesOnly && !expectedIdentities.isEmpty {
+                                        throw PhotoError("此照片未通過匯入掃描，沒有可確認的檔案身分；時區與 GPS 均未寫入。")
+                                    }
                                 }
                             }
                             if case .inspect = operation {} else if blocked.contains(item.url.path) {
                                 item.publicationUnconfirmed = true
                                 throw PhotoError("Unfinished transaction requires review; automatic retry is blocked. See \(store.active.path)")
+                            }
+                            if sharedSidecarPhotos.contains(item.url.path) {
+                                throw PhotoError("多張匯入照片共用同一個 XMP sidecar，無法判定歸屬；此張照片與 GPS 均未寫入。")
                             }
                             switch operation {
                             case .inspect:
@@ -148,11 +169,13 @@ public struct PhotoEngine: Sendable {
                                 if !warning.isEmpty { item.detail += "\n警告：\(warning)" }
                             case .write(let offset, let mode, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
+                                    try IntegratedWriter.write(item: &item, tool: tool, offset: offset, mode: mode,
+                                        options: options, plan: nil, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .writeCopy(let offset, let mode, _, _, let options):
                                 try autoreleasepool {
-                                    try write(item: &item, tool: tool, offset: offset, mode: mode, options: options, plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
+                                    try IntegratedWriter.write(item: &item, tool: tool, offset: offset, mode: mode,
+                                        options: options, plan: plan, store: store, sidecarIndex: sidecarIndex, cancellation: cancellation)
                                 }
                             case .addGPS(let location, let options):
                                 try autoreleasepool {
@@ -172,7 +195,12 @@ public struct PhotoEngine: Sendable {
                             item.detail = "已取消讀取；未寫入。"
                         } catch {
                             item.status = .failed
-                            item.detail = error.localizedDescription
+                            switch operation {
+                            case .write(_, _, let options), .writeCopy(_, _, _, _, let options):
+                                item.detail = "時區：未完成。GPS：\(options.gps == nil ? "未啟用" : "未完成")。原因：\(error.localizedDescription)"
+                            default:
+                                item.detail = error.localizedDescription
+                            }
                         }
                     }
                 }

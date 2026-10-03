@@ -51,7 +51,7 @@ struct PhotoTimezoneApp: App {
 }
 
 enum AppPage: String, CaseIterable {
-    case photos = "相片處理", diagnostics = "版本與診斷"
+    case photos = "相片處理", compression = "影像壓縮", diagnostics = "版本與診斷"
 }
 
 enum ProcessingScope: String, CaseIterable {
@@ -81,6 +81,7 @@ enum PhotoNotice: Identifiable {
 
 private struct PhotoMainView: View {
     @ObservedObject var model: PhotoViewModel
+    @StateObject private var compressionHost = CompressionHost()
 
     private struct MetadataSpecField: Identifiable {
         let title: String
@@ -101,16 +102,22 @@ private struct PhotoMainView: View {
                     workspace
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
+            } else if model.activePage == .compression {
+                CompressionView(host: compressionHost)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 DiagnosticsView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            Divider()
-            activityBar
+            if model.activePage == .photos && model.isRunning {
+                Divider()
+                activityBar
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay {
-            if model.dropTargeted {
+            if model.activePage == .photos && model.dropTargeted {
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
                     .background(Color.accentColor.opacity(0.07))
@@ -118,7 +125,6 @@ private struct PhotoMainView: View {
                     .allowsHitTesting(false)
             }
         }
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
         .overlay {
             if model.showingOffsetChooser {
                 Color.black.opacity(0.7).ignoresSafeArea()
@@ -134,49 +140,34 @@ private struct PhotoMainView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             Image(nsImage: AppArtwork.icon)
                 .resizable().interpolation(.high)
-                .frame(width: 52, height: 52)
+                .frame(width: 30, height: 30)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 1) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("相片時區修改器").font(.title2.bold())
+                    Text("相片時區修改器").font(.headline)
                     Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.5.0")
                         .font(.caption).foregroundStyle(.tertiary)
                 }
-                Text("拖入先看資訊，確認後才寫入。原格式與拍攝時間不變。")
-                    .font(.callout).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 16)
+            Spacer(minLength: 12)
             Picker("頁面", selection: $model.activePage) {
                 ForEach(AppPage.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 245)
+            .pickerStyle(.segmented).labelsHidden().frame(width: 340)
             .accessibilityIdentifier("mainPagePicker")
-            if model.activePage == .photos {
-                Button(action: model.chooseInputs) {
-                    Label("加入項目…", systemImage: "plus")
-                }
-                .disabled(model.isRunning)
-                .accessibilityIdentifier("addInputsButton")
-                Button(action: model.inspect) {
-                    Label("重新掃描", systemImage: "arrow.clockwise")
-                }
-                .disabled(!model.canInspect)
-                .accessibilityIdentifier("inspectButton")
-                .help("讀取相片資訊；掃描不會修改檔案。")
-            }
         }
-        .controlSize(.large)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
+        .controlSize(.regular)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
     }
 
     private var settings: some View {
         VStack(spacing: 0) {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 14) {
                 sources
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
@@ -195,18 +186,28 @@ private struct PhotoMainView: View {
                     .accessibilityLabel("選擇固定 UTC 時區偏移，現在為 \(model.offset.label)")
                     .accessibilityIdentifier("chooseOffsetButton")
                     .disabled(model.isRunning)
-                    Text(OffsetGuide.examples(for: model.offset))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("選擇拍攝當時的固定 UTC 偏移，包含半小時與 15 分鐘選項。此設定不是城市時區，不會自動套用日光節約時間（夏令時間）。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Toggle("加入 GPS 位置", isOn: $model.gpsEnabled)
+                        .disabled(model.isRunning)
+                        .accessibilityIdentifier("batchGPSToggle")
+                        .help("對本次掃描的全部支援照片批次處理；搜尋、篩選與單張選取不會縮小 GPS 範圍。")
+                    if model.gpsEnabled {
+                        TextField("緯度（−90～90）", text: $model.gpsLatitudeInput)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("gpsLatitudeField")
+                        TextField("經度（−180～180）", text: $model.gpsLongitudeInput)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("gpsLongitudeField")
+                        TextField("高度 m，可留空", text: $model.gpsAltitudeInput)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("gpsAltitudeField")
+                        Toggle("GPS 覆蓋", isOn: $model.gpsOverwrite)
+                            .disabled(model.isRunning)
+                            .accessibilityIdentifier("gpsOverwriteToggle")
+                            .help("勾選後才會覆蓋既有位置；未勾選時只補完全沒有 GPS 的相片。")
+                    }
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     sectionHeading("03", "選擇寫入方式")
-                    Text("固定處理 OffsetTimeOriginal、OffsetTimeDigitized、OffsetTime 三個標準 EXIF 時區欄位；對應的拍攝、數位化、修改日期與次秒全部保留，不會平移時間或補造原本不存在的日期。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                     Picker("寫入方式", selection: Binding(get: { model.mode }, set: model.setMode)) {
                         Text("只補上缺少的時區").tag(WriteMode.fillMissing)
                         Text("覆寫所選時區").tag(WriteMode.replaceAll)
@@ -216,21 +217,11 @@ private struct PhotoMainView: View {
                     .disabled(model.isRunning)
                     .accessibilityLabel("時區寫入方式")
                     .accessibilityIdentifier("writeModePicker")
-                    Text(model.mode == .fillMissing
-                         ? "保留三個欄位中已有的時區，只補缺漏。"
-                         : "三個 EXIF 時區欄位會改成指定偏移；拍攝時間本身不變。")
-                        .font(.caption)
-                        .foregroundStyle(model.mode == .replaceAll ? Color.orange : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                     Toggle("Sony 相容模式（預設開啟）", isOn: Binding(
                         get: { model.sonyCompatibility }, set: model.setSonyCompatibility
                     ))
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("sonyCompatibilityToggle")
-                    Text("僅核對可讀中繼資料，不執行影像或整檔 HASH。Sony 相容模式只容許白名單中的位置指標調整；無法保證影像或 MakerNotes 私有位元組完全不變。備份與安全提交仍保留。")
-                        .font(.caption)
-                        .foregroundStyle(model.sonyCompatibility ? Color.orange : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(alignment: .leading, spacing: 11) {
                     sectionHeading("04", "選擇輸出位置")
@@ -240,10 +231,7 @@ private struct PhotoMainView: View {
                     .font(.callout)
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("replaceOriginalsToggle")
-                    if model.replaceOriginals {
-                        Text("逐張先驗證成品、保存原檔備份，再替換相同路徑的 JPEG／ARW／TIFF；不轉檔。")
-                            .font(.caption).foregroundStyle(.orange)
-                    } else {
+                    if !model.replaceOriginals {
                         Button(model.outputDirectory == nil ? "選擇副本輸出資料夾…" : "變更副本輸出資料夾…") {
                             model.chooseOutputDirectory()
                         }
@@ -253,24 +241,10 @@ private struct PhotoMainView: View {
                             Text(destination.path).font(.caption2).textSelection(.enabled)
                                 .lineLimit(2).truncationMode(.middle)
                         }
-                        Text("預設保留來源，副本輸出到你選的獨立資料夾；保留來源資料夾結構，不覆蓋同名檔案。")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 VStack(alignment: .leading, spacing: 10) {
-                    Label(model.replaceOriginals ? "替換前保留備份" : "來源原檔保持不動", systemImage: "checkmark.shield.fill")
-                        .font(.callout.weight(.semibold)).foregroundStyle(.green)
-                    Text(model.replaceOriginals
-                         ? "首次替換保留 _original，再次替換另存上一版本；復原也保留當前版本。"
-                         : "只在輸出資料夾建立副本；來源照片不會被修改。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionHeading("05", "處理範圍")
+                    sectionHeading("05", "時區處理範圍")
                     Picker("處理範圍", selection: $model.scope) {
                         Text("全部").tag(ProcessingScope.all)
                         Text("篩選").tag(ProcessingScope.filtered)
@@ -279,7 +253,7 @@ private struct PhotoMainView: View {
                     .pickerStyle(.segmented).labelsHidden()
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("processingScopePicker")
-                    Text("此次處理：\(model.processingCount) 張 · \(model.scope.rawValue)")
+                    Text("時區：\(model.processingCount) 張 · GPS：\(model.gpsEnabled ? "本次掃描全部" : "未啟用")")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 8) {
@@ -287,12 +261,9 @@ private struct PhotoMainView: View {
                         get: { model.notificationsEnabled }, set: model.setNotificationsEnabled
                     ))
                     .accessibilityIdentifier("completionNotificationsToggle")
-                    Text("預設關閉；開啟時才請求 macOS 通知權限。進度與逐張結果仍可在 App 查看。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(20)
+                .padding(14)
         }
         Divider()
         actionPanel.padding(12)
@@ -308,9 +279,6 @@ private struct PhotoMainView: View {
             }
             .buttonStyle(.borderedProminent).controlSize(.large)
             .disabled(!model.canWrite).accessibilityIdentifier("writeButton")
-            Text(model.inputs.isEmpty ? "先加入相片；不會自動寫入。" : (model.previewIsCurrent ? "按下後會再次確認。" : "請先完成掃描預覽。"))
-                .font(.caption2).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             Button("從原始備份還原…", action: model.requestRestore)
                 .buttonStyle(.link).disabled(!model.canRestore)
                 .accessibilityIdentifier("restoreButton")
@@ -329,6 +297,14 @@ private struct PhotoMainView: View {
                         .accessibilityIdentifier("clearInputsButton")
                 }
             }
+            HStack(spacing: 8) {
+                Button(action: model.chooseInputs) { Label("加入項目", systemImage: "plus") }
+                    .disabled(model.isRunning)
+                    .accessibilityIdentifier("addInputsButton")
+                Button(action: model.inspect) { Label("重新掃描", systemImage: "arrow.clockwise") }
+                    .disabled(!model.canInspect)
+                    .accessibilityIdentifier("inspectButton")
+            }
             if model.inputs.isEmpty {
                 Button(action: model.chooseInputs) {
                     VStack(spacing: 8) {
@@ -337,7 +313,7 @@ private struct PhotoMainView: View {
                         Text("或按一下選取多個項目").font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
+                    .padding(.vertical, 11)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -376,9 +352,6 @@ private struct PhotoMainView: View {
                 .font(.callout)
                 .disabled(model.isRunning)
                 .accessibilityIdentifier("recursiveToggle")
-            Text("拖入後自動讀取照片與資訊，不會更動檔案。記憶卡相片建議先複製到電腦，再處理副本。")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -709,48 +682,9 @@ private struct PhotoMainView: View {
                 }
             }
 
-            if metadata.hasAnyGPS || metadata.gpsSafetyUncertain {
-                Text(metadata.gpsSafetyUncertain
-                     ? "XMP sidecar 無法完整檢查是否含 GPS；為避免建立互相衝突的位置資料，手動新增已停用。"
-                     : (metadata.hasCompleteGPSCoordinate
-                        ? "為避免覆寫既有位置，手動新增已停用。"
-                        : "偵測到部分 EXIF GPS、內嵌 XMP GPS 或 XMP sidecar GPS；為避免衝突，不會自動補寫或覆蓋。"))
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                HStack(spacing: 8) {
-                    TextField("緯度，例如 25.0330", text: $model.gpsLatitudeInput)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("gpsLatitudeField")
-                    TextField("經度，例如 121.5654", text: $model.gpsLongitudeInput)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("gpsLongitudeField")
-                    TextField("高度 m（可留空）", text: $model.gpsAltitudeInput)
-                        .textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("gpsAltitudeField")
-                }
-                .disabled(model.isRunning || model.selection.count != 1)
-
-                HStack {
-                    Text("十進位座標：緯度 -90～90、經度 -180～180；高度可選。只寫 GPS，不修改日期、時區、曝光或鏡頭資訊。")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 12)
-                    Button {
-                        model.requestAddGPS()
-                    } label: {
-                        Label(model.replaceOriginals ? "新增 GPS 到原檔…" : "新增 GPS 到副本…",
-                              systemImage: "mappin.and.ellipse")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!model.canAddGPSToSelected)
-                    .accessibilityIdentifier("addGPSButton")
-                }
-                if model.selection.count != 1 {
-                    Text("手動 GPS 一次只允許處理一張照片，請只選取一張。")
-                        .font(.caption2).foregroundStyle(.orange)
-                }
+            if metadata.gpsSafetyUncertain {
+                Text("XMP sidecar 無法可靠檢查，這張照片不會自動寫入 GPS。")
+                    .font(.caption2).foregroundStyle(.orange)
             }
         }
         .padding(10)
@@ -921,9 +855,9 @@ private struct PhotoMainView: View {
                     .accessibilityIdentifier("cancelJobButton")
             }
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
-        .frame(minHeight: 62)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(minHeight: 46)
         .background(.bar)
         .accessibilityIdentifier("activityBar")
     }
@@ -936,6 +870,20 @@ private struct PhotoMainView: View {
                 .background(Color.accentColor.opacity(0.1), in: Circle())
                 .accessibilityHidden(true)
             Text(title).font(.callout.weight(.semibold))
+            Image(systemName: "questionmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+                .help(sectionHelp(title))
+        }
+    }
+
+    private func sectionHelp(_ title: String) -> String {
+        switch title {
+        case "加入相片與資料夾": return "加入後自動掃描；包含子資料夾時一併找出支援的照片。"
+        case "設定固定時區": return "EXIF 和既有 XMP 缺少時區時補上偏移；不平移拍攝時間。GPS 若啟用，固定處理整次掃描。"
+        case "選擇寫入方式": return "預設只補缺漏。明確覆寫才會統一現有 EXIF 與 XMP 偏移；Sony 相容模式允許已知的內部位置指標重排。"
+        case "選擇輸出位置": return "副本保留來源；替換原檔會先保存照片與相關 sidecar 備份。"
+        case "時區處理範圍": return "只限制時區處理；GPS 永遠以整次掃描到的相片為對象。"
+        default: return "可在這裡調整處理設定。"
         }
     }
 

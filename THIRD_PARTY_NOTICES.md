@@ -19,3 +19,9 @@ Upstream: https://github.com/exiftool/exiftool/tree/2200871d9cef988051d2a99d67df
 
 ExifTool runs as a separate process using macOS /usr/bin/perl. No Perl binary
 or additional runtime dependency is redistributed by this project.
+
+The image compression tab embeds NEXPRESS browser assets and third-party image
+codecs. Their component inventory and provenance are in
+`CompressionWeb/THIRD_PARTY_NOTICES`, also included in the App resources. HEIF
+encoding and decoding use macOS ImageIO; no third-party HEIF converter is
+bundled.

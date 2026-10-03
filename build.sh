@@ -22,7 +22,9 @@ fi
 ./scripts/prepare-exiftool.sh
 bash ./scripts/prepare-icon.sh
 mkdir -p "$PROJECT_DIR/dist"
-APP_STAGE="$(mktemp -d "$PROJECT_DIR/dist/native-build.XXXXXX")"
+# Build outside FileProvider-managed Documents so Finder attributes cannot be
+# reattached between xattr cleanup and code signing.
+APP_STAGE="$(mktemp -d /tmp/phototimezone-native-build.XXXXXX)"
 APP_PATH="$APP_STAGE/相片時區修改器.app"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
@@ -39,16 +41,42 @@ fi
 /bin/cp -R app/Localization/zh-Hant-TW.lproj "$APP_PATH/Contents/Resources/"
 ./scripts/stage-runtime.sh "$PROJECT_DIR/.build/vendor-exiftool" "$APP_PATH/Contents/Resources/ExifTool"
 /bin/cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/"
+/bin/cp -R CompressionWeb "$APP_PATH/Contents/Resources/"
 /bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"
 /usr/bin/strip -x "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
+# Copied browser assets can inherit Finder provenance/resource-fork attributes,
+# which codesign rejects. Clear them only from this disposable staging bundle.
+/usr/bin/xattr -cr "$APP_PATH"
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --strict "$APP_PATH"
+ZIP_STAGE="$APP_STAGE/PhotoTimezone-macOS-local.zip"
+/usr/bin/ditto -c -k --norsrc --keepParent "$APP_PATH" "$ZIP_STAGE"
+ZIP_VERIFY="$(mktemp -d /tmp/phototimezone-zip-verify.XXXXXX)"
+/usr/bin/ditto -x -k "$ZIP_STAGE" "$ZIP_VERIFY"
+/usr/bin/codesign --verify --strict "$ZIP_VERIFY/相片時區修改器.app"
+if [[ "$(/usr/bin/lipo -archs "$ZIP_VERIFY/相片時區修改器.app/Contents/MacOS/PhotoTimezoneApp")" != "arm64" ]]; then
+  echo "ZIP 內 App 架構不是 arm64。" >&2
+  exit 1
+fi
+/bin/rm -rf "$ZIP_VERIFY"
 FINAL_APP="$PROJECT_DIR/dist/相片時區修改器.app"
+FINAL_ZIP="$PROJECT_DIR/dist/PhotoTimezone-macOS-local.zip"
+if [[ -e "$FINAL_ZIP" ]]; then
+  /bin/mv "$FINAL_ZIP" "$PROJECT_DIR/dist/PhotoTimezone-macOS-local.previous-$(/usr/bin/uuidgen).zip"
+fi
+/bin/mv "$ZIP_STAGE" "$FINAL_ZIP"
 if [[ -e "$FINAL_APP" ]]; then
   # Preserve the previous working app until the new build has succeeded.
   /bin/mv "$FINAL_APP" "$PROJECT_DIR/dist/相片時區修改器.previous-$(/usr/bin/uuidgen).app"
 fi
 /bin/mv "$APP_PATH" "$FINAL_APP"
+# FileProvider-managed Documents folders may reattach FinderInfo even after
+# this check. The ZIP above was extracted and strictly verified outside it.
+/usr/bin/xattr -d com.apple.FinderInfo "$FINAL_APP" 2>/dev/null || true
+if ! /usr/bin/codesign --verify --strict "$FINAL_APP"; then
+  echo "Documents 的 FileProvider 重新附加了 App 屬性；請使用已驗證的 ZIP。" >&2
+fi
 /bin/rmdir "$APP_STAGE"
 echo "已建立：$FINAL_APP"
+echo "已驗證的 ZIP：$FINAL_ZIP"

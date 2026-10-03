@@ -26,15 +26,9 @@ final class PhotoViewModel: ObservableObject {
     @Published private(set) var progressSkipped = 0
     @Published private(set) var summary: JobSummary?
     @Published private(set) var reportTitle = "處理報告"
-    @Published var selection: Set<PhotoItem.ID> = [] {
-        didSet {
-            if selection != oldValue {
-                gpsLatitudeInput = ""
-                gpsLongitudeInput = ""
-                gpsAltitudeInput = ""
-            }
-        }
-    }
+    @Published var selection: Set<PhotoItem.ID> = []
+    @Published var gpsEnabled = false
+    @Published var gpsOverwrite = false
     @Published var gpsLatitudeInput = ""
     @Published var gpsLongitudeInput = ""
     @Published var gpsAltitudeInput = ""
@@ -133,7 +127,12 @@ final class PhotoViewModel: ObservableObject {
     var canInspect: Bool { !isRunning && !inputs.isEmpty }
     var previewIsCurrent: Bool { previewSignature == currentSignature }
     var canWrite: Bool {
-        canInspect && !catalogueUpdating && previewIsCurrent && !writableItems.isEmpty
+        canInspect && !catalogueUpdating && previewIsCurrent &&
+            !(gpsEnabled ? allInspectedPhotoItems : writableItems).isEmpty
+    }
+    private var allInspectedPhotoItems: [PhotoItem] {
+        let paths = Set(previewFileURLs.map(\.path))
+        return items.filter { paths.contains($0.url.path) && !$0.publicationUnconfirmed }
     }
     private var writableItems: [PhotoItem] {
         scopedItems.filter { $0.status == .ready && $0.sourceIdentity != nil && !$0.publicationUnconfirmed }
@@ -425,6 +424,15 @@ final class PhotoViewModel: ObservableObject {
     func requestWrite() {
         refreshCatalogue()
         guard canWrite else { return }
+        if gpsEnabled {
+            do {
+                _ = try GPSCoordinate.parse(latitude: gpsLatitudeInput,
+                    longitude: gpsLongitudeInput, altitude: gpsAltitudeInput)
+            } catch {
+                notice = .error("GPS 座標格式錯誤", error.localizedDescription)
+                return
+            }
+        }
         if !replaceOriginals && outputDirectory == nil {
             chooseOutputDirectory(confirmAfterSelection: true)
             return
@@ -434,17 +442,30 @@ final class PhotoViewModel: ObservableObject {
             catch { notice = .error("無法使用這個輸出資料夾", error.localizedDescription); return }
         }
         var placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
-        placement += "\n欄位：固定處理 OffsetTimeOriginal、OffsetTimeDigitized、OffsetTime；日期與鐘點不平移。"
-        placement += "\n僅比對可讀中繼資料；不做影像 HASH。伴隨檔會原樣複製，不同步改寫 XMP 時間。"
+        placement += "\n時區依處理範圍；GPS 固定涵蓋本次掃描的所有相片，搜尋、篩選與選取不縮小 GPS 對象。既有 XMP 將同步更新。"
+        if gpsEnabled { placement += "\nGPS：\(gpsOverwrite ? "明確覆蓋所有相片既有位置" : "只補完全沒有位置的相片")。" }
         if sonyCompatibility {
             placement += "\nSony 相容模式已開啟：僅放行明列的位置指標重排，但無法保證 MakerNotes 私有位元組完全不變。"
         }
-        notice = .writeConfirmation(writableItems.count, offset.value, mode == .replaceAll, placement)
+        notice = .writeConfirmation(gpsEnabled ? allInspectedPhotoItems.count : writableItems.count,
+                                    offset.value, mode == .replaceAll, placement)
     }
 
     func confirmReplace() {
         guard canWrite else { return }
-        let options = WriteOptions(sonyCompatibility: sonyCompatibility)
+        let gps: GPSWriteRequest?
+        if gpsEnabled {
+            do {
+                gps = GPSWriteRequest(coordinate: try GPSCoordinate.parse(
+                    latitude: gpsLatitudeInput, longitude: gpsLongitudeInput,
+                    altitude: gpsAltitudeInput), overwrite: gpsOverwrite)
+            } catch {
+                notice = .error("GPS 座標格式錯誤", error.localizedDescription)
+                return
+            }
+        } else { gps = nil }
+        let options = WriteOptions(sonyCompatibility: sonyCompatibility, gps: gps,
+            timezonePaths: Set(writableItems.map { $0.url.path }))
         if replaceOriginals {
             start(.write(offset: offset, mode: mode, options: options))
         } else if let outputDirectory {
@@ -561,7 +582,9 @@ final class PhotoViewModel: ObservableObject {
             // include missing originals with a readable backup. Never rescan folders.
             let inspectedPaths = Set(previewFileURLs.map(\.path))
             let eligible: [PhotoItem]
-            if case .restore = operation { eligible = scopedItems } else { eligible = writableItems }
+            if case .restore = operation { eligible = scopedItems }
+            else if gpsEnabled { eligible = allInspectedPhotoItems }
+            else { eligible = writableItems }
             jobInputs = eligible.map(\.url).filter { inspectedPaths.contains($0.path) }
             guard !jobInputs.isEmpty else { return }
             includeSubfolders = false
@@ -729,7 +752,7 @@ final class PhotoViewModel: ObservableObject {
         } else if previewIsCurrent {
             phase = "預覽完成，請確認時區與寫入方式"
         } else {
-            phase = "工作完成；再次寫入前請重新掃描預覽"
+            phase = "處理報告已產生"
         }
         if let summary {
             switch operation {

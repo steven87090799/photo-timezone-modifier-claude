@@ -173,6 +173,9 @@ struct CoreRegressionTests {
         #expect(metadata.hasAnyGPS)
         #expect(!metadata.hasCompleteGPSCoordinate)
         metadata.gpsLongitude = "121.56"
+        #expect(!metadata.hasCompleteGPSCoordinate)
+        metadata.gpsLatitudeRef = "N"
+        metadata.gpsLongitudeRef = "E"
         #expect(metadata.hasCompleteGPSCoordinate)
 
         var xmpOnly = PhotoMetadata(dateTimeOriginal: nil, offsetOriginal: nil, offsetDigitized: nil,

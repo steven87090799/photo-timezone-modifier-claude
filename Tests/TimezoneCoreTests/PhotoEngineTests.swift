@@ -1128,18 +1128,102 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         }
     }
 
-    @Test func testConflictingXMPIsReportedAndNeverRewritten() async throws {
+    @Test func testConflictingXMPBlocksFillMissingAndNeverRewrites() async throws {
         let photo = try makeSeededPhoto("conflict.jpg")
         expectEqual(try tool.execute(["-overwrite_original", "-XMP-exif:DateTimeOriginal=\(originalDate)+09:00", photo.path]).status, 0)
         let before = try tool.snapshot(photo)
-        let rows = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), succeeded: 1)
+        let rows = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing)), failed: 1)
         let after = try tool.snapshot(photo)
-        expectEqual(after.embeddedTags["XMP-exif:DateTimeOriginal"], before.embeddedTags["XMP-exif:DateTimeOriginal"])
-        expectTrue(rows[0].metadata?.compatibilityIssues.contains { $0.contains("conflict") } == true)
+        expectEqual(after.embeddedTags, before.embeddedTags)
+        expectTrue(rows[0].detail.contains("時區衝突"))
         assertDates(after.metadata)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll)), succeeded: 1)
+        let overwritten = try tool.snapshot(photo)
+        expectTrue(overwritten.embeddedTags.contains { key, value in
+            key.hasPrefix("XMP-exif:") && key.hasSuffix(":DateTimeOriginal") &&
+                value.contains("06:07:08+08:00")
+        })
     }
 
-    @Test func testSharedXMPAndON1SidecarsAreCopiedOnceAndUnchanged() async throws {
+    @Test func testEmbeddedXMPMissingOffsetIsFilledWithoutChangingClock() async throws {
+        let photo = try makeSeededPhoto("embedded-date.jpg")
+        expectEqual(try tool.execute(["-overwrite_original",
+            "-XMP-exif:DateTimeOriginal=2021-04-05T06:07:08", photo.path]).status, 0)
+        _ = try assertJob(await run([photo], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .fillMissing)), succeeded: 1)
+        let after = try tool.snapshot(photo)
+        assertOffsets(after.metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
+        let xmpDates = after.embeddedTags.filter {
+            $0.key.hasPrefix("XMP-exif:") && $0.key.hasSuffix(":DateTimeOriginal")
+        }
+        expectTrue(xmpDates.values.allSatisfy { $0.contains("06:07:08+08:00") })
+        expectTrue(!xmpDates.isEmpty)
+    }
+
+    @Test func testBatchGPSAndExistingXMPSidecarCommitTogether() async throws {
+        let photo = try makeSeededPhoto("xmp-bundle/photo.jpg")
+        let sidecar = try makeFile("xmp-bundle/photo.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="2021-04-05T06:07:08"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let photoBytes = try Data(contentsOf: photo)
+        let sidecarBytes = try Data(contentsOf: sidecar)
+        let output = try makeDirectory("xmp-bundle-output")
+        let gps = try GPSCoordinate(latitude: 25.033, longitude: 121.5654)
+        let options = WriteOptions(gps: GPSWriteRequest(coordinate: gps, overwrite: false))
+        _ = try assertJob(await run([photo], operation: .writeCopy(offset: UTCOffset(minutes: 480),
+            mode: .fillMissing, destination: output, sourceRoots: [photo.deletingLastPathComponent()],
+            options: options)), succeeded: 1)
+        let copy = output.appendingPathComponent("xmp-bundle/photo.jpg")
+        let xmpCopy = output.appendingPathComponent("xmp-bundle/photo.xmp")
+        let metadata = try tool.inspect(copy).0
+        assertOffsets(metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
+        expectTrue(metadata.hasCompleteGPSCoordinate)
+        let xmp = try tool.readSidecar(xmpCopy)
+        expectTrue(xmp.hasGPS)
+        expectTrue(xmp.dates["XMP-exif:DateTimeOriginal"]?.hasSuffix("+08:00") == true)
+        expectEqual(try Data(contentsOf: photo), photoBytes)
+        expectEqual(try Data(contentsOf: sidecar), sidecarBytes)
+    }
+
+    @Test func testGPSOverwriteSynchronizesEXIFEmbeddedXMPAndSidecar() async throws {
+        let photo = try makeSeededPhoto("gps-overwrite/photo.jpg")
+        let seeded = try tool.execute([
+            "-overwrite_original",
+            "-GPS:GPSLatitude=35", "-GPS:GPSLatitudeRef=N",
+            "-GPS:GPSLongitude=139", "-GPS:GPSLongitudeRef=E",
+            "-XMP-exif:GPSLatitude=35", "-XMP-exif:GPSLongitude=139",
+            "-XMP-dc:Description=Keep this edit", photo.path
+        ])
+        expectEqual(seeded.status, 0)
+        let sidecar = try makeFile("gps-overwrite/photo.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" exif:GPSLatitude="35" exif:GPSLongitude="139" dc:description="Keep sidecar edit"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let originalPhoto = try Data(contentsOf: photo)
+        let originalSidecar = try Data(contentsOf: sidecar)
+        let output = try makeDirectory("gps-overwrite-output")
+        let newLocation = try GPSCoordinate(latitude: -33.8688, longitude: 151.2093,
+            altitudeMeters: -12.5)
+        let options = WriteOptions(gps: GPSWriteRequest(coordinate: newLocation, overwrite: true),
+            timezonePaths: [])
+        _ = try assertJob(await run([photo], operation: .writeCopy(offset: UTCOffset(minutes: 480),
+            mode: .fillMissing, destination: output, sourceRoots: [photo.deletingLastPathComponent()],
+            options: options)), succeeded: 1)
+        let copy = output.appendingPathComponent("gps-overwrite/photo.jpg")
+        let xmpCopy = output.appendingPathComponent("gps-overwrite/photo.xmp")
+        let metadata = try tool.inspect(copy).0
+        expectTrue(metadata.hasCompleteGPSCoordinate)
+        let embedded = try tool.snapshot(copy).embeddedTags
+        try MetadataVerifier.verifyXMPCoordinate(tags: embedded, coordinate: newLocation)
+        let sidecarTags = try tool.readSidecar(xmpCopy).tags
+        try MetadataVerifier.verifyXMPCoordinate(tags: sidecarTags, coordinate: newLocation)
+        expectEqual(embedded["XMP-dc:Description"], try tool.snapshot(photo).embeddedTags["XMP-dc:Description"])
+        expectEqual(sidecarTags["XMP-dc:Description"], try tool.readSidecar(sidecar).tags["XMP-dc:Description"])
+        expectEqual(try Data(contentsOf: photo), originalPhoto)
+        expectEqual(try Data(contentsOf: sidecar), originalSidecar)
+    }
+
+    @Test func testSharedXMPSidecarFailsBeforePublishingEitherPhoto() async throws {
         let root = try makeDirectory("sidecars")
         let first = try makeSeededPhoto("sidecars/shared.jpg")
         let second = try makeSeededPhoto("sidecars/shared.tiff", format: .tiff)
@@ -1150,11 +1234,11 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let originals = try [first, second, xmp, on1].map { try Data(contentsOf: $0) }
         let output = try makeDirectory("sidecar-output")
         let rows = try assertJob(await run([first, second], operation: .writeCopy(offset: UTCOffset(minutes: 480), mode: .fillMissing,
-            destination: output, sourceRoots: [root])), succeeded: 2)
+            destination: output, sourceRoots: [root])), failed: 2)
         for (url, bytes) in zip([first, second, xmp, on1], originals) { expectEqual(try Data(contentsOf: url), bytes) }
-        expectEqual(try Data(contentsOf: output.appendingPathComponent("sidecars/shared.xmp")), originals[2])
-        expectEqual(try Data(contentsOf: output.appendingPathComponent("sidecars/shared.on1")), originals[3])
-        expectTrue(rows.allSatisfy { $0.outputMetadata?.compatibilityIssues.contains { $0.contains("conflict") } == true })
+        expectFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("sidecars/shared.jpg").path))
+        expectFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("sidecars/shared.tiff").path))
+        expectTrue(rows.allSatisfy { $0.detail.contains("共用同一個 XMP sidecar") })
     }
 
     @Test func testSidecarCollisionDoesNotPublishThePhoto() async throws {
