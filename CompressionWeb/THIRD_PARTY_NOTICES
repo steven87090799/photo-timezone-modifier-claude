@@ -15,8 +15,6 @@ Component                              Version     Declared license / source
   libwebp codec                                     BSD-3-Clause upstream
 @jsquash/avif                          1.1.2       Apache-2.0; github.com/jamsinclair/jSquash
   libavif / libaom codecs                           BSD-family upstream licenses
-@jsquash/jxl                           1.3.0       Apache-2.0; github.com/jamsinclair/jSquash
-  JPEG XL codec                                     BSD-3-Clause upstream
 piexifjs                               1.0.6       MIT; github.com/hMatoba/piexifjs
   note: bundled API reports 1.0.4 internally
 
@@ -32,6 +30,8 @@ Build provenance
 
 - The NEXPRESS web UI, fonts, icons, Service Worker and JSZip are not bundled.
   The macOS UI is native SwiftUI; ZIP output uses system ditto.
+- JPEG XL encoding uses the app's native libjxl 0.12.0 bridge, not WebAssembly.
+  Its runtime libraries and license texts are bundled in the app's JXL folder.
 
 @jsquash/oxipng 2.3.0 added for effective PNG effort control (single-thread WASM).
 Source: https://registry.npmjs.org/@jsquash/oxipng/-/oxipng-2.3.0.tgz

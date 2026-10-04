@@ -52,7 +52,7 @@ struct CompressionView: View {
                         .help("在下一次加入資料夾時，同時搜尋其中的子資料夾。")
                     if model.isImporting { ProgressView("正在讀取影像…").controlSize(.small) }
                     Divider()
-                    heading("02", "壓縮設定", help: "品質及格式套用到整批影像。預覽會以縮小影像試算；正式輸出保留完整尺寸。")
+                    heading("02", "壓縮設定", help: "品質及格式套用到整批影像。預覽會完整編碼目前選取的照片，顯示實際大小；開始批次時會重用這個輸出。")
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                         ForEach(CompressionFormat.allCases) { format in
                             Button { model.format = format } label: {
@@ -66,7 +66,7 @@ struct CompressionView: View {
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(model.format == format ? Color.accentColor : .clear, lineWidth: 1))
                             .help(format.hint)
                             .accessibilityIdentifier("compressionFormat-" + format.fileExtension)
-                            .disabled(format != .jpeg && model.host.isReady && !model.host.formats.contains(format.mime))
+                            .disabled(format != .jpeg && format != .jxl && model.host.isReady && !model.host.formats.contains(format.mime))
                         }
                     }
                     HStack {
@@ -179,7 +179,7 @@ struct CompressionView: View {
                     Text("\(item.width) × \(item.height) · \(CompressionModel.bytes(item.originalBytes))").font(.caption).foregroundStyle(.secondary)
                     imagePanel(model.originalPreview, title: "原始影像")
                     imagePanel(model.compressedPreview, title: model.previewIsActual ? "實際輸出" : "壓縮預覽")
-                    if model.previewLoading { HStack { ProgressView().controlSize(.small); Text("產生預覽與估算…").font(.caption) } }
+                    if model.previewLoading { HStack { ProgressView().controlSize(.small); Text("產生完整壓縮預覽…").font(.caption) } }
                     if let size = model.estimate {
                         HStack {
                             Text(model.previewIsActual ? "輸出大小" : "估算大小").font(.callout)
@@ -187,7 +187,7 @@ struct CompressionView: View {
                             Text((model.previewIsActual ? "" : "約 ") + CompressionModel.bytes(size)).font(.callout.monospacedDigit().weight(.semibold))
                         }
                         let saved = (1 - Double(size) / Double(max(1, item.originalBytes))) * 100
-                        Text(saved >= 0 ? String(format: "減少約 %.1f%%", saved) : String(format: "增加約 %.1f%%", -saved))
+                        Text(saved >= 0 ? String(format: "減少 %.1f%%", saved) : String(format: "增加 %.1f%%", -saved))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Text(model.previewNote).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

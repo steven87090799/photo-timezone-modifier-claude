@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+import TimezoneCore
 
 enum CompressionFormat: String, CaseIterable, Identifiable {
     case jpeg = "JPEG", png = "PNG", webp = "WebP", avif = "AVIF", heif = "HEIF", jxl = "JPEG XL"
@@ -16,7 +17,7 @@ enum CompressionFormat: String, CaseIterable, Identifiable {
         switch self { case .jpeg: return "jpg"; case .png: return "png"; case .webp: return "webp"
         case .avif: return "avif"; case .heif: return "heic"; case .jxl: return "jxl" }
     }
-    var preservesRGBProfile: Bool { ![.avif, .jxl].contains(self) }
+    var preservesRGBProfile: Bool { self != .avif }
     var hint: String {
         switch self {
         case .jpeg: return "一般 .jpg；原生 Jpegli 漸進式壓縮，macOS／Windows 均可開啟。品質 100 仍為有損，透明區域轉白底。"
@@ -24,7 +25,7 @@ enum CompressionFormat: String, CaseIterable, Identifiable {
         case .webp: return "網站圖片；保留透明通道。"
         case .avif: return "較小的照片檔案；編碼較慢，像素使用 sRGB。"
         case .heif: return "macOS 原生 HEVC 編碼；適合 Apple 裝置。"
-        case .jxl: return "品質 100 為像素無損；預覽與其他軟體相容性依系統支援而定。"
+        case .jxl: return "原生 libjxl 編碼；品質 100 為像素無損。高解析照片會自動降低並行數。"
         }
     }
 }
@@ -55,6 +56,8 @@ struct CompressionItem: Identifiable {
 
 @MainActor
 final class CompressionModel: ObservableObject {
+    static let jpegEncoderPreferenceVersion = "jpegli-v1"
+
     let host = CompressionHost()
     @Published var items: [CompressionItem] = []
     @Published var selection: UUID? { didSet { updatePreview() } }
@@ -74,7 +77,7 @@ final class CompressionModel: ObservableObject {
     @Published var originalPreview: NSImage?
     @Published var compressedPreview: NSImage?
     @Published var estimate: Int64?
-    @Published var previewNote = "選取圖片，查看預覽與大小估算"
+    @Published var previewNote = "選取圖片，查看完整壓縮結果與輸出大小"
     @Published var previewLoading = false
     @Published var previewIsActual = false
     @Published var showingComparison = false
@@ -89,6 +92,15 @@ final class CompressionModel: ObservableObject {
     @Published var outputDirectory: URL?
     private var subscriptions: Set<AnyCancellable> = []
     private var previewTask: Task<Void, Never>?
+    private struct PreviewCache {
+        let source: URL
+        let identity: FileIdentity
+        let format: CompressionFormat
+        let quality: Int
+        let result: CompressionEngineResult
+        let elapsed: TimeInterval
+    }
+    private var previewCache: PreviewCache?
     private var exportTask: Task<Void, Never>?
     private var batchTask: Task<Void, Never>?
     private let webhook = CompressionWebhook()
@@ -97,16 +109,36 @@ final class CompressionModel: ObservableObject {
     @Published var exportStatus = ""
 
     init() {
-        format = CompressionFormat(rawValue: UserDefaults.standard.string(forKey: "nativeCompressionFormat") ?? "") ?? .jpeg
-        let savedQuality = UserDefaults.standard.double(forKey: "nativeCompressionQuality")
-        quality = savedQuality > 0 ? min(100, max(1, savedQuality)) : 82
-        let savedParallelism = UserDefaults.standard.integer(forKey: "nativeCompressionParallelism")
+        let defaults = UserDefaults.standard
+        format = CompressionFormat(rawValue: defaults.string(forKey: "nativeCompressionFormat") ?? "") ?? .jpeg
+        let savedQuality: Double? = defaults.object(forKey: "nativeCompressionQuality") == nil
+            ? nil : defaults.double(forKey: "nativeCompressionQuality")
+        let initialQuality = Self.qualityForCurrentJPEGEncoder(
+            savedQuality: savedQuality,
+            encoderVersion: defaults.string(forKey: "nativeCompressionJPEGEncoder")
+        )
+        quality = initialQuality
+        defaults.set(initialQuality, forKey: "nativeCompressionQuality")
+        defaults.set(Self.jpegEncoderPreferenceVersion, forKey: "nativeCompressionJPEGEncoder")
+        let savedParallelism = defaults.integer(forKey: "nativeCompressionParallelism")
         parallelism = savedParallelism > 0 ? min(4, savedParallelism) : 2
-        webhookURL = UserDefaults.standard.string(forKey: "nativeCompressionWebhookURL") ?? ""
+        webhookURL = defaults.string(forKey: "nativeCompressionWebhookURL") ?? ""
         host.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
         host.$isReady.dropFirst().sink { [weak self] ready in
             if ready { Task { @MainActor in self?.updatePreview() } }
         }.store(in: &subscriptions)
+    }
+
+    static func qualityForCurrentJPEGEncoder(savedQuality: Double?, encoderVersion: String?) -> Double {
+        guard let savedQuality, savedQuality > 0 else { return 86 }
+        let clamped = min(100, max(1, savedQuality))
+        // 82 was the previous MozJPEG default. The real-photo comparison
+        // calibrated Jpegli 86 to at least that visual quality; preserve custom
+        // slider choices and only migrate the known shipped default.
+        if encoderVersion != jpegEncoderPreferenceVersion, abs(savedQuality - 82) < 0.001 {
+            return 86
+        }
+        return clamped
     }
 
     func setActive(_ active: Bool) {
@@ -116,12 +148,12 @@ final class CompressionModel: ObservableObject {
             previewTask?.cancel()
             previewLoading = false
             originalPreview = nil; compressedPreview = nil
-            if !isRunning { host.cancelAll(); host.releaseRuntime() }
+            if !isRunning { discardPreviewCache(); host.cancelAll(); host.releaseRuntime() }
         }
     }
 
     private func prepareSelectedFormat() {
-        if format == .jpeg {
+        if format == .jpeg || format == .jxl {
             if !isRunning { host.releaseRuntime() }
         } else { host.loadIfNeeded() }
     }
@@ -214,6 +246,7 @@ final class CompressionModel: ObservableObject {
     func clear() {
         guard !isRunning, !isExporting, !isImporting else { return }
         previewTask?.cancel(); host.cancelAll()
+        discardPreviewCache()
         let results = items.compactMap { $0.result?.url.deletingLastPathComponent() }
         exportStatus = ""; webhookStatus = ""
         items = []; selection = nil; originalPreview = nil; compressedPreview = nil; estimate = nil
@@ -223,16 +256,24 @@ final class CompressionModel: ObservableObject {
     func removeSelected() {
         guard !isRunning, !isExporting, !isImporting, let item = selected else { return }
         previewTask?.cancel(); host.cancelAll()
+        if previewCache?.source.path == item.source.path { discardPreviewCache() }
         if let directory = item.result?.url.deletingLastPathComponent() { Task.detached { try? FileManager.default.removeItem(at: directory) } }
         items.removeAll { $0.id == item.id }; selection = items.first?.id
     }
 
     func updatePreview() {
         previewTask?.cancel()
+        if !isRunning && previewLoading { host.cancelAll() }
         guard isActive else { return }
         previewLoading = false; previewIsActual = false
-        guard let item = selected else { originalPreview = nil; compressedPreview = nil; estimate = nil; return }
+        guard let item = selected else {
+            discardPreviewCache()
+            originalPreview = nil; compressedPreview = nil; estimate = nil
+            return
+        }
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
+        let cached = matchingPreviewCache(for: item, format: chosenFormat, quality: chosenQuality)
+        if previewCache != nil && cached == nil { discardPreviewCache() }
         previewTask = Task {
             let original = await Task.detached { CompressionImages.thumbnail(item.source) }.value
             guard !Task.isCancelled else { return }
@@ -247,24 +288,51 @@ final class CompressionModel: ObservableObject {
                 previewLoading = false
                 return
             }
+            if let cached {
+                let actualPreview = await Task.detached {
+                    CompressionImages.thumbnail(cached.result.url)
+                }.value
+                guard !Task.isCancelled else { return }
+                compressedPreview = actualPreview
+                previewIsActual = true
+                estimate = cached.result.bytes
+                previewNote = actualPreview == nil ? "此系統無法預覽輸出格式；檔案仍可儲存。" : "顯示完整影像輸出；開始批次時會重用此結果。"
+                previewLoading = false
+                return
+            }
             compressedPreview = nil; estimate = nil
             guard !isRunning, host.isAvailable(chosenFormat) else { previewNote = host.isAvailable(chosenFormat) ? "壓縮完成後顯示實際結果" : "正在準備壓縮引擎…"; return }
             previewLoading = true; previewNote = "正在產生預覽…"
+            var generated: CompressionEngineResult?
+            var retained = false
+            defer {
+                if !retained, let generated {
+                    let directory = generated.url.deletingLastPathComponent()
+                    Task.detached { try? FileManager.default.removeItem(at: directory) }
+                }
+            }
             do {
                 try await Task.sleep(nanoseconds: 450_000_000)
                 try Task.checkCancellation()
-                host.cancelAll()
-                let result = try await host.perform(source: item.source, format: chosenFormat, quality: chosenQuality, preview: true)
-                defer { try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent()) }
+                let identity = try await Task.detached { try FileIdentity.read(item.source) }.value
+                let started = Date()
+                let result = try await host.perform(source: item.source, format: chosenFormat, quality: chosenQuality, preview: false)
+                generated = result
                 try Task.checkCancellation()
-                let sampledPreview = await Task.detached {
-                    CompressionImages.thumbnail(result.url, profile: chosenFormat.preservesRGBProfile ? CompressionImages.colorSpace(item.source, preserveOriginal: true) : nil)
+                try identity.verify(item.source)
+                guard isActive, selection == item.id, format == chosenFormat,
+                      Int(quality.rounded()) == chosenQuality else { return }
+                let actualPreview = await Task.detached {
+                    CompressionImages.thumbnail(result.url)
                 }.value
                 try Task.checkCancellation()
-                compressedPreview = sampledPreview
-                let pixels = Double(max(1, item.width * item.height)), sample = Double(max(1, result.width * result.height))
-                estimate = Int64(Double(result.bytes) * pixels / sample)
-                previewNote = "以最長邊 900 px 試算；完整輸出大小可能不同\(compressedPreview == nil ? "，此格式無法視覺預覽" : "")"
+                previewCache = PreviewCache(source: item.source, identity: identity, format: chosenFormat,
+                    quality: chosenQuality, result: result, elapsed: Date().timeIntervalSince(started))
+                retained = true
+                compressedPreview = actualPreview
+                previewIsActual = true
+                estimate = result.bytes
+                previewNote = actualPreview == nil ? "此系統無法預覽輸出格式；完整輸出大小已取得。" : "顯示完整影像輸出；開始批次時會重用此結果。"
                 previewLoading = false
             } catch {
                 guard !Task.isCancelled else { return }
@@ -282,20 +350,39 @@ final class CompressionModel: ObservableObject {
         previewTask?.cancel(); host.cancelAll()
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
         let largestPixels = items.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
-        let bytesPerPixel = chosenFormat == .jxl ? 32 : chosenFormat == .avif ? 24 : 20
-        let budget = min(512 * 1024 * 1024, max(128 * 1024 * 1024, Int(ProcessInfo.processInfo.physicalMemory / 16)))
-        let concurrency = min(parallelism, max(1, budget / max(1, largestPixels * bytesPerPixel)))
-        let ids = items.map(\.id)
+        let concurrency = Self.concurrencyLimit(format: chosenFormat, requested: parallelism,
+            pixelCount: largestPixels, physicalMemory: ProcessInfo.processInfo.physicalMemory)
+        let reusablePreview = selected.flatMap { matchingPreviewCache(for: $0, format: chosenFormat, quality: chosenQuality) }
+        if previewCache != nil && reusablePreview == nil { discardPreviewCache() }
         for index in items.indices {
-            if let result = items[index].result { try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent()) }
-            items[index].result = nil; items[index].state = .pending; items[index].progress = 0
+            let reusesPreview = reusablePreview?.source.path == items[index].source.path
+            if let result = items[index].result,
+               !reusesPreview || result.url != reusablePreview?.result.url {
+                try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent())
+            }
+            items[index].result = reusesPreview ? reusablePreview?.result : nil
+            items[index].state = reusesPreview ? .success : .pending
+            items[index].progress = reusesPreview ? 100 : 0
+            items[index].phase = reusesPreview ? "完成" : "待處理"
             items[index].format = chosenFormat; items[index].quality = chosenQuality
             items[index].error = nil; items[index].webhookStatus = nil
+            if reusesPreview { items[index].elapsed = reusablePreview?.elapsed ?? 0 }
         }
+        // The batch now owns the preview file. Do not delete its temporary directory.
+        previewCache = nil
+        let ids = items.filter { $0.state == .pending }.map(\.id)
         webhookStatus = ""; exportStatus = "處理中，尚未儲存"
         isRunning = true; isCancelling = false; batchID = UUID().uuidString
         compressedPreview = nil; estimate = nil; previewLoading = false
         batchTask = Task {
+            if let config, let reusablePreview,
+               let index = items.firstIndex(where: { $0.result?.url == reusablePreview.result.url }) {
+                items[index].webhookStatus = "傳送中"
+                do {
+                    try await webhook.send(item: items[index], configuration: config, batchID: batchID)
+                    items[index].webhookStatus = "已傳送"
+                } catch { items[index].webhookStatus = "傳送失敗：\(error.localizedDescription)" }
+            }
             await withTaskGroup(of: Void.self) { group in
                 var next = 0
                 for _ in 0..<min(concurrency, ids.count) {
@@ -320,6 +407,30 @@ final class CompressionModel: ObservableObject {
             if !isActive { host.releaseRuntime() }
             updatePreview()
         }
+    }
+
+    static func concurrencyLimit(format: CompressionFormat, requested: Int,
+                                 pixelCount: Int, physicalMemory: UInt64) -> Int {
+        let bytesPerPixel = format == .jxl ? 32 : format == .avif ? 24 : 20
+        let budget = min(512 * 1024 * 1024,
+            max(128 * 1024 * 1024, Int(physicalMemory / 16)))
+        return min(max(1, requested), max(1, budget / max(1, pixelCount * bytesPerPixel)))
+    }
+
+    private func matchingPreviewCache(for item: CompressionItem, format: CompressionFormat,
+                                      quality: Int) -> PreviewCache? {
+        guard let previewCache, previewCache.source.path == item.source.path,
+              previewCache.format == format, previewCache.quality == quality,
+              FileManager.default.fileExists(atPath: previewCache.result.url.path) else { return nil }
+        do { try previewCache.identity.verify(item.source) } catch { return nil }
+        return previewCache
+    }
+
+    private func discardPreviewCache() {
+        guard let cache = previewCache else { return }
+        previewCache = nil
+        let directory = cache.result.url.deletingLastPathComponent()
+        Task.detached { try? FileManager.default.removeItem(at: directory) }
     }
 
     private func process(_ id: UUID, format: CompressionFormat, quality: Int, webhook config: CompressionWebhook.Configuration?) async {

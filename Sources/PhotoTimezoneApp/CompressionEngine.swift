@@ -77,7 +77,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     }
 
     func isAvailable(_ format: CompressionFormat) -> Bool {
-        format == .jpeg || (isReady && formats.contains(format.mime))
+        format == .jpeg || format == .jxl || (isReady && formats.contains(format.mime))
     }
 
     private func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool,
@@ -102,11 +102,17 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
             let result: [String: Any]
-            if format == .jpeg {
-                onProgress(60, "Jpegli 編碼中")
+            if format == .jpeg || format == .jxl {
+                onProgress(60, format == .jpeg ? "Jpegli 編碼中" : "JPEG XL 原生編碼中")
                 let native = try await Task.detached(priority: .userInitiated) {
-                    try CompressionJPEG.encode(source: stagedSource, output: output, quality: quality,
-                                               preview: preview, cancellation: cancellation)
+                    if format == .jpeg {
+                        return try CompressionJPEG.encode(source: stagedSource, output: output, quality: quality,
+                                                          preview: preview, cancellation: cancellation)
+                    }
+                    let jxl = try CompressionJXL.encode(source: stagedSource, output: output, quality: quality,
+                                                        preview: preview, cancellation: cancellation)
+                    return CompressionJPEG.Result(width: jxl.width, height: jxl.height,
+                                                  originalProfile: jxl.originalProfile, frames: jxl.frames)
                 }.value
                 result = ["width": native.width, "height": native.height, "frames": native.frames,
                           "profileMode": native.originalProfile ? "original" : "srgb"]
@@ -139,7 +145,10 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                 metadata = try await Task.detached(priority: .userInitiated) {
                     try CompressionMetadataTransfer.preserve(source: stagedSource, output: output,
                         width: width, height: height, profile: icc, originalProfile: preserve, exiftoolURL: tool,
-                        cancellation: cancellation)
+                        cancellation: cancellation,
+                        iccVerifier: format == .jxl ? { file, expected in
+                            CompressionJXL.profileMatches(file, expected: expected)
+                        } : nil)
                 }.value
                 if let actualQuality = result["quality"] as? Int, actualQuality != quality {
                     metadata += "；品質 \(quality) 編碼失敗，已以品質 \(actualQuality) 重試（非無損）"

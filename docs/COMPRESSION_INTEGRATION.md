@@ -23,9 +23,11 @@ Webhook 預設關閉，只有啟用後才傳送壓縮檔及摘要。設定支援
 | WebP | libwebp，method 6、sharp YUV | 保留來源 RGB ICC |
 | AVIF | libavif／libaom，speed 6、CQ 品質映射 | 明示轉換為 sRGB |
 | HEIF／HEIC | macOS ImageIO `public.heic` 原生 HEVC | 保留來源 RGB ICC |
-| JPEG XL | libjxl，品質 100 為解碼後像素無損，依尺寸調整 effort | 明示轉換為 sRGB |
+| JPEG XL | 原生 libjxl 0.12.0，品質 100 為解碼後 RGBA 像素無損，依尺寸調整 effort | 保留來源 RGB ICC，並驗證轉換後色彩特性一致 |
 
-HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。Jpegli 編碼器支援 Windows，但此 SwiftUI App 仍為 macOS 專用；固定版本與驗證見 [NATIVE_JPEGLI.md](NATIVE_JPEGLI.md)。JPEG 品質 100 仍是有損，透明輸入轉白底。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。
+HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。JPEG 預設品質為 86；舊版 MozJPEG 預設 82 會遷移到 86，使用者自訂值會保留。JPEG 品質數字不能直接跨編碼器比較；同一張 24 MP 照片的 Jpegli／MozJPEG 大小與 SSIMULACRA2 實測見 [JPEG 方案比較](JPEG_OPTIONS.md)。Jpegli 編碼器支援 Windows，但此 SwiftUI App 仍為 macOS 專用；固定版本與驗證見 [NATIVE_JPEGLI.md](NATIVE_JPEGLI.md)。JPEG 品質 100 仍是有損，透明輸入轉白底。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。原生 libjxl 及其執行期函式庫隨 App 一起簽署和封裝，安裝後不依賴 Homebrew 或 JXL WASM。
+
+PNG 品質滑桿控制 OxiPNG 壓縮努力度，使用平方曲線映射到 0–6 級，讓預設品質 86 對應 effort 4，最高品質 100 才使用 effort 6。努力度只影響處理時間與檔案大小，不影響解碼後像素。本次一張 24 MP 照片在 effort 4 與 5 產生相同 SHA-256 的 35.76 MB PNG，實測時間由 295 秒降到 148 秒；這是該照片的結果，不代表每張圖片都會得到相同收益。AVIF 維持 speed 6；本次試驗 speed 8 沒有穩定縮短時間，因此未保留該調整。
 
 ## 中繼資料與檔案安全
 

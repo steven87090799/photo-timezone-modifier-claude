@@ -65,7 +65,9 @@ enum CompressionImages {
             context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
             // WASM encoders consume straight alpha, while CoreGraphics draws premultiplied alpha.
             let bytes = raw.bindMemory(to: UInt8.self)
-            if ![.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo) {
+            if [.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo) {
+                for index in stride(from: 0, to: count, by: 4) { bytes[index + 3] = 255 }
+            } else {
                 for index in stride(from: 0, to: count, by: 4) {
                     let alpha = Int(bytes[index + 3])
                     if alpha > 0 && alpha < 255 {

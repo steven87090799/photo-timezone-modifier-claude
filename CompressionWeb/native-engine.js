@@ -5,8 +5,9 @@ const workerURL = `./worker.js?v=${encodeURIComponent(build.appVersion)}&b=${enc
 const pool = [];
 let generation = 0;
 
-function createWorker() {
+function createWorker(format = null) {
   const entry = { idleTimer: null, worker: new Worker(workerURL, { type: 'module' }), busy: false, pending: null };
+  entry.format = format;
   let readyResolve, readyReject;
   entry.ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const initTimeout = setTimeout(() => readyReject(new Error('壓縮編碼器載入逾時')), 60000);
@@ -31,7 +32,16 @@ function createWorker() {
 }
 
 async function attempt(options, currentGeneration) {
-  const entry = pool.find(worker => !worker.busy) || createWorker();
+  // A worker retains each loaded WASM encoder. Recycle idle workers when the
+  // user switches format so large PNG/AVIF/JXL heaps do not accumulate.
+  for (let index = pool.length - 1; index >= 0; index--) {
+    const worker = pool[index];
+    if (!worker.busy && worker.format && worker.format !== options.format) {
+      worker.dispose(); pool.splice(index, 1);
+    }
+  }
+  const entry = pool.find(worker => !worker.busy && (!worker.format || worker.format === options.format)) || createWorker(options.format);
+  entry.format = options.format;
   clearTimeout(entry.idleTimer); entry.busy = true;
   try {
     const capabilities = await entry.ready;
@@ -56,7 +66,6 @@ async function attempt(options, currentGeneration) {
       entry.worker.postMessage({ type: options.preview ? 'PREVIEW_ENCODE' : 'COMPRESS',
         id: options.id, file, format: options.format, quality: options.quality,
         rgba, width, height, nativeSourceToken: options.id, profileMode,
-        jxlRecovery: Boolean(options.jxlRecovery),
         modifyTz: false, timeShiftMinutes: 0 }, [rgba]);
     });
     if (currentGeneration !== generation) throw new Error('已取消');

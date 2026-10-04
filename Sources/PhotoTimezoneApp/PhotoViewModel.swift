@@ -260,6 +260,10 @@ final class PhotoViewModel: ObservableObject {
 
     func chooseOutputDirectory(confirmAfterSelection: Bool = false, gpsAfterSelection: GPSCoordinate? = nil) {
         guard !isRunning else { return }
+        guard !inputs.isEmpty else {
+            notice = .error("尚未加入相片", "請先選取相片或資料夾，再設定輸出位置。")
+            return
+        }
         let panel = NSOpenPanel()
         panel.title = "選擇副本輸出資料夾"
         panel.message = "請選獨立於來源的資料夾；不會覆蓋目的地已有的同名檔案。"

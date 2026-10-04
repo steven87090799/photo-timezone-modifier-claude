@@ -246,7 +246,7 @@ private struct PhotoMainView: View {
                         Button(model.outputDirectory == nil ? "選擇副本輸出資料夾…" : "變更副本輸出資料夾…") {
                             model.chooseOutputDirectory()
                         }
-                        .disabled(model.isRunning)
+                        .disabled(model.isRunning || model.inputs.isEmpty)
                         .accessibilityIdentifier("chooseOutputDirectoryButton")
                         if let destination = model.outputDirectory {
                             Text(destination.path).font(.caption2).textSelection(.enabled)

@@ -2,7 +2,7 @@
 // and verified separately by Swift. No timezone, GPS or canvas modifications.
 const moduleURL = new URL(import.meta.url);
 const paths = { 'image/png': 'oxipng', 'image/webp': 'webp',
-  'image/avif': 'avif', 'image/jxl': 'jxl' };
+  'image/avif': 'avif' };
 const modules = new Map();
 async function encoder(format) {
   const name = paths[format];
@@ -31,16 +31,15 @@ async function encode(options) {
   const codec = await encoder(format);
   switch (format) {
     case 'image/png':
-      return codec.encode(image, { level: preview ? 2 : Math.round(quality * 6 / 100) });
+      // OxiPNG's top effort levels cost much more time for small gains. Keep
+      // the slider monotonic while reserving level 6 for its highest setting.
+      return codec.encode(image, { level: preview ? 2 : Math.round((quality / 100) ** 2 * 6) });
     case 'image/webp':
       return codec.encode(image, { quality, method: preview ? 2 : 6, sns_strength: 50, use_sharp_yuv: 1 });
     case 'image/avif':
       return codec.encode(image, { cqLevel: Math.round((1 - quality / 100) * 63),
         speed: preview ? 10 : 6, sharpness: 1, subsample: quality >= 90 ? 3 : 1,
         chromaDeltaQ: true, tune: 2 });
-    case 'image/jxl':
-      return codec.encode(image, { quality, lossless: quality === 100,
-        effort: preview || width * height > 20000000 ? 1 : width * height > 12000000 ? 3 : 5 });
     default: throw new Error('不支援的壓縮格式');
   }
 }
@@ -53,8 +52,7 @@ self.onmessage = async ({ data }) => {
       id: data.id, buffer, format: data.format }, [buffer]);
   } catch (error) {
     self.postMessage({ type: data.type === 'PREVIEW_ENCODE' ? 'PREVIEW_ERROR' : 'TASK_ERROR',
-      id: data.id, error: data.format === 'image/jxl' && data.quality === 100
-        ? 'JPEG XL 無損編碼失敗；請降低品質後重試。未自動改成有損輸出。' : error.message });
+      id: data.id, error: error?.message || '編碼失敗' });
   }
 };
 try {

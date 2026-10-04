@@ -35,6 +35,12 @@ is not linked into the App. JPEG uses conventional 8-bit YCbCr, not XYB.
 The App's `JpegliLicenses` resource directory contains the upstream Jpegli,
 Highway, skcms and libjpeg-turbo notices and source manifest. Jpegli is BSD-3-Clause;
 Highway's license offers Apache-2.0 or BSD-3-Clause. libjpeg-turbo's header notices
-and IJG license are retained. No Homebrew runtime libraries are shipped.
+and IJG license are retained.
 
 Upstream: https://github.com/google/jpegli/tree/031a0077f5799a6041004267fc12b956c1f52a20
+
+JPEG XL uses upstream libjxl 0.12.0 through a small native C++ bridge. Its
+runtime dylibs are copied into `Contents/Frameworks/JXL` and signed with the
+App; its build-time Homebrew installation is not needed by the installed App.
+`JXLLicenses` in App resources contains the libjxl, Highway, Brotli and LittleCMS
+license texts. The full-resolution encoder and ICC profile verifier are included.

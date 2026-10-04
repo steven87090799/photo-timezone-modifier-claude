@@ -31,7 +31,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Ensure native codec build tool
-        run: command -v cmake >/dev/null || brew install cmake
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          pkg-config --exists libjxl || brew install jpeg-xl
+          test "$(pkg-config --modversion libjxl)" = "0.12.0"
 
       - name: Fetch pinned real Sony A7 IV ARW fixture
         shell: bash

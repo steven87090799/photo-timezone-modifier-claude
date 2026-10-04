@@ -16,6 +16,7 @@ export MACOSX_DEPLOYMENT_TARGET=27.0
 
 ./scripts/prepare-exiftool.sh
 python3 ./scripts/prepare-jpegli.py
+./scripts/prepare-jxl.sh
 
 # FileProvider may reattach FinderInfo between compilation and codesign.
 # Keep executable test products outside Documents; caller can override.
