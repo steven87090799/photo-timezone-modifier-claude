@@ -203,7 +203,8 @@ final class ExifTool {
     /// One complete read supplies both the preview fields and the invariant
     /// check. This removes two ExifTool launches per changed photo without
     /// weakening the per-photo comparison or transactional write path.
-    func snapshot(_ file: URL, cancellation: CancellationToken? = nil, strictOffsets: Bool = true) throws -> Snapshot {
+    func snapshot(_ file: URL, cancellation: CancellationToken? = nil, strictOffsets: Bool = true,
+                  forCompression: Bool = false) throws -> Snapshot {
         let output = try execute(["-charset", "filename=UTF8", "-j", "-a", "-G1:4", "-s", "-n", "-U", "-struct", file.path],
                                  timeout: 120, cancellation: cancellation)
         guard output.status == 0,
@@ -212,7 +213,7 @@ final class ExifTool {
             throw PhotoError("無法完整讀取內嵌中繼資料：\(output.text)")
         }
         if let error = record["ExifTool:Error"] { throw PhotoError("中繼資料讀取失敗：\(error)") }
-        var (metadata, warnings) = try decode(record, stderr: output.stderr, strictOffsets: strictOffsets)
+        var (metadata, warnings) = try decode(record, stderr: output.stderr, strictOffsets: strictOffsets, forCompression: forCompression)
         metadata.fileSize = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize.map(Int64.init)
         var result: [String: String] = [:]
         for (key, value) in record {
@@ -354,7 +355,7 @@ final class ExifTool {
         }
     }
 
-    private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool) throws -> (PhotoMetadata, String) {
+    private func decode(_ record: [String: Any], stderr: String, strictOffsets: Bool, forCompression: Bool = false) throws -> (PhotoMetadata, String) {
         if let error = record["ExifTool:Error"] as? String { throw PhotoError(error) }
         let warnings = [record["ExifTool:Warning"] as? String, stderr.isEmpty ? nil : stderr]
             .compactMap { $0 }.joined(separator: "\n")
@@ -369,12 +370,19 @@ final class ExifTool {
                 }
             }
         }
+        func value(_ name: String) -> Any? {
+            if let value = record[name] { return value }
+            guard forCompression else { return nil }
+            // HEIF/AVIF containers can change ExifTool's Copy instance labels.
+            let key = record.keys.sorted().first { MetadataVerifier.canonicalCopyKey($0) == name }
+            return key.flatMap { record[$0] }
+        }
         func text(_ name: String) -> String? {
-            guard let value = record[name] as? String, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            guard let value = value(name) as? String, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
             return value
         }
         func grouped(_ key: String) -> String? {
-            guard let value = record[key] else { return nil }
+            guard let value = value(key) else { return nil }
             let result = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
             return result.isEmpty ? nil : result
         }
@@ -464,8 +472,13 @@ final class ExifTool {
         metadata.imageWidth = grouped("ExifIFD:ExifImageWidth") ?? tag("ExifImageWidth") ?? tag("ImageWidth")
         metadata.imageHeight = grouped("ExifIFD:ExifImageHeight") ?? tag("ExifImageHeight") ?? tag("ImageHeight")
         metadata.fileSize = tag("FileSize").flatMap(Int64.init)
-        guard ["JPEG", "TIFF", "ARW"].contains(metadata.fileType ?? "") else {
-            throw PhotoError("實際檔案格式不是支援的 JPEG／TIFF／ARW，已略過寫入。")
+        let compressionMIMEs: Set<String> = ["image/jpeg", "image/tiff", "image/png", "image/webp", "image/avif",
+            "image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence", "image/jxl", "image/gif"]
+        // ExifTool may describe the same format as "Extended WEBP" after EXIF
+        // is inserted. MIME is stable; timezone editing keeps its strict gate.
+        let supported = forCompression ? compressionMIMEs.contains(metadata.mimeType ?? "") : ["JPEG", "TIFF", "ARW"].contains(metadata.fileType ?? "")
+        guard supported else {
+            throw PhotoError(forCompression ? "壓縮中繼資料格式不支援：\(metadata.fileType ?? "未知")。" : "實際檔案格式不是支援的 JPEG／TIFF／ARW，已略過寫入。")
         }
         metadata.compatibilityIssues = TimeValidation.issues(metadata)
         return (metadata, warnings)

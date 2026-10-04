@@ -1,4 +1,4 @@
-# 相片時區修改器 3.5.0
+# 相片時區修改器 3.5.1
 
 原生 macOS SwiftUI 工具。修圖前在「相片處理」批次處理 JPEG、TIFF、Sony ARW 的時區與 GPS；修圖匯出後在獨立的「影像壓縮」頁處理輸出圖片。壓縮頁不修改時區或 GPS。
 
@@ -44,9 +44,19 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## 影像壓縮與中繼資料
 
-壓縮頁採用與相片處理一致的原生 SwiftUI 介面：左側設定、中央批次清單與進度、右側預覽與每張結果。保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存、CSV 報告及選用 Webhook。切換分頁會保留工作狀態。HEIF／HEIC 由 macOS ImageIO 原生編解碼。
+壓縮頁採用與相片處理一致的原生 SwiftUI 介面：左側設定、中央批次清單與進度、右側預覽與每張結果。保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存、CSV 報告及選用 Webhook。切換分頁會保留工作狀態；離開壓縮頁且無工作時會釋放引擎。HEIF／HEIC 由 macOS ImageIO 原生編解碼。
 
 輸出時透過內建 ExifTool 複製並核對一般 EXIF、XMP、IPTC 與 ICC，包括原有時區及 GPS；本頁沒有修改時區或 GPS 的控制。JPEG、PNG、WebP、HEIF 優先保留來源 RGB ICC；AVIF、JPEG XL 使用 sRGB 像素與色彩描述，逐張明示轉換。容器不支援或無法核對的欄位會列在結果中，不能視為完整保留；ICC 不符而可能造成錯色時拒絕該張輸出。高位元及動畫輸入仍有限制，詳見 [影像壓縮整合說明](docs/COMPRESSION_INTEGRATION.md)。
+
+### 3.5.1 修復
+
+測試與資源實測見 [3.5.1 驗證紀錄](docs/REPAIR_VALIDATION_3.5.1.md)。
+
+六種輸出與 PNG／HEIF／TIFF 等輸入使用獨立的中繼資料讀取政策，不再受到時區寫入格式限制。XMP 以完整封包複製，保留 ON1 等未知私有欄位；EXIF 合法位置重排與容器的 Copy 編號改變不再誤報遺失，仍比對每個重複值。PNG 努力度已接上 OxiPNG。JPEG 仍為 MozJPEG，替換候選與優缺點見 [JPEG 方案比較](docs/JPEG_OPTIONS.md)，待使用者決定。
+
+相片處理頁不預先啟動 WebKit；只有進入影像壓縮才載入引擎與使用中的編碼器。工作程序閒置 15 秒回收；離開分頁時，在工作結束後釋放 WebKit 及本機服務。縮圖按需載入並設快取上限，並行數依尺寸、格式及記憶體調低。估算不等於整個程式的硬記憶體上限。
+
+「開始壓縮」產生暫存結果，**不會因為選了輸出資料夾就自動儲存**；請按「儲存單張」或「輸出 → 儲存全部」。介面會提示儲存狀態。JPEG XL 品質 100 失敗時明確報錯，不會自動降為品質 99。關閉最後一個視窗會退出程式；仍在寫入時需先停止或等待完成。
 
 ## 復原與異常提交
 
@@ -76,6 +86,6 @@ PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
 
-修改 Swift 後要快速檢查能否編譯，可先執行 `swift build --build-system native -c debug --arch arm64`；它不會重新打包或安裝 App。要自己產生可安裝版再執行 `./build.sh`，解壓 `dist/PhotoTimezone-macOS-local.zip` 後將 App 放進「應用程式」。這樣可把日常修改與完整打包分開，減少不必要的重複建置與等待。推送到 `main` 後 CI 會自行執行完整測試與正式打包；尚未完成的 CI 不代表新版本已可下載。
+修改 Swift 後要快速檢查能否編譯，可先執行 `swift build --scratch-path /private/tmp/PhotoTimezone-debug-$UID -c debug --arch arm64`；它不會重新打包或安裝 App。要自己產生可安裝版再執行 `./build.sh`，解壓 `dist/PhotoTimezone-macOS.zip` 後將 App 放進「應用程式」。這樣可把日常修改與完整打包分開，減少不必要的重複建置與等待。推送到 `main` 後 CI 會自行執行完整測試與正式打包；尚未完成的 CI 不代表新版本已可下載。
 
 實作與驗證界線見 [REPAIR_NOTES_3.5.md](REPAIR_NOTES_3.5.md)。舊版資料見 [歷史文件](docs/README-3.4.1-historical.md)，其 HASH 政策不適用於 3.5.0。

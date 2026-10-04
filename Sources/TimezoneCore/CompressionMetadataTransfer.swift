@@ -6,19 +6,19 @@ public enum CompressionMetadataTransfer {
     public static func preserve(source: URL, output: URL, width: Int, height: Int,
                                 profile: Data?, originalProfile: Bool,
                                 exiftoolURL: URL? = nil, cancellation: CancellationToken? = nil) throws -> String {
-        let tool = ExifTool(url: try exiftoolURL ?? EngineResources.exiftoolURL())
+        let tool = ExifTool(url: try exiftoolURL ?? EngineResources.exiftoolURL(), persistent: true)
         // libjxl emits a raw codestream. Use the standard container so EXIF/XMP
         // can be added without globally ignoring ExifTool's minor errors.
         let isJXL = output.pathExtension.lowercased() == "jxl"
         if isJXL { try wrapJXLCodestream(output) }
         let pinned = try FileIdentity.read(source)
-        let before = try tool.snapshot(source, cancellation: cancellation, strictOffsets: false)
+        let before = try tool.snapshot(source, cancellation: cancellation, strictOffsets: false, forCompression: true)
         let originalICC = try tool.execute(["-b", "-ICC_Profile", source.path], timeout: 120, cancellation: cancellation).stdout
         let expectedICC = originalProfile && !originalICC.isEmpty ? originalICC : profile
         let profileURL = output.deletingLastPathComponent().appendingPathComponent("output-profile.icc")
         defer { try? FileManager.default.removeItem(at: profileURL) }
         var arguments = ["-overwrite_original", "-TagsFromFile", source.path,
-            "-EXIF:all", "-XMP:all", "-IPTC:all", "--ThumbnailImage", "--PreviewImage"]
+            "-EXIF:all", "-MakerNotes", "-XMP", "-IPTC", "--ThumbnailImage", "--PreviewImage"]
         if let expectedICC, !expectedICC.isEmpty, !isJXL {
             try expectedICC.write(to: profileURL, options: .atomic)
             arguments.append("-ICC_Profile<=\(profileURL.path)")
@@ -44,21 +44,22 @@ public enum CompressionMetadataTransfer {
         arguments.append("-XMP-x:XMPToolkit=\(toolkit ?? "")")
         let write = try tool.execute(arguments + [output.path], timeout: 120, cancellation: cancellation)
         guard write.status == 0 else { throw PhotoError("壓縮已完成，但中繼資料無法安全寫入；未接受此輸出。\(write.text)") }
-        let after = try tool.snapshot(output, cancellation: cancellation, strictOffsets: false)
+        let after = try tool.snapshot(output, cancellation: cancellation, strictOffsets: false, forCompression: true)
         try pinned.verify(source)
         let ignored: Set<String> = ["Orientation", "ExifImageWidth", "ExifImageHeight", "ImageWidth", "ImageHeight",
             "XMPToolkit", "ThumbnailImage", "PreviewImage", "ThumbnailOffset", "ThumbnailLength",
             "Compression", "PhotometricInterpretation", "BitsPerSample", "SamplesPerPixel", "RowsPerStrip",
             "StripOffsets", "StripByteCounts", "TileOffsets", "TileByteCounts", "PlanarConfiguration", "YCbCrSubSampling"]
         var missing: [String] = []
-        for (key, value) in before.embeddedTags {
+        func relevant(_ key: String) -> Bool {
             let group = key.split(separator: ":").first.map(String.init) ?? ""
             let tag = key.split(separator: ":").last.map(String.init) ?? ""
-            guard ["IFD0", "ExifIFD", "InteropIFD", "GPS", "IPTC"].contains(group) || group.hasPrefix("XMP") else { continue }
-            guard !ignored.contains(tag) else { continue }
-            let canonical = MetadataVerifier.canonicalCopyKey(key)
-            let matches = after.embeddedTags.filter { MetadataVerifier.canonicalCopyKey($0.key) == canonical }
-            if matches.isEmpty || !matches.values.allSatisfy({ $0 == value }) { missing.append(canonical) }
+            return (["IFD0", "ExifIFD", "InteropIFD", "GPS", "IPTC"].contains(group) || group.hasPrefix("XMP")) && !ignored.contains(tag)
+        }
+        let originalGroups = Dictionary(grouping: before.embeddedTags.filter { relevant($0.key) }, by: { comparisonKey($0.key) })
+        let outputGroups = Dictionary(grouping: after.embeddedTags.filter { relevant($0.key) }, by: { comparisonKey($0.key) })
+        for (key, entries) in originalGroups {
+            if entries.map(\.value).sorted() != outputGroups[key]?.map(\.value).sorted() { missing.append(key) }
         }
         let readICC = try tool.execute(["-b", "-ICC_Profile", output.path], timeout: 120, cancellation: cancellation).stdout
         let iccMatches = expectedICC.map { !$0.isEmpty && $0 == readICC } ?? readICC.isEmpty
@@ -73,6 +74,19 @@ public enum CompressionMetadataTransfer {
         else if originalProfile && iccMatches { color = "已嵌入來源 RGB 色彩描述檔" }
         else { color = iccMatches ? "像素與 ICC 已轉為 sRGB" : "像素使用 sRGB；此容器未寫入 ICC" }
         return metadata + "；" + color
+    }
+
+    // Only these EXIF tags may legally move between the main and Exif IFD.
+    // XMP namespaces and duplicate instances remain distinct; no general
+    // same-name matching that could hide a missing proprietary field.
+    static func comparisonKey(_ key: String) -> String {
+        let canonical = MetadataVerifier.canonicalCopyKey(key)
+        let parts = canonical.split(separator: ":")
+        let relocatable: Set<String> = ["ImageDescription", "Make", "Model", "XResolution", "YResolution", "ResolutionUnit", "ModifyDate", "Software", "Artist", "Copyright"]
+        if parts.count == 2, ["IFD0", "ExifIFD"].contains(String(parts[0])), relocatable.contains(String(parts[1])) {
+            return "EXIF:\(parts[1])"
+        }
+        return canonical
     }
 
     private static func wrapJXLCodestream(_ url: URL) throws {

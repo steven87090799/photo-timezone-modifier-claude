@@ -2,7 +2,7 @@
 
 ## 操作介面
 
-介面採用相片時區修改器的 SwiftUI 風格，上方固定頁籤沿用主程式。左側提供匯入、六種格式、品質／PNG 壓縮努力度、並行數與輸出設定；中間顯示批次清單、逐張進度與總進度；右側顯示原始圖片、預覽或實際輸出、大小及中繼資料結果。說明放在問號懸浮提示及「格式與中繼資料說明」。切換分頁不會重載引擎或清空批次。
+介面採用相片時區修改器的 SwiftUI 風格，上方固定頁籤沿用主程式。左側提供匯入、六種格式、品質／PNG 壓縮努力度、並行數與輸出設定；中間顯示批次清單、逐張進度與總進度；右側顯示原始圖片、預覽或實際輸出、大小及中繼資料結果。說明放在問號懸浮提示及「格式與中繼資料說明」。切換分頁保留清單及結果；離開分頁且沒有工作時釋放引擎，再次進入時重新載入。
 
 1. 加入多張圖片或資料夾，也可拖入。包含子資料夾選項在加入資料夾時生效。
 2. 選格式、品質與並行數。選取圖片可產生最長邊 900 px 的快速預覽及約略大小；正式輸出維持完整尺寸。預覽部分編碼參數較快，因此估算不是精確承諾。
@@ -14,23 +14,23 @@ Webhook 預設關閉，只有啟用後才傳送壓縮檔及摘要。設定支援
 
 ## 執行引擎與格式
 
-編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。WKWebView 只執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
+編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。WKWebView 只在需要壓縮時執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
 
 | 格式 | 完整輸出 | 色彩處理 |
 | --- | --- | --- |
 | JPEG | MozJPEG，漸進式、Trellis，高品質 4:4:4 | 保留來源 RGB ICC，其他色彩模式轉 sRGB |
 | PNG | OxiPNG，像素無損，努力度 0–6 | 保留來源 RGB ICC |
 | WebP | libwebp，method 6、sharp YUV | 保留來源 RGB ICC |
-| AVIF | libavif／libaom，speed 4、CQ 品質映射 | 明示轉換為 sRGB |
+| AVIF | libavif／libaom，speed 6、CQ 品質映射 | 明示轉換為 sRGB |
 | HEIF／HEIC | macOS ImageIO `public.heic` 原生 HEVC | 保留來源 RGB ICC |
 | JPEG XL | libjxl，品質 100 為解碼後像素無損，依尺寸調整 effort | 明示轉換為 sRGB |
 
-HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。JPEG XL 無損編碼失敗時，以新 Worker 的品質 99 重試，結果會明示非無損降級。
+HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。
 
 ## 中繼資料與檔案安全
 
 - ImageIO 解碼轉正後，以 8 位元 RGBA 在來源 RGB 色彩空間編碼，避免 WebKit canvas 先轉 sRGB 再錯標原 ICC。AVIF／JXL 明確先轉 sRGB，輸出回報此轉換。
-- 內建 ExifTool 複製一般 EXIF、XMP、IPTC、ICC，並比對來源和輸出中的可讀欄位及 ICC 位元組。既有時區、GPS、日期不做重新指定或平移。方向與尺寸欄位配合轉正後像素更新，舊縮圖與預覽不複製。
+- 內建 ExifTool 複製一般 EXIF、完整 XMP 封包、IPTC 封包、ICC，並比對來源和輸出中的可讀欄位及 ICC 位元組。既有時區、GPS、日期不做重新指定或平移。方向與尺寸欄位配合轉正後像素更新，舊縮圖與預覽不複製。
 - 未保留的欄位逐張回報；RGB 原 ICC 無法一致寫入時，拒絕該張結果，避免錯色。相機私有 MakerNote 及不透明二進位欄位不宣稱逐位元驗證。格式能力不足時不顯示「全部保留」。
 - 壓縮不改 `.xmp` sidecar，不重複執行修圖前的時區／GPS 操作。這個頁面的輸入應為修圖後匯出的圖片。
 - 高位元／HDR／RAW／增益圖不保證保留，動畫只輸出第一幀，逐張提示。PNG／JXL 的無損指的是解碼後的 8 位元像素，不是原始檔的可逆封裝。
@@ -49,4 +49,4 @@ npm run check:syntax
 cd ..
 ```
 
-日常修改可用 `swift build --build-system native -c debug --arch arm64` 快速確認編譯；需要可安裝 App 時執行 `./build.sh`，使用 `dist/PhotoTimezone-macOS-local.zip`。這是實際原生介面，不再使用瀏覽器模擬外觀。上傳 `main` 後 CI 會自行打包，不必反覆要求 AI 編譯或等待。
+日常修改可用 `swift build --scratch-path /private/tmp/PhotoTimezone-debug-$UID -c debug --arch arm64` 快速確認編譯；需要可安裝 App 時執行 `./build.sh`，使用 `dist/PhotoTimezone-macOS.zip`。這是實際原生介面，不再使用瀏覽器模擬外觀。上傳 `main` 後 CI 會自行打包，不必反覆要求 AI 編譯或等待。

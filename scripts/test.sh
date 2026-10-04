@@ -16,11 +16,18 @@ export MACOSX_DEPLOYMENT_TARGET=27.0
 
 ./scripts/prepare-exiftool.sh
 
+# FileProvider may reattach FinderInfo between compilation and codesign.
+# Keep executable test products outside Documents; caller can override.
+TEST_ARGS=("$@")
+if [[ " $* " != *" --scratch-path "* && " $* " != *" --scratch-path="* ]]; then
+  TEST_ARGS=(--scratch-path "/private/tmp/PhotoTimezone-tests-$UID" "$@")
+fi
+
 TEST_DEVELOPER_DIR="$(xcode-select -p)"
 TEST_PLUGIN="$TEST_DEVELOPER_DIR/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib"
 
 if [[ -f "$TEST_PLUGIN" ]]; then
-  swift test -Xswiftc -load-plugin-library -Xswiftc "$TEST_PLUGIN" "$@"
+  swift test -Xswiftc -load-plugin-library -Xswiftc "$TEST_PLUGIN" "${TEST_ARGS[@]}"
 else
-  swift test "$@"
+  swift test "${TEST_ARGS[@]}"
 fi

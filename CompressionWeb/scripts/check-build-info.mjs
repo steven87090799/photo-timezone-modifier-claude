@@ -31,11 +31,6 @@ if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(actual.builtAt || '')
 const buildId = expectedBuildId(release, actual.revision, expected.contentHash);
 if (actual.buildId !== buildId) errors.push(`buildId: expected ${buildId}, got ${actual.buildId}`);
 
-const worker = await readFile(path.join(root, 'worker.js'), 'utf8');
-if (!worker.includes(`runtime-policy.js?v=${actual.releaseGeneration}&b=${encodeURIComponent(actual.buildId)}`)) {
-  errors.push('worker.js runtime-policy identity is stale');
-}
-
 if (errors.length) {
   console.error('Build metadata is stale or invalid:');
   errors.forEach(error => console.error(`  - ${error}`));

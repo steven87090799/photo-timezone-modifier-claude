@@ -91,6 +91,9 @@ struct CompressionView: View {
                         Label(model.outputDirectory?.lastPathComponent ?? "選擇輸出資料夾…", systemImage: "folder")
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     }.help(model.outputDirectory?.path ?? "也可等壓縮完成後再選擇儲存位置。")
+                    Text("壓縮後請按「儲存單張」或「輸出 → 儲存全部」。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !model.exportStatus.isEmpty { Text(model.exportStatus).font(.caption).foregroundStyle(.secondary) }
                     HStack {
                         Toggle("Webhook", isOn: $model.webhookEnabled).font(.callout)
                             .help("開啟後，把壓縮檔案及批次摘要傳送到你設定的網址。預設關閉。")
@@ -249,8 +252,7 @@ private struct CompressionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Group {
-                if let image = item.thumbnail { Image(nsImage: image).resizable().scaledToFit() }
-                else { Image(systemName: "photo").foregroundStyle(.secondary) }
+                CompressionThumbnail(source: item.source)
             }.frame(width: 42, height: 42).background(Color.black.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 5))
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.source.lastPathComponent).font(.callout.weight(.medium)).lineLimit(1)
@@ -302,3 +304,28 @@ private struct CompressionComparison: View {
         }
     }
 }
+
+/// List rows load only the visible thumbnails; the shared cache is bounded.
+private struct CompressionThumbnail: View {
+    let source: URL
+    @StateObject private var state = ThumbnailState()
+    @MainActor private static let cache: NSCache<NSURL, NSImage> = {
+        let cache = NSCache<NSURL, NSImage>(); cache.countLimit = 96; cache.totalCostLimit = 4 * 1024 * 1024
+        return cache
+    }()
+    var body: some View {
+        Group {
+            if let image = state.image { Image(nsImage: image).resizable().scaledToFit() }
+            else { Image(systemName: "photo").foregroundStyle(.secondary) }
+        }.task(id: source) {
+            if let cached = Self.cache.object(forKey: source as NSURL) { state.image = cached; return }
+            let loaded = await Task.detached { CompressionImages.thumbnail(source, size: 96) }.value
+            guard !Task.isCancelled, let loaded else { return }
+            Self.cache.setObject(loaded, forKey: source as NSURL, cost: 96 * 96 * 4)
+            state.image = loaded
+        }
+    }
+}
+
+@MainActor
+private final class ThumbnailState: ObservableObject { @Published var image: NSImage? }
