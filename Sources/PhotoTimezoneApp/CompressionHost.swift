@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import Dispatch
 import ImageIO
 import SwiftUI
 import WebKit
@@ -22,6 +23,7 @@ private enum CompressionHostError: LocalizedError {
 final class CompressionLocalServer {
     let port: UInt16
     private let listener: Int32
+    private var listenerSource: DispatchSourceRead?
     private let root: URL
     private let imageQueue = DispatchQueue(label: "tw.steven.phototimezone.compression.image")
     private let maxBodyBytes = 256 * 1024 * 1024
@@ -93,17 +95,35 @@ final class CompressionLocalServer {
             Darwin.close(fd)
             throw CompressionHostError.socket(detail)
         }
+        let flags = fcntl(fd, F_GETFL, 0)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            let detail = String(cString: strerror(errno))
+            Darwin.close(fd)
+            throw CompressionHostError.socket(detail)
+        }
         listener = fd
         port = UInt16(bigEndian: bound.sin_port)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.acceptConnections() }
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd,
+            queue: DispatchQueue(label: "tw.steven.phototimezone.compression.accept", qos: .userInitiated))
+        listenerSource = source
+        source.setEventHandler { [weak self] in self?.acceptConnections() }
+        // Dispatch closes only after its event handler finishes, avoiding FD reuse races.
+        source.setCancelHandler { Darwin.close(fd) }
+        source.resume()
     }
 
-    deinit { Darwin.close(listener) }
+    /// Cancellation releases the listener even when there are no connections.
+    func stop() { listenerSource?.cancel() }
+    deinit { stop() }
 
     private func acceptConnections() {
-        while true {
+        while listenerSource?.isCancelled != true {
             let client = Darwin.accept(listener, nil, nil)
-            if client < 0 { return }
+            if client < 0 { if errno == EINTR { continue }; return }
+            let flags = fcntl(client, F_GETFL, 0)
+            guard flags >= 0, fcntl(client, F_SETFL, flags & ~O_NONBLOCK) >= 0 else {
+                Darwin.close(client); continue
+            }
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 autoreleasepool {
                     var noSignal: Int32 = 1

@@ -6,7 +6,7 @@ const pool = [];
 let generation = 0;
 
 function createWorker() {
-  const entry = { worker: new Worker(workerURL, { type: 'module' }), busy: false, pending: null };
+  const entry = { idleTimer: null, worker: new Worker(workerURL, { type: 'module' }), busy: false, pending: null };
   let readyResolve, readyReject;
   entry.ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const initTimeout = setTimeout(() => readyReject(new Error('壓縮編碼器載入逾時')), 60000);
@@ -25,14 +25,14 @@ function createWorker() {
     const error = new Error(event.message || '壓縮工作程序已中止');
     readyReject(error); entry.pending?.reject(error);
   };
-  entry.dispose = () => { clearTimeout(initTimeout); entry.worker.terminate(); };
+  entry.dispose = () => { clearTimeout(initTimeout); clearTimeout(entry.idleTimer); entry.worker.terminate(); };
   pool.push(entry);
   return entry;
 }
 
 async function attempt(options, currentGeneration) {
   const entry = pool.find(worker => !worker.busy) || createWorker();
-  entry.busy = true;
+  clearTimeout(entry.idleTimer); entry.busy = true;
   try {
     const capabilities = await entry.ready;
     if (!capabilities.formats[options.format]) throw new Error('此格式的編碼器無法使用');
@@ -69,20 +69,21 @@ async function attempt(options, currentGeneration) {
     const index = pool.indexOf(entry);
     if (index >= 0) pool.splice(index, 1);
     throw error;
-  } finally { entry.busy = false; entry.pending = null; }
+  } finally {
+    entry.busy = false; entry.pending = null;
+    if (pool.includes(entry)) entry.idleTimer = setTimeout(() => {
+      if (entry.busy) return;
+      entry.dispose();
+      const index = pool.indexOf(entry);
+      if (index >= 0) pool.splice(index, 1);
+    }, 15000);
+  }
 }
 
 window.compressionEngine = {
   async perform(options) {
     const currentGeneration = generation;
-    try { return await attempt(options, currentGeneration); }
-    catch (error) {
-      if (!options.preview && options.format === 'image/jxl' && options.quality === 100 && currentGeneration === generation) {
-        bridge({ type: 'progress', id: options.id, pct: 5, status: 'JXL 無損失敗，改以品質 99 重試' });
-        return await attempt({ ...options, quality: 99, jxlRecovery: true }, currentGeneration);
-      }
-      throw error;
-    }
+    return attempt(options, currentGeneration);
   },
   cancelAll() {
     generation++;

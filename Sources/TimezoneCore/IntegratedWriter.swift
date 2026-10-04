@@ -369,7 +369,9 @@ enum IntegratedWriter {
     }
 
     private static func parseXMPDate(_ value: String, key: String) throws -> (local: String, offset: String?) {
-        let pattern = #"^([0-9]{4}[-:][0-9]{2}[-:][0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?)(Z|[+-][0-9]{2}:[0-9]{2})?$"#
+        // XMP Date permits minute precision. Preserve its original precision;
+        // appending an offset must not invent seconds or move the local clock.
+        let pattern = #"^([0-9]{4}[-:][0-9]{2}[-:][0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?)(Z|[+-][0-9]{2}:[0-9]{2})?$"#
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
               let localRange = Range(match.range(at: 1), in: value) else {

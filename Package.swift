@@ -12,7 +12,8 @@ let package = Package(
     targets: [
         .target(name: "TimezoneCore"),
         .executableTarget(name: "PhotoTimezoneApp", dependencies: ["TimezoneCore"]),
-        .testTarget(name: "TimezoneCoreTests", dependencies: ["TimezoneCore"])
+        .testTarget(name: "TimezoneCoreTests", dependencies: ["TimezoneCore"]),
+        .testTarget(name: "CompressionAppTests", dependencies: ["PhotoTimezoneApp", "TimezoneCore"])
     ],
     swiftLanguageModes: [.v5]
 )

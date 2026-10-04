@@ -35,7 +35,6 @@ struct CompressionItem: Identifiable {
     let id: UUID
     let source: URL
     let originalBytes: Int64
-    let thumbnail: NSImage?
     let width: Int
     let height: Int
     var state: CompressionState = .pending
@@ -90,6 +89,8 @@ final class CompressionModel: ObservableObject {
     private var batchTask: Task<Void, Never>?
     private let webhook = CompressionWebhook()
     private var batchID = ""
+    private var isActive = false
+    @Published var exportStatus = ""
 
     init() {
         format = CompressionFormat(rawValue: UserDefaults.standard.string(forKey: "nativeCompressionFormat") ?? "") ?? .jpeg
@@ -102,6 +103,17 @@ final class CompressionModel: ObservableObject {
         host.$isReady.dropFirst().sink { [weak self] ready in
             if ready { Task { @MainActor in self?.updatePreview() } }
         }.store(in: &subscriptions)
+    }
+
+    func setActive(_ active: Bool) {
+        isActive = active
+        if active { host.loadIfNeeded(); updatePreview() }
+        else {
+            previewTask?.cancel()
+            previewLoading = false
+            originalPreview = nil; compressedPreview = nil
+            if !isRunning { host.cancelAll(); host.releaseRuntime() }
+        }
     }
 
     var selected: CompressionItem? { items.first { $0.id == selection } }
@@ -140,7 +152,6 @@ final class CompressionModel: ObservableObject {
                     let size = Int64(values.fileSize ?? 0)
                     let properties = CGImageSourceCreateWithURL(source as CFURL, nil).flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
                     var item = CompressionItem(id: UUID(), source: source, originalBytes: size,
-                        thumbnail: CompressionImages.thumbnail(source, size: 96),
                         width: properties?[kCGImagePropertyPixelWidth] as? Int ?? 0,
                         height: properties?[kCGImagePropertyPixelHeight] as? Int ?? 0)
                     if size > 256 * 1024 * 1024 { item.state = .failed; item.error = "來源檔案超過 256 MiB 上限" }
@@ -194,27 +205,32 @@ final class CompressionModel: ObservableObject {
         guard !isRunning, !isExporting, !isImporting else { return }
         previewTask?.cancel(); host.cancelAll()
         let results = items.compactMap { $0.result?.url.deletingLastPathComponent() }
+        exportStatus = ""; webhookStatus = ""
         items = []; selection = nil; originalPreview = nil; compressedPreview = nil; estimate = nil
         Task.detached { for url in results { try? FileManager.default.removeItem(at: url) } }
     }
 
     func removeSelected() {
         guard !isRunning, !isExporting, !isImporting, let item = selected else { return }
-        if let result = item.result { try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent()) }
+        previewTask?.cancel(); host.cancelAll()
+        if let directory = item.result?.url.deletingLastPathComponent() { Task.detached { try? FileManager.default.removeItem(at: directory) } }
         items.removeAll { $0.id == item.id }; selection = items.first?.id
     }
 
     func updatePreview() {
         previewTask?.cancel()
+        guard isActive else { return }
         previewLoading = false; previewIsActual = false
         guard let item = selected else { originalPreview = nil; compressedPreview = nil; estimate = nil; return }
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
         previewTask = Task {
-            originalPreview = await Task.detached { CompressionImages.thumbnail(item.source) }.value
+            let original = await Task.detached { CompressionImages.thumbnail(item.source) }.value
             guard !Task.isCancelled else { return }
+            originalPreview = original
             if let result = item.result, item.state == .success, item.format == chosenFormat, item.quality == chosenQuality {
-                compressedPreview = await Task.detached { CompressionImages.thumbnail(result.url) }.value
+                let actualPreview = await Task.detached { CompressionImages.thumbnail(result.url) }.value
                 guard !Task.isCancelled else { return }
+                compressedPreview = actualPreview
                 previewIsActual = true
                 estimate = result.bytes
                 previewNote = compressedPreview == nil ? "此系統無法預覽輸出格式；檔案仍可儲存。" : "顯示實際壓縮結果"
@@ -231,10 +247,11 @@ final class CompressionModel: ObservableObject {
                 let result = try await host.perform(source: item.source, format: chosenFormat, quality: chosenQuality, preview: true)
                 defer { try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent()) }
                 try Task.checkCancellation()
-                compressedPreview = await Task.detached {
+                let sampledPreview = await Task.detached {
                     CompressionImages.thumbnail(result.url, profile: chosenFormat.preservesRGBProfile ? CompressionImages.colorSpace(item.source, preserveOriginal: true) : nil)
                 }.value
                 try Task.checkCancellation()
+                compressedPreview = sampledPreview
                 let pixels = Double(max(1, item.width * item.height)), sample = Double(max(1, result.width * result.height))
                 estimate = Int64(Double(result.bytes) * pixels / sample)
                 previewNote = "以最長邊 900 px 試算；完整輸出大小可能不同\(compressedPreview == nil ? "，此格式無法視覺預覽" : "")"
@@ -254,8 +271,10 @@ final class CompressionModel: ObservableObject {
         UserDefaults.standard.set(webhookURL, forKey: "nativeCompressionWebhookURL")
         previewTask?.cancel(); host.cancelAll()
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
-        let largestPixels = items.map { max(1, $0.width) * max(1, $0.height) }.max() ?? 1
-        let concurrency = min(parallelism, max(1, 512 * 1024 * 1024 / max(1, largestPixels * 16)))
+        let largestPixels = items.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
+        let bytesPerPixel = chosenFormat == .jxl ? 32 : chosenFormat == .avif ? 24 : 20
+        let budget = min(512 * 1024 * 1024, max(128 * 1024 * 1024, Int(ProcessInfo.processInfo.physicalMemory / 16)))
+        let concurrency = min(parallelism, max(1, budget / max(1, largestPixels * bytesPerPixel)))
         let ids = items.map(\.id)
         for index in items.indices {
             if let result = items[index].result { try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent()) }
@@ -263,6 +282,7 @@ final class CompressionModel: ObservableObject {
             items[index].format = chosenFormat; items[index].quality = chosenQuality
             items[index].error = nil; items[index].webhookStatus = nil
         }
+        webhookStatus = ""; exportStatus = "處理中，尚未儲存"
         isRunning = true; isCancelling = false; batchID = UUID().uuidString
         compressedPreview = nil; estimate = nil; previewLoading = false
         batchTask = Task {
@@ -285,7 +305,9 @@ final class CompressionModel: ObservableObject {
                 catch { webhookStatus = "摘要傳送失敗：\(error.localizedDescription)" }
             }
             isRunning = false; isCancelling = false
+            exportStatus = completed.isEmpty ? "沒有可儲存的壓縮結果" : "壓縮完成，尚未儲存"
             batchTask = nil
+            if !isActive { host.releaseRuntime() }
             updatePreview()
         }
     }
@@ -384,17 +406,18 @@ final class CompressionModel: ObservableObject {
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in
                 guard let self, self.safeDestination(url) else { return }
-                self.export { try Data(report.utf8).write(to: url, options: .atomic) }
+                self.export(successMessage: "已儲存 CSV 報告；圖片須另行儲存") { try Data(report.utf8).write(to: url, options: .atomic) }
             }
         }
     }
 
-    private func export(_ operation: @escaping () throws -> Void) {
+    private func export(successMessage: String = "已儲存輸出", _ operation: @escaping () throws -> Void) {
         guard !isExporting, !isRunning else { return }
         isExporting = true
         exportTask = Task {
             do { try await Task.detached(priority: .userInitiated) { try operation() }.value }
-            catch { notice = error.localizedDescription }
+            catch { notice = error.localizedDescription; exportStatus = "儲存失敗，壓縮結果仍可重新儲存"; isExporting = false; return }
+            exportStatus = successMessage
             isExporting = false
         }
     }

@@ -34,3 +34,8 @@ Build provenance
 
 - The NEXPRESS web UI, fonts, icons, Service Worker and JSZip are not bundled.
   The macOS UI is native SwiftUI; ZIP output uses system ditto.
+
+@jsquash/oxipng 2.3.0 added for effective PNG effort control (single-thread WASM).
+Source: https://registry.npmjs.org/@jsquash/oxipng/-/oxipng-2.3.0.tgz
+Package SHA-512: aQ8wiEp6ztlTMXc+RMt/CG8crU3mEHDU+h+JYkIi6ctMhlh8+Ltj5XwQFfBuyzKYrp8NxaFW80Dp824bqjr+zA==
+Apache-2.0 wrapper, MIT OxiPNG codec; licenses in vendor/OXIPNG_LICENSE and vendor/OXIPNG_MIT_LICENSE.

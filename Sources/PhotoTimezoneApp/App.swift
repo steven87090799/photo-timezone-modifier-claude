@@ -14,7 +14,8 @@ struct PhotoTimezoneApp: App {
         Window("相片時區修改器", id: "main") {
             PhotoMainView(model: model, compression: compression)
                 .background(WindowCloseGuard(model: model, compression: compression))
-                .onAppear { appDelegate.connect(model, compression: compression); compression.host.loadIfNeeded() }
+                .onAppear { appDelegate.connect(model, compression: compression); compression.setActive(model.activePage == .compression) }
+                .onChange(of: model.activePage) { _, page in compression.setActive(page == .compression) }
                 .onOpenURL { url in
                     if model.activePage == .compression { compression.addInputs([url]) }
                     else { model.addInputs([url]) }
@@ -119,7 +120,11 @@ private struct PhotoMainView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(CompressionRuntimeView(host: compression.host).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true))
+        .background {
+            if compression.host.webView != nil {
+                CompressionRuntimeView(host: compression.host).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
         .overlay {
             if model.activePage == .photos && model.dropTargeted {
                 RoundedRectangle(cornerRadius: 12)
@@ -1093,6 +1098,8 @@ final class PhotoAppDelegate: NSObject, NSApplicationDelegate {
         sender.activate(ignoringOtherApps: true)
         return .terminateCancel
     }
+
+    func applicationWillTerminate(_ notification: Notification) { compression?.host.shutdown() }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

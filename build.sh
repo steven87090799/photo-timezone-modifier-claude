@@ -28,8 +28,8 @@ APP_STAGE="$(mktemp -d /tmp/phototimezone-native-build.XXXXXX)"
 APP_PATH="$APP_STAGE/相片時區修改器.app"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
-swift build --build-system native -c release --arch arm64 -Xswiftc -Osize
-APP_BIN="$(swift build --build-system native -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
+swift build --scratch-path "/private/tmp/PhotoTimezone-build-$UID" -c release --arch arm64 -Xswiftc -Osize
+APP_BIN="$(swift build --scratch-path "/private/tmp/PhotoTimezone-build-$UID" -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
 /bin/cp "$APP_BIN" "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
 APP_ARCHS="$(/usr/bin/lipo -archs "$APP_PATH/Contents/MacOS/PhotoTimezoneApp")"
 if [[ "$APP_ARCHS" != "arm64" ]]; then
@@ -61,14 +61,14 @@ if [[ "$(/usr/bin/lipo -archs "$ZIP_VERIFY/相片時區修改器.app/Contents/Ma
 fi
 /bin/rm -rf "$ZIP_VERIFY"
 FINAL_APP="$PROJECT_DIR/dist/相片時區修改器.app"
-FINAL_ZIP="$PROJECT_DIR/dist/PhotoTimezone-macOS-local.zip"
+FINAL_ZIP="$PROJECT_DIR/dist/PhotoTimezone-macOS.zip"
 if [[ -e "$FINAL_ZIP" ]]; then
-  /bin/mv "$FINAL_ZIP" "$PROJECT_DIR/dist/PhotoTimezone-macOS-local.previous-$(/usr/bin/uuidgen).zip"
+  /bin/rm -f "$FINAL_ZIP"
 fi
 /bin/mv "$ZIP_STAGE" "$FINAL_ZIP"
 if [[ -e "$FINAL_APP" ]]; then
-  # Preserve the previous working app until the new build has succeeded.
-  /bin/mv "$FINAL_APP" "$PROJECT_DIR/dist/相片時區修改器.previous-$(/usr/bin/uuidgen).app"
+  # Only replace generated products after the new ZIP passes verification.
+  /bin/rm -rf "$FINAL_APP"
 fi
 /bin/mv "$APP_PATH" "$FINAL_APP"
 # FileProvider-managed Documents folders may reattach FinderInfo even after

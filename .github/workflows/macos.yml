@@ -55,8 +55,8 @@ jobs:
         timeout-minutes: 8
         run: ./build.sh
 
-      - name: Package app preserving executable modes
-        run: ditto -c -k --sequesterRsrc --keepParent "dist/相片時區修改器.app" dist/PhotoTimezone-macOS.zip
+      - name: Check verified build archive
+        run: unzip -tq dist/PhotoTimezone-macOS.zip
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
