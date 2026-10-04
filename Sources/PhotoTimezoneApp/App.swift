@@ -380,7 +380,7 @@ private struct PhotoMainView: View {
                         photoTable
                             .frame(maxHeight: .infinity)
                             .layoutPriority(1)
-                        pageControls
+                        selectionControls
                         if let item = model.selectedItem {
                             ScrollView {
                                 metadataDetails(item)
@@ -428,59 +428,51 @@ private struct PhotoMainView: View {
     }
 
     private var catalogueToolbar: some View {
-        VStack(spacing: 9) {
-            HStack(spacing: 10) {
-                TextField("搜尋檔名、相機、鏡頭、日期…", text: $model.query)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("photoSearch")
-                Picker("狀態", selection: $model.filter) {
-                    ForEach(PhotoFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .frame(width: 180).accessibilityIdentifier("photoFilter")
+        HStack(spacing: 10) {
+            TextField("搜尋檔名、相機、鏡頭、日期…", text: $model.query)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 170, idealWidth: 250, maxWidth: 300)
+                .accessibilityIdentifier("photoSearch")
+            Picker("狀態", selection: $model.filter) {
+                ForEach(PhotoFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            HStack(spacing: 10) {
-                Picker("相機", selection: $model.cameraFilter) {
-                    Text("所有相機").tag("")
-                    ForEach(model.cameras, id: \.name) { camera in
-                        Text("\(camera.name)（\(camera.count)）").tag(camera.name)
-                    }
+            .frame(width: 140).accessibilityIdentifier("photoFilter")
+            Picker("相機", selection: $model.cameraFilter) {
+                Text("所有相機").tag("")
+                ForEach(model.cameras, id: \.name) { camera in
+                    Text("\(camera.name)（\(camera.count)）").tag(camera.name)
                 }
-                .frame(maxWidth: 300).accessibilityIdentifier("cameraFilter")
-                Picker("排序", selection: $model.sort) {
-                    ForEach(PhotoSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }
-                .frame(width: 180)
-                Spacer(minLength: 0)
-                Button("選取篩選結果", action: model.selectFiltered)
-                    .disabled(model.filteredItems.isEmpty || model.isRunning)
-                    .accessibilityIdentifier("selectFilteredButton")
-                Button("取消選取") { model.selection = [] }
-                    .disabled(model.selection.isEmpty || model.isRunning)
             }
-            .controlSize(.small)
-            Text("單擊照片看資訊；只改部分照片時，請將左側處理範圍設為『手動選取』或『篩選結果』。")
-                .font(.caption2).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 160, idealWidth: 240, maxWidth: 340).accessibilityIdentifier("cameraFilter")
+            Picker("排序", selection: $model.sort) {
+                ForEach(PhotoSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .frame(width: 140)
+            Spacer(minLength: 0)
         }
+        .controlSize(.small)
     }
 
-    private var pageControls: some View {
+    private var selectionControls: some View {
         HStack(spacing: 10) {
             Text("篩選 \(model.filteredItems.count) / \(model.items.count) 張 · 已選 \(model.selection.count) 張")
                 .font(.caption).foregroundStyle(.secondary)
+            Image(systemName: "questionmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+                .help("用滑鼠滾輪或觸控板連續瀏覽全部篩選結果。單擊相片看資訊，Shift／Command 可複選；只改部分相片時，請將左側時區處理範圍設為『已選』或『篩選』。")
+                .accessibilityLabel("清單操作說明")
             Spacer(minLength: 0)
-            Button { model.setPage(model.pageIndex - 1) } label: { Image(systemName: "chevron.left") }
-                .disabled(model.pageIndex == 0).accessibilityLabel("上一頁")
-            Text("\(model.pageIndex + 1) / \(model.pageCount) 頁").font(.caption.monospacedDigit())
-            Button { model.setPage(model.pageIndex + 1) } label: { Image(systemName: "chevron.right") }
-                .disabled(model.pageIndex + 1 >= model.pageCount).accessibilityLabel("下一頁")
+            Button("選取篩選結果", action: model.selectFiltered)
+                .disabled(model.filteredItems.isEmpty || model.isRunning)
+                .accessibilityIdentifier("selectFilteredButton")
+            Button("取消選取") { model.selection = [] }
+                .disabled(model.selection.isEmpty || model.isRunning)
         }
         .controlSize(.small)
-        .help("每頁最多 200 張以保持順暢。Shift／Command 可複選；『選取篩選結果』會選取全部符合項目，不限本頁。")
     }
 
     private var photoTable: some View {
-        Table(model.pageItems, selection: $model.selection) {
+        Table(model.filteredItems, selection: $model.selection) {
             TableColumn("相片") { item in
                 HStack(spacing: 8) {
                     Image(systemName: "photo").foregroundStyle(.secondary).accessibilityHidden(true)
@@ -516,6 +508,7 @@ private struct PhotoMainView: View {
         }
         .frame(minHeight: 155)
         .tableStyle(.inset(alternatesRowBackgrounds: true))
+        .scrollIndicators(.visible)
         .environment(\.defaultMinListRowHeight, 28)
         .clipShape(RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Color.secondary.opacity(0.15)))
@@ -693,17 +686,13 @@ private struct PhotoMainView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 if metadata.hasCompleteGPSCoordinate {
-                    Label("已有 EXIF GPS", systemImage: "location.fill")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.green)
+                    gpsStatusLabel("已有 EXIF GPS", symbol: "location.fill", color: .green)
                 } else if metadata.hasAnyGPS {
-                    Label("已偵測到 GPS 資訊", systemImage: "location.circle.fill")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                    gpsStatusLabel("已偵測到 GPS 資訊", symbol: "location.circle.fill", color: .orange)
                 } else if metadata.gpsSafetyUncertain {
-                    Label("GPS 狀態無法確認", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                    gpsStatusLabel("GPS 狀態無法確認", symbol: "exclamationmark.triangle.fill", color: .orange)
                 } else {
-                    Label("未偵測到 GPS，可手動新增", systemImage: "location.slash")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    gpsStatusLabel("未偵測到 GPS，可手動新增", symbol: "location.slash", color: .secondary)
                 }
                 if metadata.embeddedXMPGPSDetected {
                     Text("內嵌 XMP").font(.caption2).foregroundStyle(.orange)
@@ -718,8 +707,18 @@ private struct PhotoMainView: View {
                     .font(.caption2).foregroundStyle(.orange)
             }
         }
-        .padding(.horizontal, 8).padding(.vertical, 5)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .textBackgroundColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func gpsStatusLabel(_ title: String, symbol: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+            Image(systemName: symbol).accessibilityHidden(true)
+        }
+        .font(.caption.weight(.semibold)).foregroundStyle(color)
+        .accessibilityElement(children: .combine)
     }
 
     private func metadataSection(_ title: String, fields: [MetadataSpecField],
