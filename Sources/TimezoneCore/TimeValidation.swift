@@ -35,12 +35,12 @@ public enum TimeValidation {
 
     static func validateForWrite(_ metadata: PhotoMetadata, mode: WriteMode) throws {
         guard isCaptureDate(metadata.dateTimeOriginal) else {
-            throw PhotoError("Invalid or missing EXIF DateTimeOriginal; timestamps were not repaired or changed.")
+            throw PhotoError("EXIF 拍攝日期（DateTimeOriginal）缺漏或格式無效；日期與時間未修補或變更。")
         }
         let offsets = [metadata.offsetOriginal, metadata.offsetDigitized, metadata.offsetTime]
         for value in offsets where value != nil && !isOffset(value) {
             guard mode == .replaceAll else {
-                throw PhotoError("Invalid existing EXIF offset. Use an explicitly confirmed offset replacement; fill-missing will not overwrite it.")
+                throw PhotoError("現有 EXIF 時區偏移格式無效。請明確選擇覆寫時區；只補缺漏模式不會覆寫原值。")
             }
         }
     }
@@ -55,9 +55,9 @@ public enum TimeValidation {
             ("OffsetTime", metadata.offsetTime)
         ].compactMap { name, value in value.map { (name, $0) } }
         if Set(populatedOffsets.map(\.1)).count > 1 {
-            result.append("EXIF timezone fields disagree: " +
+            result.append("EXIF 時區欄位不一致：" +
                 populatedOffsets.map { "\($0.0)=\($0.1)" }.joined(separator: ", ") +
-                ". Existing values were not silently normalized.")
+                "；已保留原值，未自動統一時區。")
         }
         let pairs: [(String, String?, String?)] = [
             ("DateTimeOriginal", metadata.dateTimeOriginal, metadata.offsetOriginal),
@@ -71,26 +71,26 @@ public enum TimeValidation {
                 let suffix = String(value.suffix(6))
                 guard let offset else {
                     if value.hasSuffix("Z") || isOffset(suffix) {
-                        result.append("\(key) has a timezone but its EXIF counterpart is missing; XMP was left unchanged.")
+                        result.append("\(key) 已記錄時區，但對應的 EXIF 時區缺漏；XMP 保持原值。")
                     }
                     continue
                 }
                 if value.hasSuffix("Z") {
                     if offset != "+00:00" && offset != "-00:00" {
-                        result.append("\(key) is UTC but EXIF offset is \(offset); XMP was left unchanged.")
+                        result.append("\(key) 記錄為 UTC，但 EXIF 時區偏移為 \(offset)；XMP 保持原值。")
                     }
                 } else if isOffset(suffix), suffix != offset {
-                    result.append("\(key) offset \(suffix) conflicts with EXIF \(offset); XMP was left unchanged.")
+                    result.append("\(key) 的時區偏移 \(suffix) 與 EXIF 時區 \(offset) 不一致；XMP 保持原值。")
                 }
                 let local = String(value.prefix(19)).replacingOccurrences(of: "T", with: " ")
                     .replacingOccurrences(of: "-", with: ":")
                 if local != date {
-                    result.append("\(key) wall-clock time differs from EXIF \(name); neither timestamp was adjusted.")
+                    result.append("\(key) 的日期與鐘點和 EXIF \(name) 不一致；兩者的日期與時間均未調整。")
                 }
             }
         }
         if metadata.createDate == nil || metadata.modifyDate == nil {
-            result.append("One or more associated EXIF dates are absent. Offset tags do not create missing dates.")
+            result.append("缺少部分 EXIF 日期（數位化或修改日期）；時區標籤不會補建缺少的日期。")
         }
         return Array(Set(result)).sorted()
     }
