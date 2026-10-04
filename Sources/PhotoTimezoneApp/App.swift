@@ -142,6 +142,7 @@ private struct PhotoMainView: View {
         }
         .alert(item: $model.notice, content: alert)
         .sheet(isPresented: $model.showingReportDetails) { reportDetailsSheet }
+        .onChange(of: model.selectedItem?.id) { _, _ in model.showingMoreMetadata = false }
     }
 
     private var header: some View {
@@ -361,42 +362,43 @@ private struct PhotoMainView: View {
     }
 
     private var workspace: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("相片預覽").font(.title3.weight(.semibold))
-                    Spacer()
-                    if !model.items.isEmpty {
-                        Text("\(model.items.count) 張 · 時區欄位未齊 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
-                            .font(.caption).foregroundStyle(.secondary)
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("相片預覽").font(.title3.weight(.semibold))
+                        Spacer()
+                        if !model.items.isEmpty {
+                            Text("\(model.items.count) 張 · 時區欄位未齊 \(model.missingOffsetCount) · \(ByteCountFormatter.string(fromByteCount: model.totalBytes, countStyle: .file))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                }
-                if model.items.isEmpty {
-                    emptyState
-                } else {
-                    catalogueToolbar
-                    photoTable
-                        .frame(height: min(220, max(118, CGFloat(model.pageItems.count) * 28 + 36)))
-                    pageControls
-                    if let item = model.selectedItem {
-                        metadataDetails(item)
+                    if model.items.isEmpty {
+                        emptyState
+                    } else {
+                        catalogueToolbar
+                        photoTable
                             .frame(maxHeight: .infinity)
                             .layoutPriority(1)
-                    } else {
-                        Label("選取相片，查看右側 EXIF 與時區資訊", systemImage: "sidebar.right")
-                            .font(.callout).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        pageControls
+                        if let item = model.selectedItem {
+                            ScrollView {
+                                metadataDetails(item)
+                            }
+                            .frame(height: min(280, max(160, geometry.size.height * 0.30)))
+                            .accessibilityIdentifier("photoMetadataScrollArea")
+                        }
                     }
                 }
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            if model.isRunning {
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                if model.isRunning {
+                    Divider()
+                    activityBar
+                }
                 Divider()
-                activityBar
+                reportFooter
             }
-            Divider()
-            reportFooter
         }
     }
 
@@ -512,6 +514,7 @@ private struct PhotoMainView: View {
             }
             .width(min: 82, ideal: 95, max: 110)
         }
+        .frame(minHeight: 155)
         .tableStyle(.inset(alternatesRowBackgrounds: true))
         .environment(\.defaultMinListRowHeight, 28)
         .clipShape(RoundedRectangle(cornerRadius: 9))
@@ -535,126 +538,145 @@ private struct PhotoMainView: View {
                     .controlSize(.small).disabled(model.isRunning)
                     .help("外部編輯器可能修改原檔或伴隨檔。")
             }
-            GeometryReader { geometry in
-                HStack(alignment: .top, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        PhotoThumbnail(url: item.url, revision: item.transactionID, allowDecode: !model.isRunning)
-                            .frame(height: min(230, max(90, geometry.size.height - 110)))
-                        Text(item.metadata?.camera ?? "未知相機").font(.callout.weight(.semibold)).lineLimit(1)
-                        Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄").font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        Text("\(item.metadata?.dimensions ?? "尺寸未記錄") · \(fileSizeText(item.metadata?.fileSize))")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text(item.url.path).font(.caption2).foregroundStyle(.tertiary)
-                            .lineLimit(1).truncationMode(.middle).help(item.url.path).textSelection(.enabled)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(width: min(300, max(190, geometry.size.width * 0.27)), alignment: .topLeading)
+            HStack(alignment: .top, spacing: 14) {
+                PhotoThumbnail(url: item.url, revision: item.transactionID, allowDecode: !model.isRunning)
+                    .frame(width: 140, height: 105)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(item.metadata?.camera ?? "未知相機").font(.headline)
+                        .lineLimit(2).help(item.metadata?.camera ?? "未知相機")
+                    Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text("ISO \(item.metadata?.iso ?? "—") · \(item.metadata?.exposureTime ?? "—") 秒 · f/\(item.metadata?.aperture ?? "—")")
+                        .font(.caption).textSelection(.enabled)
+                    Text(item.metadata?.focalLength ?? "焦距未記錄")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("\(item.metadata?.dimensions ?? "尺寸未記錄") · \(fileSizeText(item.metadata?.fileSize))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(width: 200, alignment: .leading)
+                if let metadata = item.metadata {
                     Divider()
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 6) {
-                                Text("EXIF 與規格資訊").font(.callout.weight(.semibold))
-                                Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
-                                    .help("欄位下方顯示 ExifTool 群組、標籤名稱及規格 ID。滑鼠停留可查看完整內容。")
-                            }
-                            if let issues = item.metadata?.compatibilityIssues, !issues.isEmpty {
-                                Text(issues.joined(separator: "\n"))
-                                    .font(.caption).foregroundStyle(.orange)
-                                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                            }
-                            if let metadata = item.metadata {
-                                metadataSection("時間與時區", fields: [
-                                    .init(title: "拍攝時間", spec: "ExifIFD:DateTimeOriginal · 0x9003", value: metadata.dateTimeOriginal),
-                                    .init(title: "拍攝時區", spec: "ExifIFD:OffsetTimeOriginal · 0x9011", value: metadata.offsetOriginal),
-                                    .init(title: "拍攝次秒", spec: "ExifIFD:SubSecTimeOriginal · 0x9291", value: metadata.subSecTimeOriginal),
-                                    .init(title: "數位化時間", spec: "ExifIFD:CreateDate · EXIF DateTimeDigitized · 0x9004", value: metadata.createDate),
-                                    .init(title: "數位化時區", spec: "ExifIFD:OffsetTimeDigitized · 0x9012", value: metadata.offsetDigitized),
-                                    .init(title: "數位化次秒", spec: "ExifIFD:SubSecTimeDigitized · 0x9292", value: metadata.subSecTimeDigitized),
-                                    .init(title: "修改時間", spec: "IFD0:ModifyDate · EXIF DateTime · 0x0132", value: metadata.modifyDate),
-                                    .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime),
-                                    .init(title: "修改次秒", spec: "ExifIFD:SubSecTime · 0x9290", value: metadata.subSecTime)
-                                ])
-                                gpsEditor(item: item, metadata: metadata)
-                                metadataSection("GPS", fields: [
-                                    .init(title: "GPS 版本", spec: "GPS:GPSVersionID · 0x0000", value: metadata.gpsVersionID),
-                                    .init(title: "緯度", spec: "GPS:GPSLatitude · 0x0002", value: metadata.gpsLatitude),
-                                    .init(title: "緯度方向", spec: "GPS:GPSLatitudeRef · 0x0001", value: metadata.gpsLatitudeRef),
-                                    .init(title: "經度", spec: "GPS:GPSLongitude · 0x0004", value: metadata.gpsLongitude),
-                                    .init(title: "經度方向", spec: "GPS:GPSLongitudeRef · 0x0003", value: metadata.gpsLongitudeRef),
-                                    .init(title: "高度", spec: "GPS:GPSAltitude · 0x0006", value: metadata.gpsAltitude),
-                                    .init(title: "高度基準", spec: "GPS:GPSAltitudeRef · 0x0005", value: metadata.gpsAltitudeRef),
-                                    .init(title: "GPS 日期", spec: "GPS:GPSDateStamp · 0x001D", value: metadata.gpsDateStamp),
-                                    .init(title: "GPS 時間", spec: "GPS:GPSTimeStamp · 0x0007", value: metadata.gpsTimeStamp)
-                                ])
-                                metadataSection("曝光與拍攝參數", fields: [
-                                    .init(title: "ISO", spec: "ExifIFD:ISO · EXIF PhotographicSensitivity · 0x8827", value: metadata.iso),
-                                    .init(title: "曝光時間", spec: "ExifIFD:ExposureTime · 0x829A", value: metadata.exposureTime),
-                                    .init(title: "光圈", spec: "ExifIFD:FNumber · 0x829D", value: metadata.aperture),
-                                    .init(title: "曝光模式", spec: "ExifIFD:ExposureProgram · 0x8822", value: metadata.exposureProgram),
-                                    .init(title: "曝光補償", spec: "ExifIFD:ExposureCompensation · EXIF ExposureBiasValue · 0x9204", value: metadata.exposureCompensation),
-                                    .init(title: "測光模式", spec: "ExifIFD:MeteringMode · 0x9207", value: metadata.meteringMode),
-                                    .init(title: "閃光燈", spec: "ExifIFD:Flash · 0x9209", value: metadata.flash),
-                                    .init(title: "焦距", spec: "ExifIFD:FocalLength · 0x920A", value: metadata.focalLength),
-                                    .init(title: "35mm 等效焦距", spec: "ExifIFD:FocalLengthIn35mmFormat · EXIF FocalLengthIn35mmFilm · 0xA405", value: metadata.focalLength35mm),
-                                    .init(title: "白平衡", spec: "ExifIFD:WhiteBalance · 0xA403", value: metadata.whiteBalance),
-                                    .init(title: "場景類型", spec: "ExifIFD:SceneCaptureType · 0xA406", value: metadata.sceneCaptureType)
-                                ])
-                                metadataSection("相機與鏡頭", fields: [
-                                    .init(title: "製造商", spec: "IFD0:Make · 0x010F", value: metadata.make),
-                                    .init(title: "機身型號", spec: "IFD0:Model · 0x0110", value: metadata.cameraModel),
-                                    .init(title: "機身序號", spec: "ExifIFD:SerialNumber · EXIF BodySerialNumber · 0xA431", value: metadata.bodySerialNumber),
-                                    .init(title: "鏡頭廠牌", spec: "ExifIFD:LensMake · 0xA433", value: metadata.lensMake),
-                                    .init(title: "鏡頭型號", spec: lensModelSpec(metadata), value: metadata.lensModel),
-                                    .init(title: "鏡頭規格", spec: "ExifIFD:LensInfo · EXIF LensSpecification · 0xA432", value: metadata.lensInfo),
-                                    .init(title: "鏡頭序號", spec: "ExifIFD:LensSerialNumber · 0xA435", value: metadata.lensSerialNumber)
-                                ])
-                                metadataSection("影像與檔案", fields: [
-                                    .init(title: "方向", spec: "IFD0:Orientation · 0x0112", value: metadata.orientation),
-                                    .init(title: "色彩空間", spec: "ExifIFD:ColorSpace · 0xA001", value: metadata.colorSpace),
-                                    .init(title: "EXIF 寬度", spec: "ExifIFD:ExifImageWidth · EXIF PixelXDimension · 0xA002", value: metadata.imageWidth),
-                                    .init(title: "EXIF 高度", spec: "ExifIFD:ExifImageHeight · EXIF PixelYDimension · 0xA003", value: metadata.imageHeight),
-                                    .init(title: "建立軟體", spec: "IFD0:Software · 0x0131", value: metadata.software),
-                                    .init(title: "檔案格式", spec: "File:FileType · ExifTool", value: metadata.fileType),
-                                    .init(title: "MIME 類型", spec: "File:MIMEType · ExifTool", value: metadata.mimeType),
-                                    .init(title: "檔案大小", spec: "File:FileSize · ExifTool", value: metadata.fileSize.map { fileSizeText($0) })
-                                ])
-                            }
-                            if let output = item.outputURL, let outputMetadata = item.outputMetadata {
-                                Divider()
-                                Text(item.publicationUnconfirmed ? "已發布，待確認同步或伴隨檔狀態" : (output == item.url ? "原檔已替換；備份保留" : "副本輸出 · 來源保持不變"))
-                                    .font(.caption.weight(.semibold)).foregroundStyle(.green)
-                                HStack(alignment: .top, spacing: 18) {
-                                    metadataField("拍攝時區", tag: "ExifIFD:OffsetTimeOriginal · 0x9011", value: outputMetadata.offsetOriginal)
-                                    metadataField("數位化時區", tag: "ExifIFD:OffsetTimeDigitized · 0x9012", value: outputMetadata.offsetDigitized)
-                                    metadataField("修改時區", tag: "ExifIFD:OffsetTime · 0x9010", value: outputMetadata.offsetTime)
-                                }
-                                if outputMetadata.hasEmbeddedEXIFGPS {
-                                    HStack(alignment: .top, spacing: 18) {
-                                        metadataField("GPS 緯度", tag: "GPS:GPSLatitude · 0x0002", value: outputMetadata.gpsLatitude)
-                                        metadataField("GPS 經度", tag: "GPS:GPSLongitude · 0x0004", value: outputMetadata.gpsLongitude)
-                                        metadataField("GPS 高度", tag: "GPS:GPSAltitude · 0x0006", value: outputMetadata.gpsAltitude)
-                                    }
-                                }
-                                Text(output.path).font(.caption2).foregroundStyle(.secondary)
-                                    .lineLimit(2).truncationMode(.middle).help(output.path).textSelection(.enabled)
-                            }
-
-                            if !item.detail.isEmpty {
-                                Text(item.detail).font(.caption).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, 4)
+                    VStack(alignment: .leading, spacing: 6) {
+                        metadataSection("常用 EXIF", fields: [
+                            .init(title: "拍攝時間", spec: "ExifIFD:DateTimeOriginal · 0x9003", value: metadata.dateTimeOriginal),
+                            .init(title: "拍攝時區", spec: "ExifIFD:OffsetTimeOriginal · 0x9011", value: metadata.offsetOriginal),
+                            .init(title: "數位化時區", spec: "ExifIFD:OffsetTimeDigitized · 0x9012", value: metadata.offsetDigitized),
+                            .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime)
+                        ], minimumWidth: 140, showsSpecifications: false)
+                        gpsEditor(item: item, metadata: metadata)
                     }
-                    .accessibilityIdentifier("photoMetadataScrollArea")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Spacer(minLength: 0)
                 }
             }
+            if let issues = item.metadata?.compatibilityIssues, !issues.isEmpty {
+                Text(issues.joined(separator: "\n"))
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+            if let output = item.outputURL, let outputMetadata = item.outputMetadata {
+                Divider()
+                Text(item.publicationUnconfirmed ? "已發布，待確認同步或伴隨檔狀態" : (output == item.url ? "原檔已替換；備份保留" : "副本輸出 · 來源保持不變"))
+                    .font(.caption.weight(.semibold)).foregroundStyle(.green)
+                HStack(alignment: .top, spacing: 18) {
+                    metadataField("拍攝時區", tag: "ExifIFD:OffsetTimeOriginal · 0x9011", value: outputMetadata.offsetOriginal)
+                    metadataField("數位化時區", tag: "ExifIFD:OffsetTimeDigitized · 0x9012", value: outputMetadata.offsetDigitized)
+                    metadataField("修改時區", tag: "ExifIFD:OffsetTime · 0x9010", value: outputMetadata.offsetTime)
+                }
+                if outputMetadata.hasEmbeddedEXIFGPS {
+                    HStack(alignment: .top, spacing: 18) {
+                        metadataField("GPS 緯度", tag: "GPS:GPSLatitude · 0x0002", value: outputMetadata.gpsLatitude)
+                        metadataField("GPS 經度", tag: "GPS:GPSLongitude · 0x0004", value: outputMetadata.gpsLongitude)
+                        metadataField("GPS 高度", tag: "GPS:GPSAltitude · 0x0006", value: outputMetadata.gpsAltitude)
+                    }
+                }
+                Text(output.path).font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(2).truncationMode(.middle).help(output.path).textSelection(.enabled)
+            }
+            if !item.detail.isEmpty {
+                Text(item.detail).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
+            if item.metadata != nil {
+                Button {
+                    model.showingMoreMetadata.toggle()
+                } label: {
+                    Label(model.showingMoreMetadata ? "收合 EXIF 資訊" : "顯示更多 EXIF 資訊",
+                          systemImage: model.showingMoreMetadata ? "chevron.up" : "chevron.down")
+                }
+                .buttonStyle(.link).controlSize(.small)
+                .accessibilityIdentifier("moreMetadataButton")
+                .help("展開次秒、GPS 明細、相機與鏡頭序號、拍攝參數及檔案規格。")
+                if model.showingMoreMetadata {
+                    Divider()
+                    if let metadata = item.metadata {
+                        metadataSection("時間與時區", fields: [
+                            .init(title: "拍攝時間", spec: "ExifIFD:DateTimeOriginal · 0x9003", value: metadata.dateTimeOriginal),
+                            .init(title: "拍攝時區", spec: "ExifIFD:OffsetTimeOriginal · 0x9011", value: metadata.offsetOriginal),
+                            .init(title: "拍攝次秒", spec: "ExifIFD:SubSecTimeOriginal · 0x9291", value: metadata.subSecTimeOriginal),
+                            .init(title: "數位化時間", spec: "ExifIFD:CreateDate · EXIF DateTimeDigitized · 0x9004", value: metadata.createDate),
+                            .init(title: "數位化時區", spec: "ExifIFD:OffsetTimeDigitized · 0x9012", value: metadata.offsetDigitized),
+                            .init(title: "數位化次秒", spec: "ExifIFD:SubSecTimeDigitized · 0x9292", value: metadata.subSecTimeDigitized),
+                            .init(title: "修改時間", spec: "IFD0:ModifyDate · EXIF DateTime · 0x0132", value: metadata.modifyDate),
+                            .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime),
+                            .init(title: "修改次秒", spec: "ExifIFD:SubSecTime · 0x9290", value: metadata.subSecTime)
+                        ])
+                        metadataSection("GPS", fields: [
+                            .init(title: "GPS 版本", spec: "GPS:GPSVersionID · 0x0000", value: metadata.gpsVersionID),
+                            .init(title: "緯度", spec: "GPS:GPSLatitude · 0x0002", value: metadata.gpsLatitude),
+                            .init(title: "緯度方向", spec: "GPS:GPSLatitudeRef · 0x0001", value: metadata.gpsLatitudeRef),
+                            .init(title: "經度", spec: "GPS:GPSLongitude · 0x0004", value: metadata.gpsLongitude),
+                            .init(title: "經度方向", spec: "GPS:GPSLongitudeRef · 0x0003", value: metadata.gpsLongitudeRef),
+                            .init(title: "高度", spec: "GPS:GPSAltitude · 0x0006", value: metadata.gpsAltitude),
+                            .init(title: "高度基準", spec: "GPS:GPSAltitudeRef · 0x0005", value: metadata.gpsAltitudeRef),
+                            .init(title: "GPS 日期", spec: "GPS:GPSDateStamp · 0x001D", value: metadata.gpsDateStamp),
+                            .init(title: "GPS 時間", spec: "GPS:GPSTimeStamp · 0x0007", value: metadata.gpsTimeStamp)
+                        ])
+                        metadataSection("曝光與拍攝參數", fields: [
+                            .init(title: "ISO", spec: "ExifIFD:ISO · EXIF PhotographicSensitivity · 0x8827", value: metadata.iso),
+                            .init(title: "曝光時間", spec: "ExifIFD:ExposureTime · 0x829A", value: metadata.exposureTime),
+                            .init(title: "光圈", spec: "ExifIFD:FNumber · 0x829D", value: metadata.aperture),
+                            .init(title: "曝光模式", spec: "ExifIFD:ExposureProgram · 0x8822", value: metadata.exposureProgram),
+                            .init(title: "曝光補償", spec: "ExifIFD:ExposureCompensation · EXIF ExposureBiasValue · 0x9204", value: metadata.exposureCompensation),
+                            .init(title: "測光模式", spec: "ExifIFD:MeteringMode · 0x9207", value: metadata.meteringMode),
+                            .init(title: "閃光燈", spec: "ExifIFD:Flash · 0x9209", value: metadata.flash),
+                            .init(title: "焦距", spec: "ExifIFD:FocalLength · 0x920A", value: metadata.focalLength),
+                            .init(title: "35mm 等效焦距", spec: "ExifIFD:FocalLengthIn35mmFormat · EXIF FocalLengthIn35mmFilm · 0xA405", value: metadata.focalLength35mm),
+                            .init(title: "白平衡", spec: "ExifIFD:WhiteBalance · 0xA403", value: metadata.whiteBalance),
+                            .init(title: "場景類型", spec: "ExifIFD:SceneCaptureType · 0xA406", value: metadata.sceneCaptureType)
+                        ])
+                        metadataSection("相機與鏡頭", fields: [
+                            .init(title: "製造商", spec: "IFD0:Make · 0x010F", value: metadata.make),
+                            .init(title: "機身型號", spec: "IFD0:Model · 0x0110", value: metadata.cameraModel),
+                            .init(title: "機身序號", spec: "ExifIFD:SerialNumber · EXIF BodySerialNumber · 0xA431", value: metadata.bodySerialNumber),
+                            .init(title: "鏡頭廠牌", spec: "ExifIFD:LensMake · 0xA433", value: metadata.lensMake),
+                            .init(title: "鏡頭型號", spec: lensModelSpec(metadata), value: metadata.lensModel),
+                            .init(title: "鏡頭規格", spec: "ExifIFD:LensInfo · EXIF LensSpecification · 0xA432", value: metadata.lensInfo),
+                            .init(title: "鏡頭序號", spec: "ExifIFD:LensSerialNumber · 0xA435", value: metadata.lensSerialNumber)
+                        ])
+                        if let serial = metadata.cameraSerialNumber, metadata.cameraSerialNumber != metadata.bodySerialNumber {
+                            metadataField("相機序號（其他來源）", tag: "SerialNumber · ExifTool 備援來源", value: serial)
+                        }
+                        metadataSection("影像與檔案", fields: [
+                            .init(title: "方向", spec: "IFD0:Orientation · 0x0112", value: metadata.orientation),
+                            .init(title: "色彩空間", spec: "ExifIFD:ColorSpace · 0xA001", value: metadata.colorSpace),
+                            .init(title: "EXIF 寬度", spec: "ExifIFD:ExifImageWidth · EXIF PixelXDimension · 0xA002", value: metadata.imageWidth),
+                            .init(title: "EXIF 高度", spec: "ExifIFD:ExifImageHeight · EXIF PixelYDimension · 0xA003", value: metadata.imageHeight),
+                            .init(title: "建立軟體", spec: "IFD0:Software · 0x0131", value: metadata.software),
+                            .init(title: "檔案格式", spec: "File:FileType · ExifTool", value: metadata.fileType),
+                            .init(title: "MIME 類型", spec: "File:MIMEType · ExifTool", value: metadata.mimeType),
+                            .init(title: "檔案大小", spec: "File:FileSize · ExifTool", value: metadata.fileSize.map { fileSizeText($0) })
+                        ])
+                    }
+                }
+            }
+            Text(item.url.path).font(.caption2).foregroundStyle(.tertiary)
+                .lineLimit(1).truncationMode(.middle).help(item.url.path).textSelection(.enabled)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .clipped()
         .accessibilityIdentifier("metadataDetails")
         .id(item.id)
     }
@@ -693,31 +715,34 @@ private struct PhotoMainView: View {
         .background(Color(nsColor: .textBackgroundColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func metadataSection(_ title: String, fields: [MetadataSpecField]) -> some View {
+    private func metadataSection(_ title: String, fields: [MetadataSpecField],
+                                 minimumWidth: CGFloat = 170, showsSpecifications: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 170, maximum: 270), spacing: 12, alignment: .topLeading)],
+                columns: [GridItem(.adaptive(minimum: minimumWidth, maximum: 270), spacing: 12, alignment: .topLeading)],
                 alignment: .leading,
                 spacing: 8
             ) {
                 ForEach(fields) { field in
-                    metadataField(field.title, tag: field.spec, value: field.value)
+                    metadataField(field.title, tag: field.spec, value: field.value, showsSpecification: showsSpecifications)
                 }
             }
         }
         .padding(.vertical, 2)
     }
 
-    private func metadataField(_ title: String, tag: String, value: String?) -> some View {
+    private func metadataField(_ title: String, tag: String, value: String?, showsSpecification: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             Text(display(value))
                 .font(.system(size: 11, design: .monospaced)).lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            Text(tag)
-                .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
-                .lineLimit(1).truncationMode(.middle)
+            if showsSpecification {
+                Text(tag)
+                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .help(title + "：" + display(value) + "\n" + tag)
