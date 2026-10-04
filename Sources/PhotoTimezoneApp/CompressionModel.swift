@@ -19,7 +19,7 @@ enum CompressionFormat: String, CaseIterable, Identifiable {
     var preservesRGBProfile: Bool { ![.avif, .jxl].contains(self) }
     var hint: String {
         switch self {
-        case .jpeg: return "分享與一般照片；MozJPEG 漸進式壓縮。"
+        case .jpeg: return "一般 .jpg；原生 Jpegli 漸進式壓縮，macOS／Windows 均可開啟。品質 100 仍為有損，透明區域轉白底。"
         case .png: return "像素無損與透明圖片；滑桿調整壓縮努力度。"
         case .webp: return "網站圖片；保留透明通道。"
         case .avif: return "較小的照片檔案；編碼較慢，像素使用 sRGB。"
@@ -58,7 +58,11 @@ final class CompressionModel: ObservableObject {
     let host = CompressionHost()
     @Published var items: [CompressionItem] = []
     @Published var selection: UUID? { didSet { updatePreview() } }
-    @Published var format: CompressionFormat { didSet { UserDefaults.standard.set(format.rawValue, forKey: "nativeCompressionFormat"); updatePreview() } }
+    @Published var format: CompressionFormat { didSet {
+        UserDefaults.standard.set(format.rawValue, forKey: "nativeCompressionFormat")
+        if isActive { prepareSelectedFormat() }
+        updatePreview()
+    } }
     @Published var quality: Double { didSet { UserDefaults.standard.set(quality, forKey: "nativeCompressionQuality"); updatePreview() } }
     @Published var parallelism: Int { didSet { UserDefaults.standard.set(parallelism, forKey: "nativeCompressionParallelism") } }
     @Published var recursive = false
@@ -107,7 +111,7 @@ final class CompressionModel: ObservableObject {
 
     func setActive(_ active: Bool) {
         isActive = active
-        if active { host.loadIfNeeded(); updatePreview() }
+        if active { prepareSelectedFormat(); updatePreview() }
         else {
             previewTask?.cancel()
             previewLoading = false
@@ -116,13 +120,19 @@ final class CompressionModel: ObservableObject {
         }
     }
 
+    private func prepareSelectedFormat() {
+        if format == .jpeg {
+            if !isRunning { host.releaseRuntime() }
+        } else { host.loadIfNeeded() }
+    }
+
     var selected: CompressionItem? { items.first { $0.id == selection } }
     var completed: [CompressionItem] { items.filter { $0.result != nil && $0.state == .success } }
     var doneCount: Int { items.filter { [.success, .failed, .cancelled].contains($0.state) }.count }
     var totalBytes: Int64 { items.reduce(0) { $0 + $1.originalBytes } }
     var resultBytes: Int64 { completed.reduce(0) { $0 + ($1.result?.bytes ?? 0) } }
     var progress: Double { items.isEmpty ? 0 : items.reduce(0) { $0 + ($1.state == .running ? $1.progress / 100 : [.success, .failed, .cancelled].contains($1.state) ? 1 : 0) } / Double(items.count) }
-    var canStart: Bool { host.isReady && host.formats.contains(format.mime) && !items.isEmpty && !isRunning && !isImporting && !isExporting }
+    var canStart: Bool { host.isAvailable(format) && !items.isEmpty && !isRunning && !isImporting && !isExporting }
     static func bytes(_ count: Int64) -> String { ByteCountFormatter.string(fromByteCount: count, countStyle: .file) }
 
     func chooseInputs() {
@@ -238,7 +248,7 @@ final class CompressionModel: ObservableObject {
                 return
             }
             compressedPreview = nil; estimate = nil
-            guard !isRunning, host.isReady else { previewNote = host.isReady ? "壓縮完成後顯示實際結果" : "正在準備壓縮引擎…"; return }
+            guard !isRunning, host.isAvailable(chosenFormat) else { previewNote = host.isAvailable(chosenFormat) ? "壓縮完成後顯示實際結果" : "正在準備壓縮引擎…"; return }
             previewLoading = true; previewNote = "正在產生預覽…"
             do {
                 try await Task.sleep(nanoseconds: 450_000_000)

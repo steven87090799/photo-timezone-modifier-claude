@@ -1,7 +1,7 @@
 // Native app worker: pixels arrive from macOS ImageIO; metadata is transferred
 // and verified separately by Swift. No timezone, GPS or canvas modifications.
 const moduleURL = new URL(import.meta.url);
-const paths = { 'image/jpeg': 'jpeg', 'image/png': 'oxipng', 'image/webp': 'webp',
+const paths = { 'image/png': 'oxipng', 'image/webp': 'webp',
   'image/avif': 'avif', 'image/jxl': 'jxl' };
 const modules = new Map();
 async function encoder(format) {
@@ -30,10 +30,6 @@ async function encode(options) {
   if (format === 'image/heif') return heif(image, { ...options, quality });
   const codec = await encoder(format);
   switch (format) {
-    case 'image/jpeg':
-      return codec.encode(image, { quality, progressive: true, smoothing: 0,
-        trellis_opt_zero: !preview, trellis_multipass: !preview,
-        ...(quality >= 90 ? { auto_subsample: false, chroma_subsample: 1 } : {}) });
     case 'image/png':
       return codec.encode(image, { level: preview ? 2 : Math.round(quality * 6 / 100) });
     case 'image/webp':

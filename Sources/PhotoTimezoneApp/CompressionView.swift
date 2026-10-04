@@ -66,7 +66,7 @@ struct CompressionView: View {
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(model.format == format ? Color.accentColor : .clear, lineWidth: 1))
                             .help(format.hint)
                             .accessibilityIdentifier("compressionFormat-" + format.fileExtension)
-                            .disabled(model.host.isReady && !model.host.formats.contains(format.mime))
+                            .disabled(format != .jpeg && model.host.isReady && !model.host.formats.contains(format.mime))
                         }
                     }
                     HStack {
@@ -108,7 +108,7 @@ struct CompressionView: View {
             Divider()
             VStack(alignment: .leading, spacing: 8) {
                 if let error = model.host.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-                else if !model.host.isReady { HStack { ProgressView().controlSize(.small); Text("正在準備編碼器…").font(.caption) } }
+                else if !model.host.isAvailable(model.format) { HStack { ProgressView().controlSize(.small); Text("正在準備編碼器…").font(.caption) } }
                 if model.isRunning {
                     Button(action: model.cancel) {
                         Label(model.isCancelling ? "正在停止…" : "停止壓縮", systemImage: "stop.fill").frame(maxWidth: .infinity)

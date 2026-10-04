@@ -181,11 +181,76 @@ struct CompressionTests {
     }
 
     @Test func engineStartsOnlyWhenCompressionIsOpened() {
+        let defaults = UserDefaults.standard
+        let original = defaults.object(forKey: "nativeCompressionFormat")
+        defer {
+            if let original { defaults.set(original, forKey: "nativeCompressionFormat") }
+            else { defaults.removeObject(forKey: "nativeCompressionFormat") }
+        }
         let model = CompressionModel()
         #expect(model.host.webView == nil)
+        model.format = .jpeg
+        model.setActive(true)
+        #expect(model.host.isAvailable(.jpeg))
+        #expect(model.host.webView == nil, "Jpegli does not require WebKit")
         model.setActive(false)
         #expect(model.host.webView == nil)
         model.host.shutdown()
+    }
+
+    @Test func jpegliQualitiesDecodeAsStandardJPEGWithoutWebKit() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("JpegliCompatibility-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = try fixture(in: folder)
+        let host = CompressionHost(); defer { host.shutdown() }
+        #expect(!host.isReady && host.webView == nil)
+        let tool = ExifTool(url: toolURL())
+        let originalICC = try tool.execute(["-b", "-ICC_Profile", source.path]).stdout
+        for quality in [1, 49, 82, 95, 100] {
+            let result = try await host.perform(source: source, format: .jpeg, quality: quality, preview: false)
+            let encoded = try Data(contentsOf: result.url)
+            #expect(encoded.prefix(2) == Data([0xff, 0xd8]))
+            let imageSource = try #require(CGImageSourceCreateWithURL(result.url as CFURL, nil))
+            #expect(CGImageSourceGetType(imageSource) as String? == "public.jpeg")
+            let decoded = try CompressionImages.raster(result.url, maxPixel: 0, preserveOriginal: true)
+            #expect(decoded.width == 128 && decoded.height == 96)
+            #expect(try tool.execute(["-b", "-ICC_Profile", result.url.path]).stdout == originalICC)
+            let tags = try tool.execute(["-s", "-EncodingProcess", "-BitsPerSample", "-ColorComponents", "-YCbCrSubSampling", result.url.path]).stdout
+            print("Jpegli quality \(quality): \(String(decoding: tags, as: UTF8.self))")
+            #expect(host.webView == nil)
+        }
+        let pending = Task { try await host.perform(source: source, format: .jpeg, quality: 82, preview: false) }
+        pending.cancel()
+        do { _ = try await pending.value; Issue.record("Cancelled native JPEG produced a result") }
+        catch { #expect(error is CancellationError) }
+    }
+
+    @Test func jpegliRejectsInvalidInputAndUsesWhiteForTransparency() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("JpegliAlpha-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("transparent.png")
+        let output = folder.appendingPathComponent("white.jpg")
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let provider = CGDataProvider(data: Data(repeating: 0, count: 16 * 16 * 4) as CFData)!
+        let image = try #require(CGImage(width: 16, height: 16, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: 16 * 4, space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let destination = try #require(CGImageDestinationCreateWithURL(source as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        #expect(throws: PhotoError.self) {
+            _ = try CompressionJPEG.encode(source: source, output: output, quality: 0, preview: false, cancellation: CancellationToken())
+        }
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        let cancelled = CancellationToken(); cancelled.cancel()
+        #expect(throws: CancellationError.self) {
+            _ = try CompressionJPEG.encode(source: source, output: output, quality: 82, preview: false, cancellation: cancelled)
+        }
+        _ = try CompressionJPEG.encode(source: source, output: output, quality: 100, preview: false, cancellation: CancellationToken())
+        let decoded = try CompressionImages.raster(output, maxPixel: 0, preserveOriginal: true)
+        #expect(decoded.bytes.allSatisfy { $0 >= 250 })
     }
 
     @Test func metadataGroupMatchingDoesNotHideXMPNamespaceChanges() {

@@ -20,12 +20,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-jpegli:
+    uses: ./.github/workflows/jpegli-windows.yml
+
   test-and-build-macos:
     # Shipping/test baseline is Apple Silicon running macOS 27+.
     runs-on: xcode-27
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Ensure native codec build tool
+        run: command -v cmake >/dev/null || brew install cmake
 
       - name: Fetch pinned real Sony A7 IV ARW fixture
         shell: bash
@@ -67,7 +73,7 @@ jobs:
   publish-app:
     # PRs get downloadable Actions artifacts; only main can publish Releases.
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test-and-build-macos]
+    needs: [test-and-build-macos, windows-jpegli]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

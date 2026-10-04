@@ -14,18 +14,18 @@ Webhook 預設關閉，只有啟用後才傳送壓縮檔及摘要。設定支援
 
 ## 執行引擎與格式
 
-編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。WKWebView 只在需要壓縮時執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
+編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。JPEG 已替換為原生 Jpegli 靜態函式庫，不依賴 WebKit；MozJPEG 的 WASM 與 JS 已移除。WKWebView 只在選用其他壓縮格式時執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
 
 | 格式 | 完整輸出 | 色彩處理 |
 | --- | --- | --- |
-| JPEG | MozJPEG，漸進式、Trellis，高品質 4:4:4 | 保留來源 RGB ICC，其他色彩模式轉 sRGB |
+| JPEG | 原生 Jpegli，普通漸進式 JPEG、自適應量化、高品質 4:4:4（不使用 XYB） | 保留來源 RGB ICC，其他色彩模式轉 sRGB |
 | PNG | OxiPNG，像素無損，努力度 0–6 | 保留來源 RGB ICC |
 | WebP | libwebp，method 6、sharp YUV | 保留來源 RGB ICC |
 | AVIF | libavif／libaom，speed 6、CQ 品質映射 | 明示轉換為 sRGB |
 | HEIF／HEIC | macOS ImageIO `public.heic` 原生 HEVC | 保留來源 RGB ICC |
 | JPEG XL | libjxl，品質 100 為解碼後像素無損，依尺寸調整 effort | 明示轉換為 sRGB |
 
-HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。
+HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。Jpegli 編碼器支援 Windows，但此 SwiftUI App 仍為 macOS 專用；固定版本與驗證見 [NATIVE_JPEGLI.md](NATIVE_JPEGLI.md)。JPEG 品質 100 仍是有損，透明輸入轉白底。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。
 
 ## 中繼資料與檔案安全
 

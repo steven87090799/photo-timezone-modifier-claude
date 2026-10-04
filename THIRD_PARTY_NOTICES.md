@@ -25,3 +25,16 @@ NEXPRESS with third-party image codecs. Their component inventory and provenance
 `CompressionWeb/THIRD_PARTY_NOTICES`, also included in the App resources. HEIF
 encoding and decoding use macOS ImageIO; no third-party HEIF converter is
 bundled.
+
+JPEG encoding uses Google's Jpegli, statically linked with Highway. These
+sources and the libjpeg-compatible public headers are pinned by revision and
+archive SHA-256 in `NativeJpegli/dependencies.json`. The build also fetches the
+pinned skcms source required by upstream's CMake configuration; its CMS library
+is not linked into the App. JPEG uses conventional 8-bit YCbCr, not XYB.
+
+The App's `JpegliLicenses` resource directory contains the upstream Jpegli,
+Highway, skcms and libjpeg-turbo notices and source manifest. Jpegli is BSD-3-Clause;
+Highway's license offers Apache-2.0 or BSD-3-Clause. libjpeg-turbo's header notices
+and IJG license are retained. No Homebrew runtime libraries are shipped.
+
+Upstream: https://github.com/google/jpegli/tree/031a0077f5799a6041004267fc12b956c1f52a20

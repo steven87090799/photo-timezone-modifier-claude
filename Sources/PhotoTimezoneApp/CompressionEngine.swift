@@ -69,13 +69,26 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
 
     func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool,
                  onProgress: @escaping (Double, String) -> Void = { _, _ in }) async throws -> CompressionEngineResult {
-        guard isReady, let webView, let server, formats.contains(format.mime) else { throw failure("所選格式的編碼器尚未就緒。") }
+        let cancellation = CancellationToken()
+        return try await withTaskCancellationHandler {
+            try await perform(source: source, format: format, quality: quality, preview: preview,
+                              cancellation: cancellation, onProgress: onProgress)
+        } onCancel: { cancellation.cancel() }
+    }
+
+    func isAvailable(_ format: CompressionFormat) -> Bool {
+        format == .jpeg || (isReady && formats.contains(format.mime))
+    }
+
+    private func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool,
+                         cancellation: CancellationToken,
+                         onProgress: @escaping (Double, String) -> Void) async throws -> CompressionEngineResult {
+        guard isAvailable(format) else { throw failure("所選格式的編碼器尚未就緒。") }
         let id = UUID().uuidString
         let folder = workDirectory.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         let stagedSource = folder.appendingPathComponent("source." + source.pathExtension)
         let output = folder.appendingPathComponent("output." + format.fileExtension)
-        let cancellation = CancellationToken()
         cancellations[id] = cancellation
         defer { cancellations.removeValue(forKey: id); if releaseRequested { releaseRuntime() } }
         do {
@@ -88,17 +101,31 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             }.value
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
-            server.register(id: id, source: stagedSource, output: output)
-            progress[id] = onProgress
-            defer { server.unregister(id); progress.removeValue(forKey: id) }
-            let options: [String: Any] = ["id": id, "name": source.lastPathComponent,
-                "format": format.mime, "quality": quality, "preview": preview,
-                "preserveProfile": format.preservesRGBProfile]
-            let raw = try await webView.callAsyncJavaScript("return await window.compressionEngine.perform(options);",
-                arguments: ["options": options], in: nil, contentWorld: .page)
+            let result: [String: Any]
+            if format == .jpeg {
+                onProgress(60, "Jpegli 編碼中")
+                let native = try await Task.detached(priority: .userInitiated) {
+                    try CompressionJPEG.encode(source: stagedSource, output: output, quality: quality,
+                                               preview: preview, cancellation: cancellation)
+                }.value
+                result = ["width": native.width, "height": native.height, "frames": native.frames,
+                          "profileMode": native.originalProfile ? "original" : "srgb"]
+            } else {
+                guard let webView, let server else { throw failure("所選格式的編碼器尚未就緒。") }
+                server.register(id: id, source: stagedSource, output: output)
+                progress[id] = onProgress
+                defer { server.unregister(id); progress.removeValue(forKey: id) }
+                let options: [String: Any] = ["id": id, "name": source.lastPathComponent,
+                    "format": format.mime, "quality": quality, "preview": preview,
+                    "preserveProfile": format.preservesRGBProfile]
+                let raw = try await webView.callAsyncJavaScript("return await window.compressionEngine.perform(options);",
+                    arguments: ["options": options], in: nil, contentWorld: .page)
+                guard let decoded = raw as? [String: Any] else { throw failure("壓縮引擎沒有回傳完整結果。") }
+                result = decoded
+            }
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
-            guard let result = raw as? [String: Any], let width = result["width"] as? Int,
+            guard let width = result["width"] as? Int,
                   let height = result["height"] as? Int,
                   FileManager.default.fileExists(atPath: output.path) else { throw failure("壓縮引擎沒有回傳完整結果。") }
             var metadata = "預覽使用縮小影像；大小估算供參考"

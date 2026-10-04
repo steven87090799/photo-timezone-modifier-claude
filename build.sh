@@ -20,6 +20,7 @@ if [[ $# != 0 ]]; then
   exit 1
 fi
 ./scripts/prepare-exiftool.sh
+python3 ./scripts/prepare-jpegli.py
 bash ./scripts/prepare-icon.sh
 mkdir -p "$PROJECT_DIR/dist"
 # Build outside FileProvider-managed Documents so Finder attributes cannot be
@@ -41,6 +42,7 @@ fi
 /bin/cp -R app/Localization/zh-Hant-TW.lproj "$APP_PATH/Contents/Resources/"
 ./scripts/stage-runtime.sh "$PROJECT_DIR/.build/vendor-exiftool" "$APP_PATH/Contents/Resources/ExifTool"
 /bin/cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/"
+/bin/cp -R "$PROJECT_DIR/.build/vendor-jpegli/licenses" "$APP_PATH/Contents/Resources/JpegliLicenses"
 /bin/cp -R CompressionWeb "$APP_PATH/Contents/Resources/"
 /bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"
 /usr/bin/strip -x "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"

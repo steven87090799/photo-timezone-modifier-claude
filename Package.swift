@@ -1,5 +1,9 @@
 // swift-tools-version: 6.4
 import PackageDescription
+import Foundation
+
+let nativeJpegliLib = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent(".build/vendor-jpegli/lib").path
 
 // Shipping and validation baseline: Apple Silicon running macOS 27 or later.
 let package = Package(
@@ -11,7 +15,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "TimezoneCore"),
-        .executableTarget(name: "PhotoTimezoneApp", dependencies: ["TimezoneCore"]),
+        .target(name: "JpegliBridge", linkerSettings: [
+            .unsafeFlags(["-L", nativeJpegliLib, "-lPhotoJpegli", "-ljpegli-static", "-lhwy"]),
+            .linkedLibrary("c++")
+        ]),
+        .executableTarget(name: "PhotoTimezoneApp", dependencies: ["TimezoneCore", "JpegliBridge"]),
         .testTarget(name: "TimezoneCoreTests", dependencies: ["TimezoneCore"]),
         .testTarget(name: "CompressionAppTests", dependencies: ["PhotoTimezoneApp", "TimezoneCore"])
     ],

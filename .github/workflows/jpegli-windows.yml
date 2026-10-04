@@ -1,0 +1,30 @@
+name: Jpegli Windows compatibility
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-encoder:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build the same native Jpegli bridge with MSVC
+        shell: pwsh
+        run: python scripts/prepare-jpegli.py
+      - name: Open ordinary JPEG with the Windows system decoder
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $files = Get-ChildItem .build/vendor-jpegli/compatibility/*.jpg
+          if ($files.Count -ne 5) { throw 'Expected five Jpegli quality fixtures' }
+          foreach ($file in $files) {
+            $image = [System.Drawing.Bitmap]::new($file.FullName)
+            try {
+              if ($image.Width -ne 128 -or $image.Height -ne 96) { throw 'JPEG dimensions differ' }
+              if ($image.RawFormat.Guid -ne [System.Drawing.Imaging.ImageFormat]::Jpeg.Guid) { throw 'Not ordinary JPEG' }
+              $null = $image.GetPixel(64,48)
+              Write-Host "Windows decoded $($file.Name): $($image.Width) x $($image.Height)"
+            } finally { $image.Dispose() }
+          }
