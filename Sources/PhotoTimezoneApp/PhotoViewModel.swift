@@ -32,10 +32,10 @@ final class PhotoViewModel: ObservableObject {
     @Published var gpsLatitudeInput = ""
     @Published var gpsLongitudeInput = ""
     @Published var gpsAltitudeInput = ""
-    @Published var query = "" { didSet { if query != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var filter: PhotoFilter = .all { didSet { if filter != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var cameraFilter = "" { didSet { if cameraFilter != oldValue { scheduleCatalogue(resetPage: true) } } }
-    @Published var sort: PhotoSort = .filename { didSet { if sort != oldValue { scheduleCatalogue(resetPage: true) } } }
+    @Published var query = "" { didSet { if query != oldValue { scheduleCatalogue(invalidateProjection: true) } } }
+    @Published var filter: PhotoFilter = .all { didSet { if filter != oldValue { scheduleCatalogue(invalidateProjection: true) } } }
+    @Published var cameraFilter = "" { didSet { if cameraFilter != oldValue { scheduleCatalogue(invalidateProjection: true) } } }
+    @Published var sort: PhotoSort = .filename { didSet { if sort != oldValue { scheduleCatalogue(invalidateProjection: true) } } }
     @Published var scope: ProcessingScope = .all
     @Published var activePage: AppPage = .photos
     @Published var showingOffsetChooser = false
@@ -43,9 +43,7 @@ final class PhotoViewModel: ObservableObject {
     @Published var showingReportDetails = false
     @Published var showingMoreMetadata = false
     @Published private(set) var filteredItems: [PhotoItem] = []
-    @Published private(set) var pageItems: [PhotoItem] = []
     @Published private(set) var cameras: [(name: String, count: Int)] = []
-    @Published private(set) var pageIndex = 0
     @Published private(set) var totalBytes: Int64 = 0
     @Published private(set) var missingOffsetCount = 0
     @Published private(set) var elapsedSeconds: TimeInterval = 0
@@ -102,7 +100,6 @@ final class PhotoViewModel: ObservableObject {
     private var jobTask: Task<Void, Never>?
     private var catalogueTask: Task<Void, Never>?
     private var clockTask: Task<Void, Never>?
-    private var catalogueNeedsPageReset = false
     private let catalogueIndex = CatalogueIndex()
     private var projectionTask: Task<Void, Never>?
     private var catalogueRevision: UInt64 = 0
@@ -147,7 +144,6 @@ final class PhotoViewModel: ObservableObject {
               !item.publicationUnconfirmed, let metadata = item.metadata else { return false }
         return metadata.canSafelyAddGPS
     }
-    var pageCount: Int { max(1, (filteredItems.count + PhotoCatalogue.pageSize - 1) / PhotoCatalogue.pageSize) }
     var scopedItems: [PhotoItem] {
         switch scope {
         case .all: return items
@@ -163,11 +159,6 @@ final class PhotoViewModel: ObservableObject {
         guard completed >= 10, total > completed, elapsedSeconds >= 2 else { return "已用 \(time)" }
         let remaining = Int(elapsedSeconds / Double(completed) * Double(total - completed))
         return "已用 \(time) · 約剩 \(max(1, (remaining + 59) / 60)) 分鐘"
-    }
-
-    func setPage(_ index: Int) {
-        pageIndex = min(max(index, 0), pageCount - 1)
-        pageItems = PhotoCatalogue.page(filteredItems, index: pageIndex)
     }
 
     func selectFiltered() { guard !catalogueUpdating else { return }; selection = Set(filteredItems.map(\.id)); scope = .selected }
@@ -188,9 +179,8 @@ final class PhotoViewModel: ObservableObject {
         inspect()
     }
 
-    private func scheduleCatalogue(resetPage: Bool = false) {
-        catalogueNeedsPageReset = catalogueNeedsPageReset || resetPage
-        if resetPage { catalogueRevision &+= 1; catalogueUpdating = true }
+    private func scheduleCatalogue(invalidateProjection: Bool = false) {
+        if invalidateProjection { catalogueRevision &+= 1; catalogueUpdating = true }
         guard catalogueTask == nil else { return }
         catalogueTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -233,10 +223,8 @@ final class PhotoViewModel: ObservableObject {
                 self.cameras = result.cameras
                 self.missingOffsetCount = result.missingOffsets
                 self.totalBytes = result.totalBytes
-                self.setPage(self.catalogueNeedsPageReset ? 0 : self.pageIndex)
-                self.catalogueNeedsPageReset = false
                 self.projectionRevision = revision
-                if !self.isRunning, self.selection.isEmpty, let first = self.pageItems.first { self.selection = [first.id] }
+                if !self.isRunning, self.selection.isEmpty, let first = self.filteredItems.first { self.selection = [first.id] }
             }
             self.catalogueUpdating = self.projectionRevision != self.catalogueRevision
             if self.catalogueUpdating { self.scheduleCatalogue() }
@@ -340,7 +328,7 @@ final class PhotoViewModel: ObservableObject {
         bufferedItems = []; bufferDirty = false
         catalogueGeneration &+= 1; catalogueRevision &+= 1
         catalogueUpdating = true
-        filteredItems = []; pageItems = []; cameras = []
+        filteredItems = []; cameras = []
         totalBytes = 0; missingOffsetCount = 0
         itemIndices = [:]
         selection = []
@@ -603,7 +591,7 @@ final class PhotoViewModel: ObservableObject {
         bufferedItems = []; bufferDirty = false
         catalogueGeneration &+= 1; catalogueRevision &+= 1
         catalogueUpdating = true
-        filteredItems = []; pageItems = []; cameras = []
+        filteredItems = []; cameras = []
         totalBytes = 0; missingOffsetCount = 0
         pendingPhase = nil; pendingCompleted = nil; pendingTotal = nil
         itemIndices = [:]
@@ -741,7 +729,7 @@ final class PhotoViewModel: ObservableObject {
         isRunning = false
         clockTask?.cancel(); clockTask = nil
         refreshCatalogue()
-        if selection.isEmpty, let first = pageItems.first { selection = [first.id] }
+        if selection.isEmpty, let first = filteredItems.first { selection = [first.id] }
         isCancelling = false
         cancellation = nil
         activeRunID = nil
