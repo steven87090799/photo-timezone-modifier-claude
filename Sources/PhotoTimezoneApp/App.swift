@@ -556,14 +556,18 @@ private struct PhotoMainView: View {
                 .frame(width: 200, alignment: .leading)
                 if let metadata = item.metadata {
                     Divider()
-                    VStack(alignment: .leading, spacing: 6) {
-                        metadataSection("常用 EXIF", fields: [
+                    VStack(alignment: .leading, spacing: 4) {
+                        metadataSection("時間與時區", fields: [
                             .init(title: "拍攝時間", spec: "ExifIFD:DateTimeOriginal · 0x9003", value: metadata.dateTimeOriginal),
                             .init(title: "拍攝時區", spec: "ExifIFD:OffsetTimeOriginal · 0x9011", value: metadata.offsetOriginal),
+                            .init(title: "數位化時間", spec: "ExifIFD:CreateDate · 0x9004", value: metadata.createDate),
                             .init(title: "數位化時區", spec: "ExifIFD:OffsetTimeDigitized · 0x9012", value: metadata.offsetDigitized),
+                            .init(title: "修改時間", spec: "IFD0:ModifyDate · 0x0132", value: metadata.modifyDate),
                             .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime)
-                        ], minimumWidth: 140, showsSpecifications: false)
+                        ], minimumWidth: 130, showsSpecifications: false)
                         gpsEditor(item: item, metadata: metadata)
+                        metadataSection("EXIF GPS 資訊", fields: gpsPreviewFields(metadata),
+                                        minimumWidth: 105, maximumWidth: 200, showsSpecifications: false)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
@@ -607,7 +611,7 @@ private struct PhotoMainView: View {
                 }
                 .buttonStyle(.link).controlSize(.small)
                 .accessibilityIdentifier("moreMetadataButton")
-                .help("展開次秒、GPS 明細、相機與鏡頭序號、拍攝參數及檔案規格。")
+                .help("展開次秒、相機與鏡頭序號、詳細拍攝參數及檔案規格。GPS 欄位已直接顯示在照片右側。")
                 if model.showingMoreMetadata {
                     Divider()
                     if let metadata = item.metadata {
@@ -621,17 +625,6 @@ private struct PhotoMainView: View {
                             .init(title: "修改時間", spec: "IFD0:ModifyDate · EXIF DateTime · 0x0132", value: metadata.modifyDate),
                             .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime),
                             .init(title: "修改次秒", spec: "ExifIFD:SubSecTime · 0x9290", value: metadata.subSecTime)
-                        ])
-                        metadataSection("GPS", fields: [
-                            .init(title: "GPS 版本", spec: "GPS:GPSVersionID · 0x0000", value: metadata.gpsVersionID),
-                            .init(title: "緯度", spec: "GPS:GPSLatitude · 0x0002", value: metadata.gpsLatitude),
-                            .init(title: "緯度方向", spec: "GPS:GPSLatitudeRef · 0x0001", value: metadata.gpsLatitudeRef),
-                            .init(title: "經度", spec: "GPS:GPSLongitude · 0x0004", value: metadata.gpsLongitude),
-                            .init(title: "經度方向", spec: "GPS:GPSLongitudeRef · 0x0003", value: metadata.gpsLongitudeRef),
-                            .init(title: "高度", spec: "GPS:GPSAltitude · 0x0006", value: metadata.gpsAltitude),
-                            .init(title: "高度基準", spec: "GPS:GPSAltitudeRef · 0x0005", value: metadata.gpsAltitudeRef),
-                            .init(title: "GPS 日期", spec: "GPS:GPSDateStamp · 0x001D", value: metadata.gpsDateStamp),
-                            .init(title: "GPS 時間", spec: "GPS:GPSTimeStamp · 0x0007", value: metadata.gpsTimeStamp)
                         ])
                         metadataSection("曝光與拍攝參數", fields: [
                             .init(title: "ISO", spec: "ExifIFD:ISO · EXIF PhotographicSensitivity · 0x8827", value: metadata.iso),
@@ -681,6 +674,20 @@ private struct PhotoMainView: View {
         .id(item.id)
     }
 
+    private func gpsPreviewFields(_ metadata: PhotoMetadata) -> [MetadataSpecField] {
+        [
+            .init(title: "緯度", spec: "GPS:GPSLatitude · 0x0002", value: metadata.gpsLatitude),
+            .init(title: "經度", spec: "GPS:GPSLongitude · 0x0004", value: metadata.gpsLongitude),
+            .init(title: "高度", spec: "GPS:GPSAltitude · 0x0006", value: metadata.gpsAltitude),
+            .init(title: "GPS 日期", spec: "GPS:GPSDateStamp · 0x001D", value: metadata.gpsDateStamp),
+            .init(title: "GPS 時間", spec: "GPS:GPSTimeStamp · 0x0007", value: metadata.gpsTimeStamp),
+            .init(title: "緯度方向", spec: "GPS:GPSLatitudeRef · 0x0001", value: metadata.gpsLatitudeRef),
+            .init(title: "經度方向", spec: "GPS:GPSLongitudeRef · 0x0003", value: metadata.gpsLongitudeRef),
+            .init(title: "高度基準", spec: "GPS:GPSAltitudeRef · 0x0005", value: metadata.gpsAltitudeRef),
+            .init(title: "GPS 版本", spec: "GPS:GPSVersionID · 0x0000", value: metadata.gpsVersionID)
+        ]
+    }
+
     @ViewBuilder
     private func gpsEditor(item: PhotoItem, metadata: PhotoMetadata) -> some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -711,16 +718,17 @@ private struct PhotoMainView: View {
                     .font(.caption2).foregroundStyle(.orange)
             }
         }
-        .padding(10)
+        .padding(.horizontal, 8).padding(.vertical, 5)
         .background(Color(nsColor: .textBackgroundColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func metadataSection(_ title: String, fields: [MetadataSpecField],
-                                 minimumWidth: CGFloat = 170, showsSpecifications: Bool = true) -> some View {
+                                 minimumWidth: CGFloat = 170, maximumWidth: CGFloat = 270,
+                                 showsSpecifications: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: minimumWidth, maximum: 270), spacing: 12, alignment: .topLeading)],
+                columns: [GridItem(.adaptive(minimum: minimumWidth, maximum: maximumWidth), spacing: 12, alignment: .topLeading)],
                 alignment: .leading,
                 spacing: 8
             ) {
