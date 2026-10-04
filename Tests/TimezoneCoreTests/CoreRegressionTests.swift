@@ -194,7 +194,7 @@ struct CoreRegressionTests {
             offsetDigitized: "+09:00", offsetTime: "+08:00", fileType: "JPEG",
             createDate: "2024:02:29 12:34:56", modifyDate: "2024:02:29 12:34:56", dateTags: [:])
         let issues = TimeValidation.issues(metadata)
-        #expect(issues.contains { $0.contains("timezone fields disagree") })
+        #expect(issues.contains { $0.contains("EXIF 時區欄位不一致") })
     }
 
     @Test func xmpISOFormattingDoesNotInventAClockConflict() {
@@ -204,6 +204,6 @@ struct CoreRegressionTests {
         let same = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:34:56+08:00"])
         #expect(same.isEmpty)
         let different = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:34:56+09:00"])
-        #expect(different.contains { $0.contains("conflict") })
+        #expect(different.contains { $0.contains("不一致") })
     }
 }
