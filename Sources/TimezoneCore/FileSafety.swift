@@ -116,8 +116,26 @@ enum FileSafety {
             throw PhotoError("File creation time could not be preserved; original not changed.")
         }
         #endif
-        guard try extendedAttributes(source) == extendedAttributes(candidate) else {
-            throw PhotoError("Extended attributes differ; original not changed.")
+        let originalAttributes = try extendedAttributes(source)
+        let candidateAttributes = try extendedAttributes(candidate)
+        var systemManaged: Set<String> = []
+        #if canImport(Darwin)
+        // Native copies can receive a new quarantine record and provenance for
+        // their new inode/process, including when clonefile falls back across
+        // volumes. Leave these destination security records untouched: copying
+        // the source values back or removing the new records is not appropriate.
+        systemManaged = ["com.apple.quarantine", "com.apple.provenance"]
+        if let quarantine = originalAttributes["com.apple.quarantine"], !quarantine.isEmpty {
+            guard let retained = candidateAttributes["com.apple.quarantine"], !retained.isEmpty else {
+                throw PhotoError("候選檔遺失 macOS 隔離標記；原檔保持原狀。")
+            }
+        }
+        #endif
+        let differing = Set(originalAttributes.keys).union(candidateAttributes.keys)
+            .subtracting(systemManaged)
+            .filter { originalAttributes[$0] != candidateAttributes[$0] }.sorted()
+        guard differing.isEmpty else {
+            throw PhotoError("檔案延伸屬性不一致（\(differing.joined(separator: "、"))）；原檔保持原狀。")
         }
     }
 

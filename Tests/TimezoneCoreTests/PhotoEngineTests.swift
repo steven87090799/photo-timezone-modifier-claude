@@ -1161,6 +1161,61 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(!xmpDates.isEmpty)
     }
 
+    @Test func testMinutePrecisionXMPDatesKeepTheirPrecisionInPhotoAndSidecar() async throws {
+        let photo = try makeSeededPhoto("minute-xmp/photo.jpg")
+        expectEqual(try tool.execute(["-overwrite_original",
+            "-XMP-exif:DateTimeOriginal=2021-04-05T06:07", photo.path]).status, 0)
+        let sidecar = try makeFile("minute-xmp/photo.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="2021-04-05T06:07"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let originalPhoto = try Data(contentsOf: photo), originalSidecar = try Data(contentsOf: sidecar)
+        let output = try makeDirectory("minute-xmp-output")
+        _ = try assertJob(await run([photo], operation: .writeCopy(offset: UTCOffset(minutes: 480),
+            mode: .fillMissing, destination: output, sourceRoots: [photo.deletingLastPathComponent()])), succeeded: 1)
+        let copy = output.appendingPathComponent("minute-xmp/photo.jpg")
+        let xmpCopy = output.appendingPathComponent("minute-xmp/photo.xmp")
+        let snapshot = try tool.snapshot(copy)
+        assertDates(snapshot.metadata)
+        assertOffsets(snapshot.metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
+        let dates = snapshot.embeddedTags.filter {
+            $0.key.hasPrefix("XMP-exif:") && $0.key.hasSuffix(":DateTimeOriginal")
+        }
+        expectTrue(!dates.isEmpty && dates.values.allSatisfy { $0.contains("06:07+08:00") })
+        expectTrue(try tool.readSidecar(xmpCopy).dates["XMP-exif:DateTimeOriginal"]?.contains("06:07+08:00") == true)
+        expectEqual(try Data(contentsOf: photo), originalPhoto)
+        expectEqual(try Data(contentsOf: sidecar), originalSidecar)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_JPEG_DIRECTORY"] != nil))
+    func testRealJPEGDirectoryCopyPreservesOriginalsAndImageData() async throws {
+        guard let path = ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_JPEG_DIRECTORY"] else { return }
+        let source = URL(fileURLWithPath: path, isDirectory: true)
+        let photos = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
+            .filter { ["jpg", "jpeg"].contains($0.pathExtension.lowercased()) }.sorted { $0.path < $1.path }
+        expectTrue(!photos.isEmpty)
+        var originals: [String: (identity: FileIdentity, digest: String, snapshot: ExifTool.Snapshot)] = [:]
+        for photo in photos {
+            originals[photo.path] = (try FileIdentity.read(photo), try digest(of: photo), try tool.snapshot(photo))
+        }
+        let output = try makeDirectory("real-jpeg-output")
+        _ = try assertJob(await run(photos, operation: .writeCopy(offset: UTCOffset(minutes: 480),
+            mode: .fillMissing, destination: output, sourceRoots: [source])), succeeded: photos.count)
+        for photo in photos {
+            let before = try requireValue(originals[photo.path])
+            try before.identity.verify(photo)
+            expectEqual(try digest(of: photo), before.digest)
+            let copy = output.appendingPathComponent(source.lastPathComponent).appendingPathComponent(photo.lastPathComponent)
+            let after = try tool.snapshot(copy)
+            expectEqual(after.metadata.dateTimeOriginal, before.snapshot.metadata.dateTimeOriginal)
+            expectEqual(after.metadata.hasAnyGPS, before.snapshot.metadata.hasAnyGPS)
+            assertOffsets(after.metadata, original: "+08:00", digitized: "+08:00", time: "+08:00")
+            expectEqual(try tool.imageDataSHA256(copy), try tool.imageDataSHA256(photo))
+            expectEqual(try tool.execute(["-b", "-ICC_Profile", copy.path]).stdout,
+                        try tool.execute(["-b", "-ICC_Profile", photo.path]).stdout)
+        }
+        print("Real JPEG copy acceptance: \(photos.count) succeeded; original bytes/identities, capture dates, image payloads and ICC profiles verified.")
+    }
+
     @Test func testBatchGPSAndExistingXMPSidecarCommitTogether() async throws {
         let photo = try makeSeededPhoto("xmp-bundle/photo.jpg")
         let sidecar = try makeFile("xmp-bundle/photo.xmp", contents: Data("""
