@@ -41,6 +41,7 @@ final class PhotoViewModel: ObservableObject {
     @Published var showingOffsetChooser = false
     @Published var showingRecovery = false
     @Published var showingReportDetails = false
+    @Published var showingMoreMetadata = false
     @Published private(set) var filteredItems: [PhotoItem] = []
     @Published private(set) var pageItems: [PhotoItem] = []
     @Published private(set) var cameras: [(name: String, count: Int)] = []
