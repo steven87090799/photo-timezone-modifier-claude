@@ -39,6 +39,8 @@ struct CompressionItem: Identifiable {
     var originalBytes: Int64
     let width: Int
     let height: Int
+    var metadata: PhotoMetadata? = nil
+    var metadataError: String? = nil
     var state: CompressionState = .pending
     var progress = 0.0
     var phase = "待處理"
@@ -50,10 +52,42 @@ struct CompressionItem: Identifiable {
     var webhookStatus: String?
     var outputName: String {
         guard let format else { return source.lastPathComponent }
+        let ext = source.pathExtension.lowercased()
+        if (format == .jpeg && ["jpg", "jpeg"].contains(ext)) || (format == .heif && ["heic", "heif"].contains(ext)) || ext == format.fileExtension {
+            return source.lastPathComponent
+        }
         return source.deletingPathExtension().lastPathComponent + "." + format.fileExtension
     }
     var measuredSourceBytes: Int64 { result?.sourceBytes ?? originalBytes }
     var savings: Double? { result.flatMap { CompressionModel.savings(source: measuredSourceBytes, output: $0.bytes) } }
+    var basicInfo: String {
+        var parts = ["\(width) × \(height)"]
+        if let metadata {
+            parts.insert(metadata.camera, at: 0)
+            if let iso = metadata.iso { parts.append("ISO \(iso)") }
+            if let aperture = metadata.aperture { parts.append("f/\(aperture)") }
+            if let exposure = metadata.exposureTime { parts.append("\(exposure) 秒") }
+            if let focal = metadata.focalLength { parts.append("\(focal) mm") }
+        }
+        return parts.joined(separator: " · ")
+    }
+    var dateInfo: String { metadata?.dateTimeOriginal ?? "未記錄拍攝時間" }
+    var timezoneInfo: String {
+        guard let metadata else { return "時區未讀取" }
+        return "拍攝 \(metadata.offsetOriginal ?? "未填寫") · 數位化 \(metadata.offsetDigitized ?? "未填寫") · 修改 \(metadata.offsetTime ?? "未填寫")"
+    }
+    var gpsInfo: String {
+        guard let metadata else { return "GPS 無法讀取" }
+        var parts: [String] = []
+        if metadata.hasCompleteGPSCoordinate {
+            parts.append("\(metadata.gpsLatitude!) \(metadata.gpsLatitudeRef!)，\(metadata.gpsLongitude!) \(metadata.gpsLongitudeRef!)")
+            if let altitude = metadata.gpsAltitude { parts.append("高度 \(altitude) m\(metadata.gpsAltitudeRef == "1" ? "（海平面以下）" : "")") }
+        } else if metadata.hasEmbeddedEXIFGPS { parts.append("部分 EXIF GPS") }
+        if metadata.embeddedXMPGPSDetected { parts.append("內嵌 XMP GPS") }
+        if metadata.sidecarGPSDetected { parts.append("旁邊 XMP 有 GPS（未嵌入輸出）") }
+        if metadata.gpsSafetyUncertain { parts.append("XMP GPS 無法可靠確認") }
+        return parts.isEmpty ? "未偵測到 GPS" : parts.joined(separator: " · ")
+    }
 }
 
 @MainActor
@@ -202,6 +236,8 @@ final class CompressionModel: ObservableObject {
                 let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
                 var paths = known
                 var result: [CompressionItem] = []
+                let developmentTool = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/vendor-exiftool/exiftool")
+                let reader = try? CompressionPhotoReader(exiftoolURL: (try? EngineResources.exiftoolURL()) ?? developmentTool)
                 func append(_ url: URL) {
                     let source = url.standardizedFileURL
                     guard extensions.contains(source.pathExtension.lowercased()), paths.insert(source.path).inserted,
@@ -213,6 +249,12 @@ final class CompressionModel: ObservableObject {
                         width: properties?[kCGImagePropertyPixelWidth] as? Int ?? 0,
                         height: properties?[kCGImagePropertyPixelHeight] as? Int ?? 0)
                     if size > 256 * 1024 * 1024 { item.state = .failed; item.error = "來源檔案超過 256 MiB 上限" }
+                    else {
+                        do {
+                            guard let reader else { throw PhotoError("無法啟動中繼資料讀取工具。") }
+                            item.metadata = try reader.read(source)
+                        } catch { item.metadataError = error.localizedDescription }
+                    }
                     result.append(item)
                 }
                 func walkFolder(_ url: URL) {
@@ -538,11 +580,11 @@ final class CompressionModel: ObservableObject {
     }
 
     func exportReport() {
-        let header = "來源,狀態,格式,原始大小,輸出大小,中繼資料,Webhook,說明\n"
+        let header = "來源,輸出檔名,狀態,格式,相片資訊,拍攝時間,時區,GPS,原始大小,輸出大小,容量減少百分比,中繼資料,Webhook,說明\n"
         func csv(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
         let report = header + items.map { item in
-            [item.source.path, item.state.rawValue, item.format?.rawValue ?? "", String(item.measuredSourceBytes),
-             item.result.map { String($0.bytes) } ?? "", item.result?.metadataStatus ?? "", item.webhookStatus ?? "", item.error ?? ""].map(csv).joined(separator: ",")
+            [item.source.path, item.outputName, item.state.rawValue, item.format?.rawValue ?? "", item.basicInfo, item.dateInfo, item.timezoneInfo, item.gpsInfo, String(item.measuredSourceBytes),
+             item.result.map { String($0.bytes) } ?? "", item.savings.map { String(format: "%.2f", $0 * 100) } ?? "", item.result?.metadataStatus ?? "", item.webhookStatus ?? "", item.error ?? item.metadataError ?? ""].map(csv).joined(separator: ",")
         }.joined(separator: "\n")
         let panel = NSSavePanel(); panel.nameFieldStringValue = "影像壓縮結果.csv"
         panel.begin { [weak self] response in
@@ -568,7 +610,7 @@ final class CompressionModel: ObservableObject {
     private func safeDestination(_ url: URL) -> Bool {
         let resolved = url.resolvingSymlinksInPath().standardizedFileURL
         guard !items.contains(where: { $0.source.resolvingSymlinksInPath().standardizedFileURL == resolved }) else {
-            notice = "請使用另一個檔名，避免取代已匯入的來源圖片。"; return false
+            notice = "請選擇另一個輸出資料夾，保留原檔名並避免取代來源圖片。"; return false
         }
         return true
     }
@@ -590,15 +632,15 @@ enum CompressionExports {
         try Data(contentsOf: source, options: .mappedIfSafe).write(to: target, options: .atomic)
     }
     static func saveAll(_ files: [(URL, String)], in folder: URL) throws {
+        var names = Set<String>()
+        for (_, name) in files {
+            guard name == URL(fileURLWithPath: name).lastPathComponent, name != ".", name != ".." else { throw PhotoError("輸出檔名無效：\(name)") }
+            let key = name.precomposedStringWithCanonicalMapping.lowercased()
+            guard names.insert(key).inserted else { throw PhotoError("有重複檔名：\(name)。為保留原檔名，請分批輸出至不同資料夾。") }
+            guard !FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path) else { throw PhotoError("輸出位置已有同名檔案：\(name)。請選擇空資料夾；不會自動改名或覆蓋。") }
+        }
         for (source, name) in files {
-            let base = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
-            let ext = URL(fileURLWithPath: name).pathExtension
-            var index = 1
-            while true {
-                let target = folder.appendingPathComponent(index == 1 ? name : "\(base) (\(index)).\(ext)")
-                do { try FileManager.default.copyItem(at: source, to: target); break }
-                catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError { index += 1 }
-            }
+            try FileManager.default.copyItem(at: source, to: folder.appendingPathComponent(name))
         }
     }
     static func zip(_ files: [(URL, String)], to target: URL) throws {

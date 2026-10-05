@@ -21,7 +21,7 @@ struct CompressionCalibrationTests {
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: local) }
         let sources = try FileManager.default.contentsOfDirectory(at: sourceRoot, includingPropertiesForKeys: [.isRegularFileKey])
-            .filter { ["jpg", "jpeg"].contains($0.pathExtension.lowercased()) }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .filter { ["jpg", "jpeg", "heic", "heif"].contains($0.pathExtension.lowercased()) }.sorted { $0.lastPathComponent < $1.lastPathComponent }
         #expect(!sources.isEmpty)
         let toolURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/vendor-exiftool/exiftool")
         let tool = ExifTool(url: toolURL)
@@ -40,7 +40,7 @@ struct CompressionCalibrationTests {
         var rows: [[String: Any]] = []
         func persist() throws {
             let report: [String: Any] = ["sourceCount": sources.count, "testedCount": candidates.count, "mode": curve ? "curve" : "batch",
-                "metric": "SSIMULACRA2 on three original-resolution 1024px crops; no resized-image comparison",
+                "metric": env["PHOTO_COMPRESSION_CALIBRATION_SKIP_SCORES"] == "1" ? "Filename, EXIF, ICC, dimensions and actual bytes validation; no visual quality score" : "SSIMULACRA2 on three original-resolution 1024px crops; no resized-image comparison",
                 "cropPositions": [[0.15, 0.15], [0.5, 0.5], [0.85, 0.85]], "rows": rows,
                 "sourceSHA256": hashes]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: outputRoot.appendingPathComponent("results.json"), options: .atomic)
@@ -50,14 +50,16 @@ struct CompressionCalibrationTests {
             let sourceBytes = Int64(try source.resourceValues(forKeys: [.fileSizeKey]).fileSize!)
             let before = try tool.snapshot(source, strictOffsets: false, forCompression: true)
             let icc = try tool.execute(["-b", "-ICC_Profile", source.path]).stdout
-            let referenceCrops = try makeCrops(source, in: local, prefix: "reference")
+            let referenceCrops = env["PHOTO_COMPRESSION_CALIBRATION_SKIP_SCORES"] == "1" ? [] : try makeCrops(source, in: local, prefix: "reference")
             for format in [CompressionFormat.jpeg, .heif] {
                 for quality in format == .jpeg ? jpegQualities : heifQualities {
                     let started = Date()
                     let result = try await host.perform(source: source, format: format, quality: quality, preview: false)
                     let folder = outputRoot.appendingPathComponent("\(format.fileExtension)-q\(quality)")
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    let saved = folder.appendingPathComponent(original.deletingPathExtension().lastPathComponent + "." + format.fileExtension)
+                    var item = CompressionItem(id: UUID(), source: original, originalBytes: sourceBytes, width: result.width, height: result.height)
+                    item.format = format
+                    let saved = folder.appendingPathComponent(item.outputName)
                     try CompressionExports.saveFile(result.url, to: saved)
                     let actual = Int64(try saved.resourceValues(forKeys: [.fileSizeKey]).fileSize!)
                     #expect(actual == result.bytes && result.sourceBytes == sourceBytes)
@@ -68,10 +70,13 @@ struct CompressionCalibrationTests {
                     #expect(after.metadata.offsetOriginal == before.metadata.offsetOriginal)
                     #expect(after.metadata.gpsLatitude == before.metadata.gpsLatitude)
                     #expect(after.metadata.gpsLongitude == before.metadata.gpsLongitude)
+                    #expect(after.metadata.orientation == before.metadata.orientation)
                     #expect(try tool.execute(["-b", "-ICC_Profile", saved.path]).stdout == icc)
-                    let outputCrops = try makeCrops(saved, in: local, prefix: "output")
                     var scores: [Double] = []
-                    for i in referenceCrops.indices { scores.append(try score(referenceCrops[i], outputCrops[i])) }
+                    if env["PHOTO_COMPRESSION_CALIBRATION_SKIP_SCORES"] != "1" {
+                        let outputCrops = try makeCrops(saved, in: local, prefix: "output")
+                        for i in referenceCrops.indices { scores.append(try score(referenceCrops[i], outputCrops[i])) }
+                    }
                     rows.append(["source": original.lastPathComponent, "format": format.rawValue, "quality": quality,
                         "sourceBytes": sourceBytes, "outputBytes": actual, "savingsPercent": (1 - Double(actual) / Double(sourceBytes)) * 100,
                         "ratio": Double(sourceBytes) / Double(actual), "scores": scores,

@@ -30,6 +30,41 @@ enum CompressionImages {
         return image.bitsPerComponent
     }
 
+    /// Render the source as macOS displays it, then invert the stored EXIF
+    /// orientation. HEIF has its own container transform, which ImageIO can
+    /// expose instead of the actual EXIF orientation. Read that tag separately.
+    static func photoRaster(_ url: URL, preview: Bool, orientation: Int) throws -> Raster {
+        let image = try raster(url, maxPixel: preview ? 900 : 0, preserveOriginal: true)
+        guard !preview && orientation != 1 else { return image }
+        let inverse = orientation == 6 ? 8 : orientation == 8 ? 6 : orientation
+        let width = inverse >= 5 ? image.height : image.width
+        let height = inverse >= 5 ? image.width : image.height
+        var output = Data(count: image.bytes.count)
+        image.bytes.withUnsafeBytes { source in
+            let source = source.bindMemory(to: UInt8.self)
+            output.withUnsafeMutableBytes { target in
+                let target = target.bindMemory(to: UInt8.self)
+                for y in 0..<image.height { for x in 0..<image.width {
+                    let point: (Int, Int)
+                    switch inverse {
+                    case 2: point = (image.width - 1 - x, y)
+                    case 3: point = (image.width - 1 - x, image.height - 1 - y)
+                    case 4: point = (x, image.height - 1 - y)
+                    case 5: point = (y, x)
+                    case 6: point = (image.height - 1 - y, x)
+                    case 7: point = (image.height - 1 - y, image.width - 1 - x)
+                    case 8: point = (y, image.width - 1 - x)
+                    default: point = (x, y)
+                    }
+                    let from = (y * image.width + x) * 4
+                    let to = (point.1 * width + point.0) * 4
+                    for channel in 0..<4 { target[to + channel] = source[from + channel] }
+                }}
+            }
+        }
+        return Raster(bytes: output, width: width, height: height, originalProfile: image.originalProfile, frames: image.frames, bitsPerComponent: 8)
+    }
+
     /// No resizing: comparison crops use the same coordinates on both images.
     static func comparisonCrop(_ url: URL, x: Double, y: Double, size: Int = 1024) -> NSImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),

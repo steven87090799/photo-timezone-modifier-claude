@@ -12,7 +12,7 @@ struct CompressionTests {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent(".build/vendor-exiftool/exiftool")
     }
-    private func fixture(in folder: URL, type: String = "public.jpeg", name: String = "source.jpg") throws -> URL {
+    private func fixture(in folder: URL, type: String = "public.jpeg", name: String = "source.jpg", orientation: Int = 1) throws -> URL {
         let width = 128, height = 96
         var pixels = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
@@ -26,7 +26,7 @@ struct CompressionTests {
             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
         let file = folder.appendingPathComponent(name)
         let destination = try #require(CGImageDestinationCreateWithURL(file as CFURL, type as CFString, 1, nil))
-        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: orientation] as CFDictionary)
         #expect(CGImageDestinationFinalize(destination))
         let tool = ExifTool(url: toolURL())
         let xmp = folder.appendingPathComponent("source.xmp")
@@ -37,6 +37,58 @@ struct CompressionTests {
             "-GPSLatitude=25.033", "-GPSLatitudeRef=N", "-GPSLongitude=121.5654", "-GPSLongitudeRef=E", "-XMP<=\(xmp.path)", file.path])
         #expect(result.status == 0)
         return file
+    }
+
+    @Test func jpgAndHeicKeepNamesOrientationAndPhotoEXIF() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("JPGHEIC-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let tool = ExifTool(url: toolURL())
+        let host = CompressionHost(); defer { host.shutdown() }
+        for (type, suffix) in [("public.jpeg", "JPG"), ("public.heic", "HEIC")] {
+            for orientation in 1...8 {
+                let source = try fixture(in: folder, type: type, name: "旅遊.原片.\(suffix)", orientation: orientation)
+                let write = try tool.execute(["-overwrite_original", "-EXIF:Orientation#=\(orientation)",
+                    "-Make=Test Camera", "-Model=Test Model", "-LensModel=Test Lens", "-ISO=400",
+                    "-FNumber=5.6", "-ExposureTime=1/125", "-CreateDate=2026:01:02 03:04:05",
+                    "-ModifyDate=2026:01:02 03:04:05", "-OffsetTimeDigitized=+08:00", "-OffsetTime=+08:00",
+                    "-GPSAltitude=42.5", "-GPSAltitudeRef#=0", source.path])
+                #expect(write.status == 0)
+                let original = try Data(contentsOf: source)
+                let before = try tool.snapshot(source, strictOffsets: false, forCompression: true)
+                let loaded = try CompressionPhotoReader(exiftoolURL: toolURL()).read(source)
+                #expect(loaded.cameraModel == "Test Model" && loaded.offsetOriginal == "+08:00")
+                #expect(loaded.hasCompleteGPSCoordinate)
+                for format in [CompressionFormat.jpeg, .heif] {
+                    let result = try await host.perform(source: source, format: format, quality: 75, preview: false)
+                    let after = try tool.snapshot(result.url, strictOffsets: false, forCompression: true)
+                    let sourceDisplay = try CompressionImages.raster(source, maxPixel: 128, preserveOriginal: true)
+                    let outputDisplay = try CompressionImages.raster(result.url, maxPixel: 128, preserveOriginal: true)
+                    #expect(sourceDisplay.width == outputDisplay.width && sourceDisplay.height == outputDisplay.height)
+                    let difference = zip(sourceDisplay.bytes, outputDisplay.bytes).reduce(0.0) { $0 + abs(Double($1.0) - Double($1.1)) } / Double(sourceDisplay.bytes.count)
+                    #expect(difference < 12, "Oriented display differs: \(suffix) -> \(format), \(orientation)")
+                    for (key, value) in before.embeddedTags where ["IFD0", "ExifIFD", "GPS"].contains(String(key.split(separator: ":").first ?? "")) {
+                        let tag = String(key.split(separator: ":").last ?? "")
+                        if ["YCbCrSubSampling", "YCbCrPositioning", "Compression", "ImageWidth", "ImageHeight"].contains(tag) { continue }
+                        #expect(after.embeddedTags.contains { MetadataVerifier.canonicalCopyKey($0.key) == MetadataVerifier.canonicalCopyKey(key) && $0.value == value }, "\(suffix) -> \(format) orientation \(orientation): \(key)")
+                    }
+                    var item = CompressionItem(id: UUID(), source: source, originalBytes: Int64(original.count), width: result.width, height: result.height)
+                    item.format = format; item.result = result; item.metadata = loaded
+                    #expect(item.outputName == (format == .jpeg && suffix == "JPG" || format == .heif && suffix == "HEIC" ? source.lastPathComponent : "旅遊.原片." + format.fileExtension))
+                    #expect(item.gpsInfo.contains("42.5") && item.timezoneInfo.contains("+08:00"))
+                    let exports = folder.appendingPathComponent("\(suffix)-\(orientation)-\(format.fileExtension)")
+                    try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
+                    try CompressionExports.saveAll([(result.url, item.outputName)], in: exports)
+                    let saved = exports.appendingPathComponent(item.outputName)
+                    #expect(try Data(contentsOf: saved) == Data(contentsOf: result.url))
+                    #expect(Int64((try FileManager.default.attributesOfItem(atPath: saved.path)[.size] as! NSNumber).int64Value) == result.bytes)
+                    #expect(throws: (any Error).self) { try CompressionExports.saveAll([(result.url, item.outputName)], in: exports) }
+                    #expect(try FileManager.default.contentsOfDirectory(atPath: exports.path) == [item.outputName])
+                }
+                #expect(try Data(contentsOf: source) == original)
+            }
+        }
+        #expect(host.webView == nil)
     }
 
     private func ready(_ host: CompressionHost) async throws {
@@ -188,8 +240,10 @@ struct CompressionTests {
         #expect(try CompressionImages.raster(source, maxPixel: 0, preserveOriginal: true).bytes == CompressionImages.raster(b.url, maxPixel: 0, preserveOriginal: true).bytes)
         let exportFolder = folder.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportFolder, withIntermediateDirectories: false)
-        try CompressionExports.saveAll([(a.url, "image.jpg"), (b.url, "image.png"), (a.url, "image.jpg")], in: exportFolder)
-        #expect(FileManager.default.fileExists(atPath: exportFolder.appendingPathComponent("image (2).jpg").path))
+        #expect(throws: (any Error).self) { try CompressionExports.saveAll([(a.url, "image.jpg"), (b.url, "image.png"), (a.url, "image.jpg")], in: exportFolder) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: exportFolder.path).isEmpty)
+        try CompressionExports.saveAll([(a.url, "image.jpg"), (b.url, "image.png")], in: exportFolder)
+        #expect(FileManager.default.fileExists(atPath: exportFolder.appendingPathComponent("image.jpg").path))
         let zip = folder.appendingPathComponent("images.zip")
         try CompressionExports.zip([(a.url, "image.jpg"), (b.url, "image.png")], to: zip)
         let unzip = Process(); unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")

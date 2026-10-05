@@ -256,16 +256,24 @@ private struct CompressionRow: View {
         HStack(spacing: 10) {
             Group {
                 CompressionThumbnail(source: item.source)
-            }.frame(width: 42, height: 42).background(Color.black.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 5))
+            }.frame(width: 54, height: 54).background(Color.black.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 5))
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.source.lastPathComponent).font(.callout.weight(.medium)).lineLimit(1)
+                Text(item.basicInfo).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.basicInfo)
+                Text("拍攝：\(item.dateInfo) · 時區：\(item.metadata?.offsetOriginal ?? "未填寫")")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).help("拍攝：\(item.dateInfo)\n時區：\(item.timezoneInfo)")
+                Text("GPS：\(item.gpsInfo)").font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.gpsInfo)
                 HStack(spacing: 5) {
-                    Text(CompressionModel.bytes(item.measuredSourceBytes))
+                    Text("原始 \(CompressionModel.bytes(item.measuredSourceBytes))")
                     if let result = item.result {
-                        Image(systemName: "arrow.right"); Text(CompressionModel.bytes(result.bytes))
-                        if let savings = item.savings { Text(String(format: "(%+.0f%%)", -savings * 100)) }
+                        Image(systemName: "arrow.right"); Text("輸出 \(CompressionModel.bytes(result.bytes))")
+                        if let savings = item.savings {
+                            Text(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100))
+                            Text("（\(CompressionModel.bytes(abs(item.measuredSourceBytes - result.bytes)))）")
+                        }
                     }
                 }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                if let error = item.metadataError { Text("EXIF 讀取失敗：\(error)").font(.caption2).foregroundStyle(.orange).lineLimit(1).help(error) }
                 if item.state == .running { ProgressView(value: item.progress, total: 100).controlSize(.small) }
             }
             Spacer(minLength: 6)
@@ -273,6 +281,7 @@ private struct CompressionRow: View {
                 Text(item.state == .running ? item.phase : item.state.rawValue).font(.caption)
                     .foregroundStyle(item.state == .failed ? Color.red : item.state == .success ? .green : .secondary)
                 if let format = item.format { Text(format.rawValue).font(.caption2).foregroundStyle(.tertiary) }
+                if item.state == .running { Text(String(format: "%.0f%%", item.progress)).font(.caption.monospacedDigit()) }
             }
         }.padding(.vertical, 5)
     }

@@ -14,11 +14,11 @@ enum CompressionJPEG {
     /// No WebKit, HTTP transfer or WASM heap for JPEG. Each encode owns its
     /// buffers and releases them before the metadata pass begins.
     static func encode(source: URL, output: URL, quality: Int, preview: Bool,
-                       cancellation: CancellationToken) throws -> Result {
+                       cancellation: CancellationToken, orientation: Int = 1) throws -> Result {
         try autoreleasepool {
             guard (1...100).contains(quality) else { throw PhotoError("JPEG 品質必須介於 1～100。") }
             if cancellation.isCancelled { throw CancellationError() }
-            let raster = try CompressionImages.raster(source, maxPixel: preview ? 900 : 0, preserveOriginal: true)
+            let raster = try CompressionImages.photoRaster(source, preview: preview, orientation: orientation)
             if cancellation.isCancelled { throw CancellationError() }
             var encoded: UnsafeMutablePointer<UInt8>?
             var count = 0

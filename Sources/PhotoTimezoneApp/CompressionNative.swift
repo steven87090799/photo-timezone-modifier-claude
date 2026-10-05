@@ -5,14 +5,14 @@ import TimezoneCore
 /// HEIF never creates a WebKit worker or invokes a third party converter.
 enum CompressionNative {
     static func encode(source: URL, output: URL, format: CompressionFormat,
-                       quality: Int, preview: Bool, cancellation: CancellationToken) throws -> CompressionJPEG.Result {
+                       quality: Int, preview: Bool, cancellation: CancellationToken, orientation: Int = 1) throws -> CompressionJPEG.Result {
         if cancellation.isCancelled { throw CancellationError() }
         guard (1...100).contains(quality) else { throw PhotoError("品質必須介於 1～100。") }
         let raster: CompressionImages.Raster
         if format == .png {
             raster = try CompressionImages.encodeHighDepthPNG(source, output: output)
         } else {
-            raster = try CompressionImages.raster(source, maxPixel: preview ? 900 : 0, preserveOriginal: true)
+            raster = try CompressionImages.photoRaster(source, preview: preview, orientation: orientation)
             guard let provider = CGDataProvider(data: raster.bytes as CFData),
                   let image = CGImage(width: raster.width, height: raster.height,
                     bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: raster.width * 4,
@@ -22,7 +22,8 @@ enum CompressionNative {
                   let destination = CGImageDestinationCreateWithURL(output as CFURL, "public.heic" as CFString, 1, nil) else {
                 throw PhotoError("macOS 無法建立 HEIF 輸出。")
             }
-            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: Double(quality) / 100] as CFDictionary)
+            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: Double(quality) / 100,
+                kCGImagePropertyOrientation: preview ? 1 : orientation] as CFDictionary)
             guard CGImageDestinationFinalize(destination) else { throw PhotoError("macOS HEIF 編碼失敗。") }
         }
         if cancellation.isCancelled { throw CancellationError() }

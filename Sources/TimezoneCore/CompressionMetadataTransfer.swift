@@ -1,12 +1,23 @@
 import Foundation
 
 /// Transfers metadata to a disposable compressed output, never to a source photo.
-/// Re-encoding changes dimensions/orientation; dates, offsets and GPS are copied as values.
+/// Dates, offsets and GPS are copied as values; photo EXIF preservation also
+/// retains orientation and declared dimensions while encoded layout may change.
 public enum CompressionMetadataTransfer {
+    public static func exifOrientation(_ source: URL, exiftoolURL: URL) throws -> Int {
+        let value = try ExifTool(url: exiftoolURL).execute(["-s3", "-n", "-a", "-EXIF:Orientation", source.path])
+        guard value.status == 0 else { throw PhotoError("無法可靠讀取 EXIF 方向。") }
+        let text = String(decoding: value.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return 1 }
+        let values = Set(text.split(whereSeparator: \.isNewline).map(String.init))
+        guard values.count == 1, let value = values.first, let orientation = Int(value), (1...8).contains(orientation) else { throw PhotoError("EXIF 方向無效或互相衝突，已停止輸出。") }
+        return orientation
+    }
     public static func preserve(source: URL, output: URL, width: Int, height: Int,
                                 profile: Data?, originalProfile: Bool,
                                 exiftoolURL: URL? = nil, cancellation: CancellationToken? = nil,
-                                iccVerifier: ((URL, Data) -> Bool)? = nil) throws -> String {
+                                iccVerifier: ((URL, Data) -> Bool)? = nil,
+                                preservePhotoEXIF: Bool = false) throws -> String {
         let tool = ExifTool(url: try exiftoolURL ?? EngineResources.exiftoolURL(), persistent: true)
         let isJXL = output.pathExtension.lowercased() == "jxl"
         let pinned = try FileIdentity.read(source)
@@ -17,23 +28,27 @@ public enum CompressionMetadataTransfer {
         defer { try? FileManager.default.removeItem(at: profileURL) }
         var arguments = ["-overwrite_original", "-TagsFromFile", source.path,
             "-EXIF:all", "-MakerNotes", "-XMP", "-IPTC", "--ThumbnailImage", "--PreviewImage"]
+        if preservePhotoEXIF {
+            arguments.removeAll { ["--ThumbnailImage", "--PreviewImage"].contains($0) }
+            arguments += ["-ThumbnailImage", "-PreviewImage"]
+        }
         if let expectedICC, !expectedICC.isEmpty, !isJXL {
             try expectedICC.write(to: profileURL, options: .atomic)
             arguments.append("-ICC_Profile<=\(profileURL.path)")
         }
-        if before.embeddedTags.keys.contains(where: { $0.hasSuffix(":Orientation") }) {
+        if !preservePhotoEXIF && before.embeddedTags.keys.contains(where: { $0.hasSuffix(":Orientation") }) {
             arguments += ["-EXIF:Orientation#=1"]
             if before.embeddedTags.keys.contains(where: { $0.hasPrefix("XMP-tiff:") && $0.hasSuffix(":Orientation") }) {
                 arguments += ["-XMP-tiff:Orientation#=1"]
             }
         }
-        if before.embeddedTags.keys.contains(where: { $0.hasSuffix(":ExifImageWidth") }) {
+        if !preservePhotoEXIF && before.embeddedTags.keys.contains(where: { $0.hasSuffix(":ExifImageWidth") }) {
             arguments += ["-ExifIFD:ExifImageWidth=\(width)", "-ExifIFD:ExifImageHeight=\(height)"]
         }
-        if before.embeddedTags.keys.contains(where: { $0.hasPrefix("XMP-exif:") && $0.hasSuffix(":ExifImageWidth") }) {
+        if !preservePhotoEXIF && before.embeddedTags.keys.contains(where: { $0.hasPrefix("XMP-exif:") && $0.hasSuffix(":ExifImageWidth") }) {
             arguments += ["-XMP-exif:ExifImageWidth=\(width)", "-XMP-exif:ExifImageHeight=\(height)"]
         }
-        if before.embeddedTags.keys.contains(where: { $0.hasPrefix("XMP-tiff:") && $0.hasSuffix(":ImageWidth") }) {
+        if !preservePhotoEXIF && before.embeddedTags.keys.contains(where: { $0.hasPrefix("XMP-tiff:") && $0.hasSuffix(":ImageWidth") }) {
             arguments += ["-XMP-tiff:ImageWidth=\(width)", "-XMP-tiff:ImageHeight=\(height)"]
         }
         let toolkit = before.embeddedTags["XMP-x:XMPToolkit"].flatMap {
@@ -44,10 +59,11 @@ public enum CompressionMetadataTransfer {
         guard write.status == 0 else { throw PhotoError("壓縮已完成，但中繼資料無法安全寫入；未接受此輸出。\(write.text)") }
         let after = try tool.snapshot(output, cancellation: cancellation, strictOffsets: false, forCompression: true)
         try pinned.verify(source)
-        let ignored: Set<String> = ["Orientation", "ExifImageWidth", "ExifImageHeight", "ImageWidth", "ImageHeight",
+        var ignored: Set<String> = ["Orientation", "ExifImageWidth", "ExifImageHeight", "ImageWidth", "ImageHeight",
             "XMPToolkit", "ThumbnailImage", "PreviewImage", "ThumbnailOffset", "ThumbnailLength",
             "Compression", "PhotometricInterpretation", "BitsPerSample", "SamplesPerPixel", "RowsPerStrip",
-            "StripOffsets", "StripByteCounts", "TileOffsets", "TileByteCounts", "PlanarConfiguration", "YCbCrSubSampling"]
+            "StripOffsets", "StripByteCounts", "TileOffsets", "TileByteCounts", "PlanarConfiguration", "YCbCrSubSampling", "YCbCrPositioning", "FillOrder", "SampleFormat"]
+        if preservePhotoEXIF { ignored.subtract(["Orientation", "ExifImageWidth", "ExifImageHeight"]) }
         var missing: [String] = []
         func relevant(_ key: String) -> Bool {
             let group = key.split(separator: ":").first.map(String.init) ?? ""
@@ -59,6 +75,27 @@ public enum CompressionMetadataTransfer {
         for (key, entries) in originalGroups {
             if !metadataValuesMatch(key: key, entries.map(\.value), outputGroups[key]?.map(\.value) ?? []) {
                 missing.append(key)
+            }
+        }
+        if preservePhotoEXIF {
+            let makerBefore = try tool.execute(["-b", "-MakerNotes", source.path], timeout: 120, cancellation: cancellation).stdout
+            let makerAfter = try tool.execute(["-b", "-MakerNotes", output.path], timeout: 120, cancellation: cancellation).stdout
+            guard makerBefore == makerAfter else { throw PhotoError("相機 MakerNotes 無法完整保留，未接受此輸出。") }
+            for tag in ["ThumbnailImage", "PreviewImage"] {
+                let original = try tool.execute(["-b", "-\(tag)", source.path], timeout: 120, cancellation: cancellation).stdout
+                if !original.isEmpty {
+                    let copied = try tool.execute(["-b", "-\(tag)", output.path], timeout: 120, cancellation: cancellation).stdout
+                    guard original == copied else { throw PhotoError("EXIF \(tag) 無法完整保留，未接受此輸出。") }
+                }
+            }
+            let changedEXIF = missing.filter { key in
+                ["EXIF", "IFD0", "ExifIFD", "InteropIFD", "GPS"].contains(String(key.split(separator: ":").first ?? ""))
+            }
+            guard changedEXIF.isEmpty else {
+                throw PhotoError("EXIF 保留驗證失敗，未接受此輸出：\(changedEXIF.sorted().joined(separator: "、"))")
+            }
+            guard before.warnings.isEmpty && after.warnings.isEmpty else {
+                throw PhotoError("EXIF 無法完整可靠核對，未接受此輸出。\(before.warnings) \(after.warnings)")
             }
         }
         let readICC = try tool.execute(["-b", "-ICC_Profile", output.path], timeout: 120, cancellation: cancellation).stdout
@@ -102,7 +139,7 @@ public enum CompressionMetadataTransfer {
     static func comparisonKey(_ key: String) -> String {
         let canonical = MetadataVerifier.canonicalCopyKey(key)
         let parts = canonical.split(separator: ":")
-        let relocatable: Set<String> = ["ImageDescription", "Make", "Model", "XResolution", "YResolution", "ResolutionUnit", "ModifyDate", "Software", "Artist", "Copyright"]
+        let relocatable: Set<String> = ["ImageDescription", "Make", "Model", "XResolution", "YResolution", "ResolutionUnit", "ModifyDate", "Software", "Artist", "Copyright", "Orientation"]
         if parts.count == 2, ["IFD0", "ExifIFD"].contains(String(parts[0])), relocatable.contains(String(parts[1])) {
             return "EXIF:\(parts[1])"
         }

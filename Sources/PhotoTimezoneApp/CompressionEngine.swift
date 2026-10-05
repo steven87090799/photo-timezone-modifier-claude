@@ -134,6 +134,13 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
             let depth = await Task.detached { CompressionImages.sourceDepth(stagedSource) }.value
+            let developmentTool = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/vendor-exiftool/exiftool")
+            let tool = (try? EngineResources.exiftoolURL()) ?? developmentTool
+            let orientation: Int
+            if !preview && (format == .jpeg || format == .heif) {
+                orientation = try await Task.detached { try CompressionMetadataTransfer.exifOrientation(stagedSource, exiftoolURL: tool) }.value
+            } else { orientation = 1 }
             let highDepthPNG = format == .png && depth > 8 && !preview
             if ![CompressionFormat.jpeg, .jxl, .heif].contains(format) && !highDepthPNG {
                 try await prepare(format)
@@ -143,7 +150,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             if format == .heif || highDepthPNG {
                 let native = try await Task.detached(priority: .userInitiated) {
                     try CompressionNative.encode(source: stagedSource, output: output, format: format,
-                        quality: quality, preview: preview, cancellation: cancellation)
+                        quality: quality, preview: preview, cancellation: cancellation, orientation: orientation)
                 }.value
                 result = ["width": native.width, "height": native.height, "frames": native.frames,
                           "profileMode": native.originalProfile ? "original" : "srgb"]
@@ -152,7 +159,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                 let native = try await Task.detached(priority: .userInitiated) {
                     if format == .jpeg {
                         return try CompressionJPEG.encode(source: stagedSource, output: output, quality: quality,
-                                                          preview: preview, cancellation: cancellation)
+                                                          preview: preview, cancellation: cancellation, orientation: orientation)
                     }
                     let jxl = try CompressionJXL.encode(source: stagedSource, output: output, quality: quality,
                                                         preview: preview, cancellation: cancellation)
@@ -184,16 +191,13 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                 onProgress(95, "保留並驗證中繼資料")
                 let preserve = result["profileMode"] as? String == "original"
                 let icc = CompressionImages.colorSpace(stagedSource, preserveOriginal: preserve).copyICCData() as Data?
-                let developmentTool = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-                    .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/vendor-exiftool/exiftool")
-                let tool = (try? EngineResources.exiftoolURL()) ?? developmentTool
                 metadata = try await Task.detached(priority: .userInitiated) {
                     try CompressionMetadataTransfer.preserve(source: stagedSource, output: output,
                         width: width, height: height, profile: icc, originalProfile: preserve, exiftoolURL: tool,
                         cancellation: cancellation,
                         iccVerifier: format == .jxl ? { file, expected in
                             CompressionJXL.profileMatches(file, expected: expected)
-                        } : nil)
+                        } : nil, preservePhotoEXIF: format == .jpeg || format == .heif)
                 }.value
                 if let actualQuality = result["quality"] as? Int, actualQuality != quality {
                     metadata += "；品質 \(quality) 編碼失敗，已以品質 \(actualQuality) 重試（非無損）"
