@@ -66,17 +66,19 @@ struct CompressionView: View {
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(model.format == format ? Color.accentColor : .clear, lineWidth: 1))
                             .help(format.hint)
                             .accessibilityIdentifier("compressionFormat-" + format.fileExtension)
-                            .disabled(format != .jpeg && format != .jxl && model.host.isReady && !model.host.formats.contains(format.mime))
+                            .disabled(format == .heif && !CompressionHost.supportsHEIF)
                         }
                     }
                     HStack {
                         Text(model.format == .png ? "壓縮努力度" : "品質").font(.callout)
                         Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
-                            .help(model.format.hint + " HEIF 使用 macOS ImageIO；AVIF 與 JPEG XL 會將像素轉為 sRGB 並明確記錄。")
+                            .help(model.format.hint + " HEIF 使用 macOS ImageIO；AVIF 使用 sRGB；JPEG XL 優先保留來源 RGB 色彩描述檔。16 位元 PNG 使用原生編碼，努力度由系統決定。")
                         Spacer()
-                        Text(model.format == .png ? "\(Int((model.quality / 100 * 6).rounded())) / 6" : "\(Int(model.quality.rounded()))")
+                        Text(model.format == .png ? "\(CompressionModel.pngEffort(model.quality)) / 6" : "\(Int(model.quality.rounded()))")
                             .font(.body.monospacedDigit().weight(.semibold))
                     }
+                    Button(model.format == .png ? "使用建議努力度" : "使用建議品質（\(Int(model.format.recommendedQuality))）") { model.quality = model.format.recommendedQuality }
+                        .font(.caption).buttonStyle(.plain).foregroundStyle(Color.accentColor)
                     Slider(value: $model.quality, in: 1...100, step: 1).accessibilityIdentifier("compressionQuality")
                     HStack {
                         Text(model.format == .png ? "較快" : "較小檔案")
@@ -108,7 +110,7 @@ struct CompressionView: View {
             Divider()
             VStack(alignment: .leading, spacing: 8) {
                 if let error = model.host.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-                else if !model.host.isAvailable(model.format) { HStack { ProgressView().controlSize(.small); Text("正在準備編碼器…").font(.caption) } }
+                else if model.format == .heif && !CompressionHost.supportsHEIF { Text("此 Mac 無法編碼 HEIF。").font(.caption) }
                 if model.isRunning {
                     Button(action: model.cancel) {
                         Label(model.isCancelling ? "正在停止…" : "停止壓縮", systemImage: "stop.fill").frame(maxWidth: .infinity)
@@ -159,6 +161,7 @@ struct CompressionView: View {
             HStack(spacing: 8) {
                 if model.isExporting { ProgressView().controlSize(.small) }
                 else { Text("完成 \(model.completed.count) 張 · \(CompressionModel.bytes(model.resultBytes))").font(.caption).foregroundStyle(.secondary) }
+                if let savings = model.batchSavings { Text(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100)).font(.caption).foregroundStyle(.secondary) }
                 Spacer(minLength: 2)
                 Menu {
                     Button("儲存全部圖片…", action: model.saveAll).disabled(model.completed.isEmpty)
@@ -176,7 +179,7 @@ struct CompressionView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if let item = model.selected {
                     Text(item.source.lastPathComponent).font(.headline).textSelection(.enabled).lineLimit(3)
-                    Text("\(item.width) × \(item.height) · \(CompressionModel.bytes(item.originalBytes))").font(.caption).foregroundStyle(.secondary)
+                    Text("\(item.width) × \(item.height) · \(CompressionModel.bytes(item.measuredSourceBytes))").font(.caption).foregroundStyle(.secondary)
                     imagePanel(model.originalPreview, title: "原始影像")
                     imagePanel(model.compressedPreview, title: model.previewIsActual ? "實際輸出" : "壓縮預覽")
                     if model.previewLoading { HStack { ProgressView().controlSize(.small); Text("產生完整壓縮預覽…").font(.caption) } }
@@ -186,7 +189,7 @@ struct CompressionView: View {
                             Spacer()
                             Text((model.previewIsActual ? "" : "約 ") + CompressionModel.bytes(size)).font(.callout.monospacedDigit().weight(.semibold))
                         }
-                        let saved = (1 - Double(size) / Double(max(1, item.originalBytes))) * 100
+                        let saved = (1 - Double(size) / Double(max(1, item.measuredSourceBytes))) * 100
                         Text(saved >= 0 ? String(format: "減少 %.1f%%", saved) : String(format: "增加 %.1f%%", -saved))
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -239,7 +242,7 @@ struct CompressionView: View {
                 HStack(alignment: .top) { Text(format.rawValue).font(.callout.weight(.semibold)).frame(width: 70, alignment: .leading); Text(format.hint).font(.callout).foregroundStyle(.secondary) }
             }
             Divider()
-            Text("EXIF、ICC、XMP 與 IPTC 在容器支援時複製並驗證；每張結果會說明未保留的欄位。JPEG、PNG、WebP、HEIF 優先保留 RGB 色彩描述檔；AVIF、JPEG XL 轉為 sRGB。高位元影像會輸出為 8 位元，動畫僅處理第一幀。")
+            Text("EXIF、ICC、XMP 與 IPTC 在容器支援時複製並驗證；每張結果會說明未保留的欄位。JPEG、PNG、WebP、HEIF、JPEG XL 優先保留 RGB 色彩描述檔；AVIF 轉為 sRGB。16 位元整數來源在 PNG／JPEG XL 品質 100 保留精度；其他格式會降至 8 位元並在結果提醒。浮點或更高精度的無損輸出會停止。動畫僅處理第一幀。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("處理在本機完成；開啟 Webhook 後才會傳送影像。此頁不提供修改時區或 GPS 的控制。")
                 .font(.callout).foregroundStyle(.secondary)
@@ -257,7 +260,7 @@ private struct CompressionRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.source.lastPathComponent).font(.callout.weight(.medium)).lineLimit(1)
                 HStack(spacing: 5) {
-                    Text(CompressionModel.bytes(item.originalBytes))
+                    Text(CompressionModel.bytes(item.measuredSourceBytes))
                     if let result = item.result {
                         Image(systemName: "arrow.right"); Text(CompressionModel.bytes(result.bytes))
                         if let savings = item.savings { Text(String(format: "(%+.0f%%)", -savings * 100)) }
@@ -277,32 +280,69 @@ private struct CompressionRow: View {
 
 private struct CompressionComparison: View {
     @ObservedObject var model: CompressionModel
+    @Environment(\.displayScale) private var displayScale
+    @StateObject private var state = CompressionComparisonState()
+    private var request: String { "\(model.selection?.uuidString ?? "")|\(model.comparisonOutput?.path ?? "")|\(state.x)|\(state.y)" }
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("影像比較").font(.headline)
+                Text("原尺寸細節比較").font(.headline)
                 Spacer()
                 Text("縮放").font(.caption)
-                Slider(value: $model.comparisonScale, in: 1...4).frame(width: 150)
+                Slider(value: $model.comparisonScale, in: 0.5...4).frame(width: 150)
                 Text(String(format: "%.0f%%", model.comparisonScale * 100)).font(.caption.monospacedDigit()).frame(width: 45)
                 Button("完成") { model.showingComparison = false }
             }
-            HStack(spacing: 16) {
-                comparisonImage(model.originalPreview, title: "原始影像")
-                comparisonImage(model.compressedPreview, title: model.previewIsActual ? "實際輸出" : "壓縮預覽（900 px）")
+            HStack {
+                Text("水平位置").font(.caption)
+                Slider(value: $state.x, in: 0...1)
+                Text("垂直位置").font(.caption)
+                Slider(value: $state.y, in: 0...1)
             }
-            Text(model.previewNote).font(.caption).foregroundStyle(.secondary)
-        }.padding(20).frame(width: 940, height: 620)
+            HStack(spacing: 16) {
+                comparisonImage(state.original, title: "原始影像")
+                comparisonImage(state.output, title: "實際輸出")
+            }
+            if state.loading { ProgressView().controlSize(.small) }
+            Text("比較同位置的原尺寸區塊（最多 1024 × 1024）；100% 為一個影像像素對應一個螢幕像素。移動位置可檢查不同細節。").font(.caption).foregroundStyle(.secondary)
+        }.padding(20).frame(width: 940, height: 650)
+        .task(id: request) {
+            state.loading = true
+            defer { if !Task.isCancelled { state.loading = false } }
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled, let source = model.selected?.source else { return }
+            let target = model.comparisonOutput, cx = state.x, cy = state.y
+            let pair = await Task.detached { () -> (NSImage?, NSImage?) in
+                let before = autoreleasepool { CompressionImages.comparisonCrop(source, x: cx, y: cy) }
+                let after = target.flatMap { url in autoreleasepool { CompressionImages.comparisonCrop(url, x: cx, y: cy) } }
+                return (before, after)
+            }.value
+            guard !Task.isCancelled else { return }
+            state.original = pair.0; state.output = pair.1
+        }
+        .onDisappear { state.original = nil; state.output = nil }
     }
     private func comparisonImage(_ image: NSImage?, title: String) -> some View {
         VStack {
             Text(title).font(.callout.weight(.semibold))
             ScrollView([.horizontal, .vertical]) {
-                if let image { Image(nsImage: image).resizable().scaledToFit().frame(width: 430 * model.comparisonScale, height: 510 * model.comparisonScale) }
-                else { Text("此格式無法顯示預覽").foregroundStyle(.secondary).frame(width: 430, height: 510) }
-            }.background(Color.black.opacity(0.25))
+                if let image {
+                    Image(nsImage: image).resizable().interpolation(.none)
+                        .frame(width: image.size.width / displayScale * model.comparisonScale,
+                               height: image.size.height / displayScale * model.comparisonScale)
+                } else { Text("此格式無法顯示原尺寸細節，或尚未產生輸出").foregroundStyle(.secondary).frame(width: 430, height: 490) }
+            }.background(Color.black.opacity(0.25)).frame(width: 430, height: 490)
         }
     }
+}
+
+@MainActor
+private final class CompressionComparisonState: ObservableObject {
+    @Published var x = 0.5
+    @Published var y = 0.5
+    @Published var original: NSImage?
+    @Published var output: NSImage?
+    @Published var loading = false
 }
 
 /// List rows load only the visible thumbnails; the shared cache is bounded.

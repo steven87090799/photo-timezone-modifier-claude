@@ -7,6 +7,7 @@ import TimezoneCore
 struct CompressionEngineResult {
     let url: URL
     let bytes: Int64
+    var sourceBytes: Int64? = nil
     let width: Int
     let height: Int
     let metadataStatus: String
@@ -22,6 +23,8 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     let workDirectory: URL
     private var server: CompressionLocalServer?
     private var loaded = false
+    private var idleTask: Task<Void, Never>?
+    var idleDelayNanoseconds: UInt64 = 5_000_000_000
     private var releaseRequested = false
     private var progress: [String: (Double, String) -> Void] = [:]
     private var cancellations: [String: CancellationToken] = [:]
@@ -62,6 +65,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             formats = Set(body["formats"] as? [String] ?? [])
             isReady = !formats.isEmpty
             if !isReady { error = "壓縮編碼器無法啟動。" }
+            scheduleIdleRelease()
         } else if type == "progress", let id = body["id"] as? String {
             progress[id]?(body["pct"] as? Double ?? 0, body["status"] as? String ?? "處理中")
         } else if type == "error" { error = body["message"] as? String ?? "壓縮引擎無法啟動。" }
@@ -77,32 +81,73 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     }
 
     func isAvailable(_ format: CompressionFormat) -> Bool {
-        format == .jpeg || format == .jxl || (isReady && formats.contains(format.mime))
+        format == .jpeg || format == .jxl || (format == .heif && Self.supportsHEIF) || (isReady && formats.contains(format.mime))
+    }
+
+    static let supportsHEIF = (CGImageDestinationCopyTypeIdentifiers() as? [String])?.contains("public.heic") == true
+
+    func prepare(_ format: CompressionFormat) async throws {
+        if format == .jpeg || format == .jxl || format == .heif { return }
+        idleTask?.cancel(); idleTask = nil
+        loadIfNeeded()
+        for _ in 0..<600 {
+            try Task.checkCancellation()
+            if let error { throw failure(error) }
+            if isReady { return }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        throw failure("壓縮編碼器載入逾時。")
+    }
+
+    private func scheduleIdleRelease() {
+        idleTask?.cancel()
+        guard cancellations.isEmpty, loaded else { return }
+        idleTask = Task { [weak self] in
+            guard let delay = self?.idleDelayNanoseconds else { return }
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            self?.releaseRuntime()
+        }
     }
 
     private func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool,
                          cancellation: CancellationToken,
                          onProgress: @escaping (Double, String) -> Void) async throws -> CompressionEngineResult {
-        guard isAvailable(format) else { throw failure("所選格式的編碼器尚未就緒。") }
+        idleTask?.cancel(); idleTask = nil
+        guard format != .heif || Self.supportsHEIF else { throw failure("此 Mac 不支援 HEIF 編碼。") }
         let id = UUID().uuidString
         let folder = workDirectory.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         let stagedSource = folder.appendingPathComponent("source." + source.pathExtension)
         let output = folder.appendingPathComponent("output." + format.fileExtension)
         cancellations[id] = cancellation
-        defer { cancellations.removeValue(forKey: id); if releaseRequested { releaseRuntime() } }
+        defer { cancellations.removeValue(forKey: id); if releaseRequested { releaseRuntime() } else { scheduleIdleRelease() } }
         do {
             try Task.checkCancellation()
-            try await Task.detached(priority: .userInitiated) {
+            let sourceBytes = try await Task.detached(priority: .userInitiated) {
                 let pinned = try FileIdentity.read(source)
                 guard pinned.size <= 256 * 1024 * 1024 else { throw self.failure("來源檔案超過 256 MiB。") }
                 try FileManager.default.copyItem(at: source, to: stagedSource)
                 try pinned.verify(source)
+                return pinned.size
             }.value
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
+            let depth = await Task.detached { CompressionImages.sourceDepth(stagedSource) }.value
+            let highDepthPNG = format == .png && depth > 8 && !preview
+            if ![CompressionFormat.jpeg, .jxl, .heif].contains(format) && !highDepthPNG {
+                try await prepare(format)
+                guard isAvailable(format) else { throw failure("所選格式的編碼器無法使用。") }
+            }
             let result: [String: Any]
-            if format == .jpeg || format == .jxl {
+            if format == .heif || highDepthPNG {
+                let native = try await Task.detached(priority: .userInitiated) {
+                    try CompressionNative.encode(source: stagedSource, output: output, format: format,
+                        quality: quality, preview: preview, cancellation: cancellation)
+                }.value
+                result = ["width": native.width, "height": native.height, "frames": native.frames,
+                          "profileMode": native.originalProfile ? "original" : "srgb"]
+            } else if format == .jpeg || format == .jxl {
                 onProgress(60, format == .jpeg ? "Jpegli 編碼中" : "JPEG XL 原生編碼中")
                 let native = try await Task.detached(priority: .userInitiated) {
                     if format == .jpeg {
@@ -154,11 +199,16 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                     metadata += "；品質 \(quality) 編碼失敗，已以品質 \(actualQuality) 重試（非無損）"
                 }
             }
+            if depth > 8 && !highDepthPNG && !(format == .jxl && quality == 100) {
+                metadata += "；來源 \(depth) 位元像素轉為 8 位元，非無損"
+            }
+            if highDepthPNG { metadata += "；16 位元 PNG 使用 macOS 原生無損編碼，努力度由系統決定" }
             if let frames = result["frames"] as? Int, frames > 1 { metadata += "；動畫或多頁影像僅輸出第一幀" }
             try? FileManager.default.removeItem(at: stagedSource)
             let size = try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size > 0 else { throw failure("壓縮輸出為空。") }
-            return CompressionEngineResult(url: output, bytes: Int64(size), width: width,
+            if Int64(size) > sourceBytes { metadata += "；輸出比來源大，可降低品質或選擇其他格式" }
+            return CompressionEngineResult(url: output, bytes: Int64(size), sourceBytes: sourceBytes, width: width,
                 height: height, metadataStatus: metadata, frames: result["frames"] as? Int ?? 1)
         } catch {
             try? FileManager.default.removeItem(at: folder)
@@ -175,6 +225,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     func releaseRuntime() {
         guard cancellations.isEmpty else { releaseRequested = true; return }
         releaseRequested = false
+        idleTask?.cancel(); idleTask = nil
         webView?.stopLoading()
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: "compression")
         webView?.navigationDelegate = nil
@@ -185,6 +236,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
 
     func shutdown() {
         cancelAll()
+        releaseRuntime()
         server?.stop()
         try? FileManager.default.removeItem(at: workDirectory)
     }

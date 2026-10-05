@@ -11,7 +11,7 @@ extern "C" {
 typedef int (*pt_jxl_cancel_callback)(void *context);
 
 int pt_jxl_encode_rgba(const uint8_t *rgba, size_t rgba_size,
-                       uint32_t width, uint32_t height, int quality, int effort,
+                       uint32_t width, uint32_t height, int quality, int effort, int bits_per_sample,
                        const uint8_t *icc_profile, size_t icc_profile_size,
                        pt_jxl_cancel_callback is_cancelled, void *cancel_context,
                        uint8_t **output, size_t *output_size,

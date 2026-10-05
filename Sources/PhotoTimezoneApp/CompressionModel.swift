@@ -18,14 +18,15 @@ enum CompressionFormat: String, CaseIterable, Identifiable {
         case .avif: return "avif"; case .heif: return "heic"; case .jxl: return "jxl" }
     }
     var preservesRGBProfile: Bool { self != .avif }
+    var recommendedQuality: Double { self == .heif ? 70 : self == .jpeg || self == .jxl ? 86 : 82 }
     var hint: String {
         switch self {
         case .jpeg: return "一般 .jpg；原生 Jpegli 漸進式壓縮，macOS／Windows 均可開啟。品質 100 仍為有損，透明區域轉白底。"
-        case .png: return "像素無損與透明圖片；滑桿調整壓縮努力度。"
+        case .png: return "PNG 無損編碼與透明圖片；8 位元滑桿調整壓縮努力度，16 位元來源使用 macOS 原生編碼保留精度。"
         case .webp: return "網站圖片；保留透明通道。"
         case .avif: return "較小的照片檔案；編碼較慢，像素使用 sRGB。"
         case .heif: return "macOS 原生 HEVC 編碼；適合 Apple 裝置。"
-        case .jxl: return "原生 libjxl 編碼；品質 100 為像素無損。高解析照片會自動降低並行數。"
+        case .jxl: return "原生 libjxl 編碼；品質 100 保留支援的 8／16 位元整數 RGB 像素。無法保證無損的來源會停止輸出。高解析照片會自動降低並行數。"
         }
     }
 }
@@ -35,7 +36,7 @@ enum CompressionState: String { case pending = "待處理", running = "壓縮中
 struct CompressionItem: Identifiable {
     let id: UUID
     let source: URL
-    let originalBytes: Int64
+    var originalBytes: Int64
     let width: Int
     let height: Int
     var state: CompressionState = .pending
@@ -51,23 +52,28 @@ struct CompressionItem: Identifiable {
         guard let format else { return source.lastPathComponent }
         return source.deletingPathExtension().lastPathComponent + "." + format.fileExtension
     }
-    var savings: Double? { result.map { 1 - Double($0.bytes) / Double(max(1, originalBytes)) } }
+    var measuredSourceBytes: Int64 { result?.sourceBytes ?? originalBytes }
+    var savings: Double? { result.flatMap { CompressionModel.savings(source: measuredSourceBytes, output: $0.bytes) } }
 }
 
 @MainActor
 final class CompressionModel: ObservableObject {
-    static let jpegEncoderPreferenceVersion = "jpegli-v1"
+    static let jpegEncoderPreferenceVersion = "jpegli-v2-calibrated"
 
+    private let preferences: UserDefaults
     let host = CompressionHost()
     @Published var items: [CompressionItem] = []
     @Published var selection: UUID? { didSet { updatePreview() } }
     @Published var format: CompressionFormat { didSet {
-        UserDefaults.standard.set(format.rawValue, forKey: "nativeCompressionFormat")
+        let defaults = preferences
+        defaults.set(quality, forKey: "nativeCompressionQuality." + oldValue.fileExtension)
+        quality = defaults.object(forKey: "nativeCompressionQuality." + format.fileExtension) as? Double ?? format.recommendedQuality
+        defaults.set(format.rawValue, forKey: "nativeCompressionFormat")
         if isActive { prepareSelectedFormat() }
         updatePreview()
     } }
-    @Published var quality: Double { didSet { UserDefaults.standard.set(quality, forKey: "nativeCompressionQuality"); updatePreview() } }
-    @Published var parallelism: Int { didSet { UserDefaults.standard.set(parallelism, forKey: "nativeCompressionParallelism") } }
+    @Published var quality: Double { didSet { preferences.set(quality, forKey: "nativeCompressionQuality"); preferences.set(quality, forKey: "nativeCompressionQuality." + format.fileExtension); updatePreview() } }
+    @Published var parallelism: Int { didSet { preferences.set(parallelism, forKey: "nativeCompressionParallelism") } }
     @Published var recursive = false
     @Published var isRunning = false
     @Published var isCancelling = false
@@ -108,34 +114,33 @@ final class CompressionModel: ObservableObject {
     private var isActive = false
     @Published var exportStatus = ""
 
-    init() {
-        let defaults = UserDefaults.standard
-        format = CompressionFormat(rawValue: defaults.string(forKey: "nativeCompressionFormat") ?? "") ?? .jpeg
+    init(defaults: UserDefaults = .standard) {
+        preferences = defaults
+        let initialFormat = CompressionFormat(rawValue: defaults.string(forKey: "nativeCompressionFormat") ?? "") ?? .jpeg
+        format = initialFormat
         let savedQuality: Double? = defaults.object(forKey: "nativeCompressionQuality") == nil
             ? nil : defaults.double(forKey: "nativeCompressionQuality")
-        let initialQuality = Self.qualityForCurrentJPEGEncoder(
+        let initialQuality = initialFormat == .jpeg ? Self.qualityForCurrentJPEGEncoder(
             savedQuality: savedQuality,
             encoderVersion: defaults.string(forKey: "nativeCompressionJPEGEncoder")
-        )
-        quality = initialQuality
-        defaults.set(initialQuality, forKey: "nativeCompressionQuality")
+        ) : min(100, max(1, savedQuality ?? initialFormat.recommendedQuality))
+        let chosenQuality = defaults.object(forKey: "nativeCompressionQuality." + initialFormat.fileExtension) as? Double ?? initialQuality
+        quality = chosenQuality
+        defaults.set(chosenQuality, forKey: "nativeCompressionQuality")
+        defaults.set(chosenQuality, forKey: "nativeCompressionQuality." + initialFormat.fileExtension)
         defaults.set(Self.jpegEncoderPreferenceVersion, forKey: "nativeCompressionJPEGEncoder")
         let savedParallelism = defaults.integer(forKey: "nativeCompressionParallelism")
         parallelism = savedParallelism > 0 ? min(4, savedParallelism) : 2
         webhookURL = defaults.string(forKey: "nativeCompressionWebhookURL") ?? ""
         host.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
-        host.$isReady.dropFirst().sink { [weak self] ready in
-            if ready { Task { @MainActor in self?.updatePreview() } }
-        }.store(in: &subscriptions)
     }
 
     static func qualityForCurrentJPEGEncoder(savedQuality: Double?, encoderVersion: String?) -> Double {
-        guard let savedQuality, savedQuality > 0 else { return 86 }
+        guard let savedQuality, savedQuality.isFinite, savedQuality > 0 else { return 86 }
         let clamped = min(100, max(1, savedQuality))
-        // 82 was the previous MozJPEG default. The real-photo comparison
-        // calibrated Jpegli 86 to at least that visual quality; preserve custom
-        // slider choices and only migrate the known shipped default.
-        if encoderVersion != jpegEncoderPreferenceVersion, abs(savedQuality - 82) < 0.001 {
+        // Real-photo calibration chooses 86 as the size/quality compromise.
+        // Preserve existing Jpegli choices; migrate only the legacy MozJPEG default.
+        if encoderVersion == nil || encoderVersion == "mozjpeg", abs(savedQuality - 82) < 0.001 {
             return 86
         }
         return clamped
@@ -153,18 +158,29 @@ final class CompressionModel: ObservableObject {
     }
 
     private func prepareSelectedFormat() {
-        if format == .jpeg || format == .jxl {
-            if !isRunning { host.releaseRuntime() }
-        } else { host.loadIfNeeded() }
+        if !isRunning { host.releaseRuntime() }
+    }
+
+    static func pngEffort(_ quality: Double) -> Int { Int((pow(min(100, max(1, quality)) / 100, 2) * 6).rounded()) }
+    nonisolated static func savings(source: Int64, output: Int64) -> Double? {
+        guard source > 0, output >= 0 else { return nil }
+        return 1 - Double(output) / Double(source)
     }
 
     var selected: CompressionItem? { items.first { $0.id == selection } }
+    var comparisonOutput: URL? {
+        guard let item = selected else { return nil }
+        if let result = item.result, item.format == format, item.quality == Int(quality.rounded()) { return result.url }
+        return matchingPreviewCache(for: item, format: format, quality: Int(quality.rounded()))?.result.url
+    }
     var completed: [CompressionItem] { items.filter { $0.result != nil && $0.state == .success } }
     var doneCount: Int { items.filter { [.success, .failed, .cancelled].contains($0.state) }.count }
     var totalBytes: Int64 { items.reduce(0) { $0 + $1.originalBytes } }
+    var completedSourceBytes: Int64 { completed.reduce(0) { $0 + $1.measuredSourceBytes } }
+    var batchSavings: Double? { Self.savings(source: completedSourceBytes, output: resultBytes) }
     var resultBytes: Int64 { completed.reduce(0) { $0 + ($1.result?.bytes ?? 0) } }
     var progress: Double { items.isEmpty ? 0 : items.reduce(0) { $0 + ($1.state == .running ? $1.progress / 100 : [.success, .failed, .cancelled].contains($1.state) ? 1 : 0) } / Double(items.count) }
-    var canStart: Bool { host.isAvailable(format) && !items.isEmpty && !isRunning && !isImporting && !isExporting }
+    var canStart: Bool { (format != .heif || CompressionHost.supportsHEIF) && !items.isEmpty && !isRunning && !isImporting && !isExporting }
     static func bytes(_ count: Int64) -> String { ByteCountFormatter.string(fromByteCount: count, countStyle: .file) }
 
     func chooseInputs() {
@@ -230,10 +246,14 @@ final class CompressionModel: ObservableObject {
             var urls: [URL] = []
             for provider in supported {
                 let url: URL? = await withCheckedContinuation { continuation in
-                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                        if let url = item as? URL { continuation.resume(returning: url) }
-                        else if let data = item as? Data { continuation.resume(returning: URL(dataRepresentation: data, relativeTo: nil)) }
-                        else { continuation.resume(returning: nil) }
+                    if provider.canLoadObject(ofClass: NSURL.self) {
+                        provider.loadObject(ofClass: NSURL.self) { value, _ in
+                            continuation.resume(returning: (value as? NSURL).map { $0 as URL })
+                        }
+                    } else {
+                        provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                            continuation.resume(returning: data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) })
+                        }
                     }
                 }
                 if let url { urls.append(url) }
@@ -301,7 +321,7 @@ final class CompressionModel: ObservableObject {
                 return
             }
             compressedPreview = nil; estimate = nil
-            guard !isRunning, host.isAvailable(chosenFormat) else { previewNote = host.isAvailable(chosenFormat) ? "壓縮完成後顯示實際結果" : "正在準備壓縮引擎…"; return }
+            guard !isRunning else { previewNote = "壓縮完成後顯示實際結果"; return }
             previewLoading = true; previewNote = "正在產生預覽…"
             var generated: CompressionEngineResult?
             var retained = false
@@ -346,7 +366,7 @@ final class CompressionModel: ObservableObject {
         let config: CompressionWebhook.Configuration?
         do { config = webhookEnabled ? try CompressionWebhook.Configuration(url: webhookURL, token: webhookToken) : nil }
         catch { notice = error.localizedDescription; return }
-        UserDefaults.standard.set(webhookURL, forKey: "nativeCompressionWebhookURL")
+        preferences.set(webhookURL, forKey: "nativeCompressionWebhookURL")
         previewTask?.cancel(); host.cancelAll()
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
         let largestPixels = items.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
@@ -411,7 +431,8 @@ final class CompressionModel: ObservableObject {
 
     static func concurrencyLimit(format: CompressionFormat, requested: Int,
                                  pixelCount: Int, physicalMemory: UInt64) -> Int {
-        let bytesPerPixel = format == .jxl ? 32 : format == .avif ? 24 : 20
+        // Conservative 16-bit buffers and codec scratch space; this is not a process RSS cap.
+        let bytesPerPixel = format == .jxl ? 48 : format == .avif ? 32 : 28
         let budget = min(512 * 1024 * 1024,
             max(128 * 1024 * 1024, Int(physicalMemory / 16)))
         return min(max(1, requested), max(1, budget / max(1, pixelCount * bytesPerPixel)))
@@ -443,6 +464,7 @@ final class CompressionModel: ObservableObject {
                 self.items[index].progress = pct; self.items[index].phase = Self.phaseLabel(phase)
             }
             if isCancelling { try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent()); throw CancellationError() }
+            items[index].originalBytes = result.sourceBytes ?? items[index].originalBytes
             items[index].result = result; items[index].progress = 100; items[index].state = .success
             items[index].phase = "完成"; items[index].elapsed = Date().timeIntervalSince(started)
             if result.frames > 1 { items[index].error = "動畫來源僅輸出第一幀" }
@@ -519,7 +541,7 @@ final class CompressionModel: ObservableObject {
         let header = "來源,狀態,格式,原始大小,輸出大小,中繼資料,Webhook,說明\n"
         func csv(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
         let report = header + items.map { item in
-            [item.source.path, item.state.rawValue, item.format?.rawValue ?? "", String(item.originalBytes),
+            [item.source.path, item.state.rawValue, item.format?.rawValue ?? "", String(item.measuredSourceBytes),
              item.result.map { String($0.bytes) } ?? "", item.result?.metadataStatus ?? "", item.webhookStatus ?? "", item.error ?? ""].map(csv).joined(separator: ",")
         }.joined(separator: "\n")
         let panel = NSSavePanel(); panel.nameFieldStringValue = "影像壓縮結果.csv"
@@ -557,7 +579,7 @@ final class CompressionModel: ObservableObject {
             do {
                 let config = try CompressionWebhook.Configuration(url: webhookURL, token: webhookToken)
                 try await webhook.test(configuration: config); webhookStatus = "連線成功"
-                UserDefaults.standard.set(webhookURL, forKey: "nativeCompressionWebhookURL")
+                preferences.set(webhookURL, forKey: "nativeCompressionWebhookURL")
             } catch { webhookStatus = "連線失敗：\(error.localizedDescription)" }
         }
     }
@@ -590,7 +612,9 @@ enum CompressionExports {
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-c", "-k", "--norsrc", images.path, archive.path]
         process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try process.run(); process.waitUntilExit()
+        try ChildProcessRegistry.shared.launch(process)
+        defer { ChildProcessRegistry.shared.finished(process) }
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw NSError(domain: "Compression", code: 1, userInfo: [NSLocalizedDescriptionKey: "ZIP 打包失敗。"]) }
         try saveFile(archive, to: target)
     }

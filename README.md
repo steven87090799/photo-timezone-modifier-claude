@@ -54,15 +54,21 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 六種輸出與 PNG／HEIF／TIFF 等輸入使用獨立的中繼資料讀取政策，不再受到時區寫入格式限制。XMP 以完整封包複製，保留 ON1 等未知私有欄位；EXIF 合法位置重排與容器的 Copy 編號改變不再誤報遺失，仍比對每個重複值。PNG 努力度已接上 OxiPNG。3.5.1 使用 MozJPEG；本分支的替換見下方。
 
-相片處理頁與純 JPEG／JPEG XL 壓縮不啟動 WebKit；選用其他壓縮格式才載入 WebKit 引擎與使用中的編碼器。工作程序閒置 15 秒回收；離開分頁時，在工作結束後釋放 WebKit 及本機服務。縮圖按需載入並設快取上限，並行數依尺寸、格式及記憶體調低。估算不等於整個程式的硬記憶體上限。
+相片處理頁與 JPEG／JPEG XL／HEIF 原生壓縮不啟動 WebKit；8 位元 PNG／WebP／AVIF 工作才按需載入 WebKit。工作結束閒置 5 秒釋放整個引擎及本機服務；離開分頁時也會在工作結束後釋放。縮圖按需載入並設快取上限，並行數依尺寸、格式及記憶體調低。估算不等於整個程式的硬記憶體上限。
 
 ### 3.6.0 原生 Jpegli
 
 依使用者決定，在 `codex/native-jpegli` 分支將 JPEG 編碼器替換為原生 Jpegli，移除 MozJPEG 的 JavaScript／WASM。輸出仍是普通 `.jpg`，8 位元 YCbCr、漸進式 Huffman JPEG，不使用 XYB 或 JPEG XL。預覽和正式輸出都使用同一編碼器。新安裝預設品質為 86；舊版預設 82 會升至 86，使用者自訂品質值保留。JPEG 品質 100 仍是有損；透明輸入轉白底。
 
-Jpegli 編碼器可在 macOS 和 Windows 建置，普通 JPEG 可由兩平台的一般解碼器開啟；**這個 SwiftUI App 目前仍只支援 macOS**。因此直接替換，不增加依平台選擇的兩套 JPEG 模式。來源 RGB ICC、EXIF、XMP、IPTC 與原時區／GPS 沿用既有保留及驗證。固定來源版本、相容性證據與本機驗證見 [Jpegli 整合紀錄](docs/NATIVE_JPEGLI.md)；原方案比較保留在 [JPEG 方案比較](docs/JPEG_OPTIONS.md)。此分支尚未合併或安裝。
+Jpegli 編碼器可在 macOS 和 Windows 建置，普通 JPEG 可由兩平台的一般解碼器開啟；**這個 SwiftUI App 目前仍只支援 macOS**。因此直接替換，不增加依平台選擇的兩套 JPEG 模式。來源 RGB ICC、EXIF、XMP、IPTC 與原時區／GPS 沿用既有保留及驗證。固定來源版本、相容性證據與本機驗證見 [Jpegli 整合紀錄](docs/NATIVE_JPEGLI.md)；原方案比較保留在 [JPEG 方案比較](docs/JPEG_OPTIONS.md)。此分支尚未合併至 main。
 
 「開始壓縮」產生暫存結果，**不會因為選了輸出資料夾就自動儲存**；請按「儲存單張」或「輸出 → 儲存全部」。介面會提示儲存狀態。JPEG XL 品質 100 失敗時明確報錯，不會自動降為品質 99。關閉最後一個視窗會退出程式；仍在寫入時需先停止或等待完成。
+
+### 3.6.1 修復與實拍校準
+
+[完整修復與測試報告](docs/COMPRESSION_FIX_20261005.md)。JPEG 建議品質 86，HEIF 建議 70，各格式獨立記憶品質；既有自訂值保留，可按「建議品質」恢復建議值。43 張实拍 JPEG 86 總容量減少 7.54%，HEIF 70 減少 15.58%，後者畫質評分較低；沒有適用所有照片的完美品質值。
+
+正式結果以寫入中繼資料後的實際 bytes 計算減少比例；批次按成功來源與對應輸出總大小計算。放大比較使用同位置原生解析度裁切。PNG 16 位元與 JXL 100 支援整數 RGB／RGBA 樣本保留；無法保證無損的來源明確停止，其他格式降精度時提示。關閉最後視窗會退出，並停止本 App 擁有的子程序與本機服務。
 
 ## 復原與異常提交
 
@@ -92,6 +98,6 @@ PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
 
-修改 Swift 後要快速檢查能否編譯，先執行 `python3 scripts/prepare-jpegli.py` 與 `./scripts/prepare-jxl.sh` 準備原生編碼器，再執行 `swift build --scratch-path /private/tmp/PhotoTimezone-debug-$UID -c debug --arch arm64`；它不會重新打包或安裝 App。JPEG XL 建置需 Homebrew 的 libjxl 0.12.0（`brew install jpeg-xl`）；安裝版會內含執行期函式庫。要自己產生可安裝版再執行 `./build.sh`，解壓 `dist/PhotoTimezone-macOS.zip` 後將 App 放進「應用程式」。這樣可把日常修改與完整打包分開，減少不必要的重複建置與等待。推送到 `main` 後 CI 會自行執行完整測試與正式打包；尚未完成的 CI 不代表新版本已可下載。
+修改 Swift 後要快速檢查能否編譯，先執行 `python3 scripts/prepare-jpegli.py` 與 `./scripts/prepare-jxl.sh` 準備原生編碼器，再執行 `swift build --scratch-path /private/tmp/PhotoTimezone-debug-$UID -c debug --arch arm64`；它不會重新打包或安裝 App。JPEG XL 由腳本下載與核對固定來源版本 0.12.0 後建置；需 Homebrew 依賴 `brew install cmake pkg-config highway brotli little-cms2` 及 Node.js，安裝版內含執行期函式庫。要自己產生可安裝版再執行 `./build.sh`，解壓 `dist/PhotoTimezone-macOS.zip` 後將 App 放進「應用程式」。這樣可把日常修改與完整打包分開，減少不必要的重複建置與等待。推送到 `main` 後 CI 會自行執行完整測試與正式打包；尚未完成的 CI 不代表新版本已可下載。
 
 實作與驗證界線見 [REPAIR_NOTES_3.5.md](REPAIR_NOTES_3.5.md)。舊版資料見 [歷史文件](docs/README-3.4.1-historical.md)，其 HASH 政策不適用於 3.5.0。

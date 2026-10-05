@@ -60,6 +60,7 @@ struct DiagnosticsView: View {
 
                 section("版本與相容性", symbol: "info.circle") {
                     detail("App 版本", "\(version)（\(build)）")
+                    detail("原始碼建置", BuildIdentity.description)
                     detail("ExifTool", "內附固定版本 \(EngineResources.version)")
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
@@ -236,6 +237,7 @@ struct DiagnosticsView: View {
         // clipboard. A log must be exported separately with the user's action.
         let lines = [
             "相片時區修改器 \(version)（建置 \(build)）",
+            "原始碼建置 \(BuildIdentity.description)",
             "ExifTool \(EngineResources.version)",
             "\(ProcessInfo.processInfo.operatingSystemVersionString) / \(architecture)",
             "CPU（App 本體）：\(metrics.cpuPercent.map { String(format: "%.1f %%", $0) } ?? "無法讀取")",

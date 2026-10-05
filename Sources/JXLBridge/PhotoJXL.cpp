@@ -22,18 +22,22 @@ struct FrameData {
   const uint8_t *rgba;
   size_t width;
   size_t height;
+  int bits;
+  pt_jxl_cancel_callback cancelled;
+  void *cancel_context;
 };
 
 bool validRegion(const FrameData *frame, size_t x, size_t y, size_t width,
                  size_t height) {
-  return frame != nullptr && frame->rgba != nullptr && width > 0 && height > 0 &&
+  return frame != nullptr && frame->rgba != nullptr &&
+         !(frame->cancelled && frame->cancelled(frame->cancel_context)) && width > 0 && height > 0 &&
          x <= frame->width && y <= frame->height &&
          width <= frame->width - x && height <= frame->height - y;
 }
 
-void getColorFormat(void *, JxlPixelFormat *format) {
+void getColorFormat(void *opaque, JxlPixelFormat *format) {
   format->num_channels = 3;
-  format->data_type = JXL_TYPE_UINT8;
+  format->data_type = static_cast<FrameData *>(opaque)->bits == 16 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8;
   format->endianness = JXL_NATIVE_ENDIAN;
   format->align = 0;
 }
@@ -46,25 +50,24 @@ const void *getColorData(void *opaque, size_t x, size_t y, size_t width,
       height > std::numeric_limits<size_t>::max() / (width * 3)) {
     return nullptr;
   }
-  const size_t stride = width * 3;
+  const size_t bytes = frame->bits / 8;
+  const size_t stride = width * 3 * bytes;
   auto *tile = new (std::nothrow) uint8_t[stride * height];
   if (tile == nullptr) return nullptr;
   for (size_t row = 0; row < height; ++row) {
-    const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4;
+    const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 * bytes;
     uint8_t *destination = tile + row * stride;
     for (size_t column = 0; column < width; ++column) {
-      destination[column * 3] = source[column * 4];
-      destination[column * 3 + 1] = source[column * 4 + 1];
-      destination[column * 3 + 2] = source[column * 4 + 2];
+      std::memcpy(destination + column * 3 * bytes, source + column * 4 * bytes, 3 * bytes);
     }
   }
   *row_offset = stride;
   return tile;
 }
 
-void getAlphaFormat(void *, size_t, JxlPixelFormat *format) {
+void getAlphaFormat(void *opaque, size_t, JxlPixelFormat *format) {
   format->num_channels = 1;
-  format->data_type = JXL_TYPE_UINT8;
+  format->data_type = static_cast<FrameData *>(opaque)->bits == 16 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8;
   format->endianness = JXL_NATIVE_ENDIAN;
   format->align = 0;
 }
@@ -76,16 +79,17 @@ const void *getAlphaData(void *opaque, size_t, size_t x, size_t y,
       height > std::numeric_limits<size_t>::max() / width) {
     return nullptr;
   }
-  auto *tile = new (std::nothrow) uint8_t[width * height];
+  const size_t bytes = frame->bits / 8;
+  auto *tile = new (std::nothrow) uint8_t[width * height * bytes];
   if (tile == nullptr) return nullptr;
   for (size_t row = 0; row < height; ++row) {
-    const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 + 3;
-    uint8_t *destination = tile + row * width;
+    const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 * bytes + 3 * bytes;
+    uint8_t *destination = tile + row * width * bytes;
     for (size_t column = 0; column < width; ++column) {
-      destination[column] = source[column * 4];
+      std::memcpy(destination + column * bytes, source + column * 4 * bytes, bytes);
     }
   }
-  *row_offset = width;
+  *row_offset = width * bytes;
   return tile;
 }
 
@@ -196,7 +200,7 @@ struct RunnerDeleter {
 
 extern "C" int pt_jxl_encode_rgba(
     const uint8_t *rgba, size_t rgba_size, uint32_t width, uint32_t height,
-    int quality, int effort, const uint8_t *icc_profile,
+    int quality, int effort, int bits_per_sample, const uint8_t *icc_profile,
     size_t icc_profile_size, pt_jxl_cancel_callback is_cancelled,
     void *cancel_context, uint8_t **output, size_t *output_size, char *error,
     size_t error_capacity) {
@@ -206,10 +210,11 @@ extern "C" int pt_jxl_encode_rgba(
   if (rgba == nullptr || output == nullptr || output_size == nullptr || width == 0 ||
       height == 0 || width > 20000 || height > 20000 || quality < 1 ||
       quality > 100 || effort < 1 || effort > 10 ||
+      (bits_per_sample != 8 && bits_per_sample != 16) ||
       ((icc_profile == nullptr) != (icc_profile_size == 0)) ||
       static_cast<size_t>(width) >
-          std::numeric_limits<size_t>::max() / 4 / static_cast<size_t>(height) ||
-      rgba_size != static_cast<size_t>(width) * height * 4) {
+          std::numeric_limits<size_t>::max() / 8 / static_cast<size_t>(height) ||
+      rgba_size != static_cast<size_t>(width) * height * 4 * (bits_per_sample / 8)) {
     setError(error, error_capacity, "JPEG XL 輸入參數無效。\n");
     return 1;
   }
@@ -218,7 +223,7 @@ extern "C" int pt_jxl_encode_rgba(
   try {
     std::unique_ptr<void, RunnerDeleter> runner(
         JxlThreadParallelRunnerCreate(
-            nullptr, JxlThreadParallelRunnerDefaultNumWorkerThreads()));
+            nullptr, std::min<size_t>(4, JxlThreadParallelRunnerDefaultNumWorkerThreads())));
     if (!runner) {
       setError(error, error_capacity, "無法建立 JPEG XL 工作執行緒。\n");
       return 1;
@@ -236,11 +241,11 @@ extern "C" int pt_jxl_encode_rgba(
     JxlEncoderInitBasicInfo(&info);
     info.xsize = width;
     info.ysize = height;
-    info.bits_per_sample = 8;
+    info.bits_per_sample = bits_per_sample;
     info.exponent_bits_per_sample = 0;
     info.num_color_channels = 3;
     info.num_extra_channels = 1;
-    info.alpha_bits = 8;
+    info.alpha_bits = bits_per_sample;
     info.alpha_exponent_bits = 0;
     info.alpha_premultiplied = JXL_FALSE;
     // In lossless mode libjxl requires pixel samples to remain in the declared
@@ -254,7 +259,7 @@ extern "C" int pt_jxl_encode_rgba(
 
     JxlExtraChannelInfo alpha;
     JxlEncoderInitExtraChannelInfo(JXL_CHANNEL_ALPHA, &alpha);
-    alpha.bits_per_sample = 8;
+    alpha.bits_per_sample = bits_per_sample;
     alpha.exponent_bits_per_sample = 0;
     alpha.alpha_premultiplied = JXL_FALSE;
     if (JxlEncoderSetExtraChannelInfo(encoder.get(), 0, &alpha) !=
@@ -312,7 +317,7 @@ extern "C" int pt_jxl_encode_rgba(
       return 1;
     }
 
-    FrameData frame{rgba, width, height};
+    FrameData frame{rgba, width, height, bits_per_sample, is_cancelled, cancel_context};
     JxlChunkedFrameInputSource input{};
     input.opaque = &frame;
     input.get_color_channels_pixel_format = getColorFormat;
@@ -321,6 +326,7 @@ extern "C" int pt_jxl_encode_rgba(
     input.get_extra_channel_data_at = getAlphaData;
     input.release_buffer = releaseTile;
     if (JxlEncoderAddChunkedFrame(settings, JXL_TRUE, input) != JXL_ENC_SUCCESS) {
+      if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
       setError(error, error_capacity, "JPEG XL 讀取影像區塊失敗。\n");
       return 1;
     }
@@ -338,6 +344,7 @@ extern "C" int pt_jxl_encode_rgba(
         encoded.resize(used);
         break;
       }
+      if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
       if (status != JXL_ENC_NEED_MORE_OUTPUT ||
           encoded.size() >= kMaximumOutputBytes) {
         setError(error, error_capacity,

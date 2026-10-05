@@ -210,7 +210,7 @@ struct CompressionTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: folder) }
         let source = try fixture(in: folder)
-        let model = CompressionModel()
+        let model = CompressionModel(defaults: UserDefaults(suiteName: "PhotoTimezoneCompressionTests-\(UUID())")!)
         defer { model.host.shutdown() }
         model.quality = 82
         model.setActive(true)
@@ -597,7 +597,7 @@ server.serve_forever()
             if let original { defaults.set(original, forKey: "nativeCompressionFormat") }
             else { defaults.removeObject(forKey: "nativeCompressionFormat") }
         }
-        let model = CompressionModel()
+        let model = CompressionModel(defaults: UserDefaults(suiteName: "PhotoTimezoneCompressionTests-\(UUID())")!)
         #expect(model.host.webView == nil)
         model.format = .jpeg
         model.setActive(true)

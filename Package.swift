@@ -4,7 +4,8 @@ import Foundation
 
 let nativeJpegliLib = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     .appendingPathComponent(".build/vendor-jpegli/lib").path
-let nativeJxlPrefix = "/opt/homebrew/opt/jpeg-xl"
+let nativeJxlPrefix = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent(".build/vendor-jxl").path
 let nativeHighwayPrefix = "/opt/homebrew/opt/highway"
 let nativeBrotliPrefix = "/opt/homebrew/opt/brotli"
 let nativeLCMSPrefix = "/opt/homebrew/opt/little-cms2"

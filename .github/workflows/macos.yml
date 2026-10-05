@@ -33,8 +33,9 @@ jobs:
       - name: Ensure native codec build tool
         run: |
           command -v cmake >/dev/null || brew install cmake
-          pkg-config --exists libjxl || brew install jpeg-xl
-          test "$(pkg-config --modversion libjxl)" = "0.12.0"
+          command -v node >/dev/null || brew install node
+          command -v pkg-config >/dev/null || brew install pkg-config
+          brew list highway brotli little-cms2 >/dev/null || brew install highway brotli little-cms2
 
       - name: Fetch pinned real Sony A7 IV ARW fixture
         shell: bash
@@ -56,12 +57,11 @@ jobs:
         run: ./scripts/test.sh --filter testThousand
 
       - name: Identify automatic build
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" app/Info.plist
 
       - name: Build Apple Silicon app
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: ./build.sh
 
       - name: Check verified build archive

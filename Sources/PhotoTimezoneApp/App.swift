@@ -1099,7 +1099,10 @@ final class PhotoAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateCancel
     }
 
-    func applicationWillTerminate(_ notification: Notification) { compression?.host.shutdown() }
+    func applicationWillTerminate(_ notification: Notification) {
+        compression?.host.shutdown()
+        ChildProcessRegistry.shared.shutdown()
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

@@ -18,15 +18,16 @@ enum CompressionJXL {
             if cancellation.isCancelled { throw CancellationError() }
             let maximumPixel = preview ? 900 : 0
             var raster = try CompressionImages.raster(source, maxPixel: maximumPixel,
-                                                       preserveOriginal: true)
+                                                       preserveOriginal: true, preserveDepth: quality == 100)
             let icc = raster.originalProfile
                 ? CompressionImages.colorSpace(source, preserveOriginal: true).copyICCData() as Data?
                 : nil
             // Do not label sRGB samples with a source profile when ImageIO
             // cannot provide that profile's ICC payload.
             if raster.originalProfile && icc == nil {
+                if quality == 100 { throw PhotoError("來源色彩描述檔無法可靠匯出；為避免錯誤標記色彩，已停止無損 JPEG XL 輸出。") }
                 raster = try CompressionImages.raster(source, maxPixel: preview ? 900 : 0,
-                                                       preserveOriginal: false)
+                                                       preserveOriginal: false, preserveDepth: quality == 100)
             }
             let iccProfile = icc ?? Data()
             if cancellation.isCancelled { throw CancellationError() }
@@ -39,18 +40,19 @@ enum CompressionJXL {
                 iccProfile.withUnsafeBytes { profile in
                     pt_jxl_encode_rgba(bytes.bindMemory(to: UInt8.self).baseAddress,
                         bytes.count, UInt32(raster.width), UInt32(raster.height),
-                        Int32(quality), Int32(effort),
+                        Int32(quality), Int32(effort), Int32(raster.bitsPerComponent),
                         profile.bindMemory(to: UInt8.self).baseAddress, profile.count,
                         jxlCancelled, Unmanaged.passUnretained(cancellation).toOpaque(),
                         &encoded, &count, &message, message.count)
                 }
             }
-            defer { pt_jxl_free(encoded) }
+            defer { if let encoded { pt_jxl_free(encoded) } }
             if result == 2 || cancellation.isCancelled { throw CancellationError() }
-            guard result == 0, let encoded, count > 0 else {
+            guard result == 0, let pointer = encoded, count > 0 else {
                 throw PhotoError("JPEG XL 編碼失敗：\(String(cString: message))")
             }
-            let data = Data(bytes: encoded, count: count)
+            let data = Data(bytesNoCopy: pointer, count: count, deallocator: .custom { pointer, _ in pt_jxl_free(pointer) })
+            encoded = nil
             let signature = Data([0, 0, 0, 12, 0x4a, 0x58, 0x4c, 0x20])
             guard data.starts(with: signature) else {
                 throw PhotoError("JPEG XL 輸出容器無效；已停止這張照片的輸出。")

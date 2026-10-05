@@ -47,6 +47,8 @@ fi
 /bin/cp -R "$PROJECT_DIR/.build/vendor-jpegli/licenses" "$APP_PATH/Contents/Resources/JpegliLicenses"
 /bin/cp -R "$PROJECT_DIR/.build/vendor-jxl/licenses" "$APP_PATH/Contents/Resources/JXLLicenses"
 /bin/cp -R CompressionWeb "$APP_PATH/Contents/Resources/"
+NEXPRESS_ROOT="$APP_PATH/Contents/Resources/CompressionWeb" NEXPRESS_BUILD_REVISION="$(git rev-parse HEAD)" node CompressionWeb/scripts/generate-build-info.mjs
+python3 scripts/write-build-identity.py "$APP_PATH/Contents/Resources/BuildIdentity.json"
 /bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"
 /usr/bin/strip -x "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"

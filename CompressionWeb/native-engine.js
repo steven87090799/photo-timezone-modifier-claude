@@ -102,6 +102,9 @@ window.compressionEngine = {
 };
 
 try {
-  const ready = await createWorker().ready;
+  const probe = createWorker();
+  const ready = await probe.ready;
+  probe.dispose();
+  pool.splice(pool.indexOf(probe), 1);
   bridge({ type: 'ready', formats: Object.entries(ready.formats).filter(([, enabled]) => enabled).map(([format]) => format) });
 } catch (error) { bridge({ type: 'error', message: error.message }); }
