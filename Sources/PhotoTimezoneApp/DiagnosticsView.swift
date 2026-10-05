@@ -34,10 +34,10 @@ struct DiagnosticsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 14) {
-                    Image(nsImage: AppArtwork.icon).resizable().frame(width: 64, height: 64)
+                    Image(nsImage: AppArtwork.icon).resizable().frame(width: 44, height: 44)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("版本與診斷").font(.title2.bold())
+                        Text("版本與診斷").font(.title2.weight(.semibold))
                         Text("相片時區修改器 \(version)（建置 \(build)）")
                             .font(.callout).foregroundStyle(.secondary)
                     }
@@ -65,9 +65,10 @@ struct DiagnosticsView: View {
                     detail("執行架構", architecture)
                     detail("macOS", ProcessInfo.processInfo.operatingSystemVersionString)
                     detail("可處理格式", "JPEG、TIFF、Sony ARW；可補寫三欄時區或手動新增 GPS，不轉換原格式")
-                    Text("3.5：三欄時區、中繼資料驗證、有界記憶體與交易復原記錄。\n3.4.1：Sony 相容模式預設開啟，保留嚴格模式開關與逐張驗證。\n3.4：預設只補 EXIF 拍攝時區，不加減拍攝鐘點。\n3.3：繁體中文選單、集中式時區選擇、資源用量與診斷頁、側欄排版改善。\n3.2：獨立副本輸出或備份後原子替換、進度、逐張失敗與重試。\n3.1：拖入先看相片資訊、相機資料與大量照片的搜尋分頁。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    DisclosureGroup("版本紀錄") {
+                        Text("3.6：原生 Jpegli、HEIF 轉換與中繼資料核對。\n3.5：時區與 GPS、交易復原及資源管理。\n3.4：Sony 相容模式與逐張驗證。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
 
                 section("處理狀態與除錯", symbol: "wrench.and.screwdriver") {
@@ -154,7 +155,7 @@ struct DiagnosticsView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func metricCard(_ title: String, value: String, symbol: String) -> some View {
@@ -165,7 +166,7 @@ struct DiagnosticsView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private func detail(_ title: String, _ value: String) -> some View {

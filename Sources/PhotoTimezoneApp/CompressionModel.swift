@@ -92,6 +92,7 @@ struct CompressionItem: Identifiable {
 
 @MainActor
 final class CompressionModel: ObservableObject {
+    static let maximumParallelism = 8
     static let jpegEncoderPreferenceVersion = "jpegli-v2-calibrated"
 
     private let preferences: UserDefaults
@@ -164,7 +165,7 @@ final class CompressionModel: ObservableObject {
         defaults.set(chosenQuality, forKey: "nativeCompressionQuality." + initialFormat.fileExtension)
         defaults.set(Self.jpegEncoderPreferenceVersion, forKey: "nativeCompressionJPEGEncoder")
         let savedParallelism = defaults.integer(forKey: "nativeCompressionParallelism")
-        parallelism = savedParallelism > 0 ? min(4, savedParallelism) : 2
+        parallelism = savedParallelism > 0 ? min(Self.maximumParallelism, savedParallelism) : 2
         webhookURL = defaults.string(forKey: "nativeCompressionWebhookURL") ?? ""
         host.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
     }

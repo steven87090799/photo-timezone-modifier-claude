@@ -8,12 +8,12 @@ struct CompressionView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            settings.frame(width: 290)
+            settings.frame(width: 300)
             Divider()
             workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
             if model.selected != nil {
                 Divider()
-                inspector.frame(width: 330)
+                inspector.frame(width: 300)
             }
         }
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
@@ -31,83 +31,78 @@ struct CompressionView: View {
         } message: { Text(model.notice ?? "") }
     }
 
-    private func heading(_ number: String, _ title: String, help: String) -> some View {
-        HStack(spacing: 8) {
-            Text(number).font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            Spacer()
-            Image(systemName: "questionmark.circle").foregroundStyle(.secondary).help(help)
-        }
-    }
-
     private var settings: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    heading("01", "加入影像", help: "加入檔案或資料夾，也可直接拖入。原始圖片保持原狀；壓縮完成後再選擇儲存位置。")
+            Form {
+                Section("輸入") {
                     Button(action: model.chooseInputs) {
-                        Label("加入圖片或資料夾…", systemImage: "plus").frame(maxWidth: .infinity)
+                        Label("加入圖片或資料夾…", systemImage: "plus")
                     }.accessibilityIdentifier("compressionAddInputs")
-                    Toggle("包含子資料夾", isOn: $model.recursive).font(.callout)
-                        .help("在下一次加入資料夾時，同時搜尋其中的子資料夾。")
+                    Toggle("包含子資料夾", isOn: $model.recursive)
+                        .help("下一次加入資料夾時，搜尋其中的子資料夾。")
                     if model.isImporting { ProgressView("正在讀取影像…").controlSize(.small) }
-                    Divider()
-                    heading("02", "壓縮設定", help: "品質及格式套用到整批影像。預覽會完整編碼目前選取的照片，顯示實際大小；開始批次時會重用這個輸出。")
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                }
+                Section("壓縮") {
+                    Picker("格式", selection: $model.format) {
                         ForEach(CompressionFormat.allCases) { format in
-                            Button { model.format = format } label: {
-                                HStack(spacing: 4) {
-                                    Text(format.rawValue).font(.callout.weight(.medium))
-                                    if format == .heif { Image(systemName: "apple.logo").font(.caption2) }
-                                }.frame(maxWidth: .infinity, minHeight: 26)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(model.format == format ? .accentColor : .gray)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(model.format == format ? Color.accentColor : .clear, lineWidth: 1))
-                            .help(format.hint)
-                            .accessibilityIdentifier("compressionFormat-" + format.fileExtension)
-                            .disabled(format == .heif && !CompressionHost.supportsHEIF)
+                            Text(format.rawValue).tag(format)
+                                .disabled(format == .heif && !CompressionHost.supportsHEIF)
                         }
                     }
-                    HStack {
-                        Text(model.format == .png ? "壓縮努力度" : "品質").font(.callout)
-                        Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
-                            .help(model.format.hint + " HEIF 使用 macOS ImageIO；AVIF 使用 sRGB；JPEG XL 優先保留來源 RGB 色彩描述檔。16 位元 PNG 使用原生編碼，努力度由系統決定。")
-                        Spacer()
-                        Text(model.format == .png ? "\(CompressionModel.pngEffort(model.quality)) / 6" : "\(Int(model.quality.rounded()))")
-                            .font(.body.monospacedDigit().weight(.semibold))
+                    .accessibilityIdentifier("compressionFormatPicker")
+                    .help(model.format.hint)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(model.format == .png ? "壓縮努力度" : "品質")
+                            Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+                                .help(model.format.hint)
+                            Spacer()
+                            Text(model.format == .png ? "\(CompressionModel.pngEffort(model.quality)) / 6" : "\(Int(model.quality.rounded()))")
+                                .monospacedDigit().fontWeight(.semibold)
+                        }
+                        // Continuous native track avoids 99 dense system tick marks;
+                        // round the value so encoder and displayed quality stay integral.
+                        Slider(value: Binding(get: { model.quality }, set: { value in
+                            let rounded = value.rounded()
+                            if model.quality != rounded { model.quality = rounded }
+                        }), in: 1...100)
+                        .labelsHidden().frame(maxWidth: .infinity)
+                        .accessibilityLabel(model.format == .png ? "壓縮努力度" : "品質")
+                        .accessibilityIdentifier("compressionQuality")
+                        HStack {
+                            Text(model.format == .png ? "較快" : "較小檔案")
+                            Spacer()
+                            Text(model.format == .png ? "較小檔案" : "較高品質")
+                        }.font(.caption2).foregroundStyle(.secondary)
+                        Button { model.quality = model.format.recommendedQuality } label: {
+                            Label(model.format == .png ? "建議努力度" : "建議品質 \(Int(model.format.recommendedQuality))", systemImage: "arrow.counterclockwise")
+                                .font(.caption)
+                        }.buttonStyle(.borderless)
                     }
-                    Button(model.format == .png ? "使用建議努力度" : "使用建議品質（\(Int(model.format.recommendedQuality))）") { model.quality = model.format.recommendedQuality }
-                        .font(.caption).buttonStyle(.plain).foregroundStyle(Color.accentColor)
-                    Slider(value: $model.quality, in: 1...100, step: 1).accessibilityIdentifier("compressionQuality")
-                    HStack {
-                        Text(model.format == .png ? "較快" : "較小檔案")
-                        Spacer()
-                        Text(model.format == .png ? "較小檔案" : "較高品質")
-                    }.font(.caption).foregroundStyle(.secondary)
-                    Stepper("並行處理：\(model.parallelism) 張", value: $model.parallelism, in: 1...4)
-                        .font(.callout).help("同時壓縮的張數。大尺寸影像會自動降低並行數，以控制記憶體用量。")
-                    Divider()
-                    heading("03", "輸出", help: "支援單張儲存、整批儲存及 ZIP。可保留的 EXIF、ICC、XMP 會複製並驗證，包含既有時區及 GPS；本頁不修改時區或 GPS。")
+                    Stepper("並行處理：\(model.parallelism) 張", value: $model.parallelism, in: 1...CompressionModel.maximumParallelism)
+                        .help("最多 8 張；依相片尺寸、格式及記憶體，自動降低實際並行數。")
+                        .accessibilityIdentifier("compressionParallelism")
+                }
+                Section("儲存") {
                     Button(action: model.chooseOutputDirectory) {
                         Label(model.outputDirectory?.lastPathComponent ?? "選擇輸出資料夾…", systemImage: "folder")
-                            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                    }.help(model.outputDirectory?.path ?? "也可等壓縮完成後再選擇儲存位置。")
-                    Text("壓縮後請按「儲存單張」或「輸出 → 儲存全部」。")
+                            .lineLimit(1).truncationMode(.middle)
+                    }.help(model.outputDirectory?.path ?? "完成後，也可按『儲存全部』再選擇位置。")
+                    Text("完成後請儲存；關閉會清除暫存結果。")
                         .font(.caption).foregroundStyle(.secondary)
                     if !model.exportStatus.isEmpty { Text(model.exportStatus).font(.caption).foregroundStyle(.secondary) }
-                    HStack {
-                        Toggle("Webhook", isOn: $model.webhookEnabled).font(.callout)
-                            .help("開啟後，把壓縮檔案及批次摘要傳送到你設定的網址。預設關閉。")
-                        Button("設定…") { model.showingWebhook = true }
+                }
+                Section {
+                    DisclosureGroup("其他選項") {
+                        Toggle("Webhook", isOn: $model.webhookEnabled)
+                            .help("開啟後，把壓縮檔案與摘要傳送到指定網址；預設關閉。")
+                        Button("Webhook 設定…") { model.showingWebhook = true }
+                        if !model.webhookStatus.isEmpty { Text(model.webhookStatus).font(.caption).foregroundStyle(.secondary) }
+                        Button("格式與中繼資料說明") { model.showingEngineInfo = true }
                     }
-                    if !model.webhookStatus.isEmpty { Text(model.webhookStatus).font(.caption).foregroundStyle(.secondary) }
-                    Button { model.showingEngineInfo = true } label: {
-                        Label("格式與中繼資料說明", systemImage: "info.circle").font(.caption)
-                    }.buttonStyle(.plain).foregroundStyle(.secondary)
-                }.padding(16).disabled(locked)
+                }
             }
-            Divider()
+            .formStyle(.grouped).scrollContentBackground(.hidden).disabled(locked)
             VStack(alignment: .leading, spacing: 8) {
                 if let error = model.host.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
                 else if model.format == .heif && !CompressionHost.supportsHEIF { Text("此 Mac 無法編碼 HEIF。").font(.caption) }
@@ -119,10 +114,10 @@ struct CompressionView: View {
                     Button(action: model.start) {
                         Label("開始壓縮 \(model.items.count) 張", systemImage: "arrow.down.right.and.arrow.up.left")
                             .frame(maxWidth: .infinity, minHeight: 24)
-                    }.buttonStyle(.borderedProminent).disabled(!model.canStart).accessibilityIdentifier("compressionStart")
+                    }.buttonStyle(.glassProminent).disabled(!model.canStart).accessibilityIdentifier("compressionStart")
                 }
             }.padding(16)
-        }.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        }.background(.regularMaterial)
     }
 
     private var workspace: some View {
@@ -161,7 +156,14 @@ struct CompressionView: View {
             HStack(spacing: 8) {
                 if model.isExporting { ProgressView().controlSize(.small) }
                 else { Text("完成 \(model.completed.count) 張 · \(CompressionModel.bytes(model.resultBytes))").font(.caption).foregroundStyle(.secondary) }
-                if let savings = model.batchSavings { Text(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100)).font(.caption).foregroundStyle(.secondary) }
+                if let savings = model.batchSavings {
+                    Label(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100),
+                          systemImage: savings >= 0 ? "arrow.down.right" : "arrow.up.right")
+                        .font(.callout.weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(savings >= 0 ? Color.green : .orange)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background((savings >= 0 ? Color.green : .orange).opacity(0.10), in: Capsule())
+                }
                 Spacer(minLength: 2)
                 Menu {
                     Button("儲存全部圖片…", action: model.saveAll).disabled(model.completed.isEmpty)
@@ -191,7 +193,8 @@ struct CompressionView: View {
                         }
                         let saved = (1 - Double(size) / Double(max(1, item.measuredSourceBytes))) * 100
                         Text(saved >= 0 ? String(format: "減少 %.1f%%", saved) : String(format: "增加 %.1f%%", -saved))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.callout.weight(.semibold)).monospacedDigit()
+                            .foregroundStyle(saved >= 0 ? Color.green : .orange)
                     }
                     Text(model.previewNote).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
@@ -209,14 +212,14 @@ struct CompressionView: View {
                     Text(item.source.path).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
                 }
             }.padding(16)
-        }.background(Color(nsColor: .controlBackgroundColor).opacity(0.25))
+        }.background(.regularMaterial)
     }
 
     private func imagePanel(_ image: NSImage?, title: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.25))
+                RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .textBackgroundColor))
                 if let image { Image(nsImage: image).resizable().interpolation(.high).scaledToFit().padding(4) }
                 else { Image(systemName: "photo").foregroundStyle(.tertiary) }
             }.frame(height: 160)
@@ -252,38 +255,58 @@ struct CompressionView: View {
 
 private struct CompressionRow: View {
     let item: CompressionItem
+    private var changeColor: Color { (item.savings ?? 0) >= 0 ? .green : .orange }
+
     var body: some View {
-        HStack(spacing: 10) {
-            Group {
-                CompressionThumbnail(source: item.source)
-            }.frame(width: 54, height: 54).background(Color.black.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius: 5))
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.source.lastPathComponent).font(.callout.weight(.medium)).lineLimit(1)
-                Text(item.basicInfo).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.basicInfo)
-                Text("拍攝：\(item.dateInfo) · 時區：\(item.metadata?.offsetOriginal ?? "未填寫")")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).help("拍攝：\(item.dateInfo)\n時區：\(item.timezoneInfo)")
-                Text("GPS：\(item.gpsInfo)").font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.gpsInfo)
-                HStack(spacing: 5) {
-                    Text("原始 \(CompressionModel.bytes(item.measuredSourceBytes))")
-                    if let result = item.result {
-                        Image(systemName: "arrow.right"); Text("輸出 \(CompressionModel.bytes(result.bytes))")
-                        if let savings = item.savings {
-                            Text(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100))
-                            Text("（\(CompressionModel.bytes(abs(item.measuredSourceBytes - result.bytes)))）")
-                        }
-                    }
-                }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if let error = item.metadataError { Text("EXIF 讀取失敗：\(error)").font(.caption2).foregroundStyle(.orange).lineLimit(1).help(error) }
-                if item.state == .running { ProgressView(value: item.progress, total: 100).controlSize(.small) }
+        HStack(alignment: .center, spacing: 12) {
+            CompressionThumbnail(source: item.source)
+                .frame(width: 38, height: 38)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(item.source.lastPathComponent).font(.callout.weight(.medium))
+                    .lineLimit(1).truncationMode(.middle).help(item.source.path)
+                Text(item.metadata?.camera ?? "未知相機").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text("\(item.width) × \(item.height)").font(.caption2).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 6)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(item.state == .running ? item.phase : item.state.rawValue).font(.caption)
-                    .foregroundStyle(item.state == .failed ? Color.red : item.state == .success ? .green : .secondary)
-                if let format = item.format { Text(format.rawValue).font(.caption2).foregroundStyle(.tertiary) }
-                if item.state == .running { Text(String(format: "%.0f%%", item.progress)).font(.caption.monospacedDigit()) }
+            .frame(minWidth: 100, idealWidth: 150, maxWidth: 190, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("\(item.dateInfo) · \(item.metadata?.offsetOriginal ?? "時區未填")")
+                    .font(.caption).monospacedDigit().lineLimit(1)
+                    .help("拍攝：\(item.dateInfo)\n時區：\(item.timezoneInfo)")
+                Text("GPS：\(item.gpsInfo)").font(.caption).lineLimit(1).help(item.gpsInfo)
+                Text(item.basicInfo).font(.caption2).foregroundStyle(.secondary).lineLimit(1).help(item.basicInfo)
+                if let error = item.metadataError {
+                    Label("EXIF 讀取失敗", systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange).help(error)
+                }
             }
-        }.padding(.vertical, 5)
+            .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack(spacing: 4) {
+                    if item.state == .success { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                    Text(item.state == .running ? item.phase : item.state.rawValue)
+                        .foregroundStyle(item.state == .failed ? Color.red : .secondary)
+                    if let format = item.format { Text(format.rawValue).foregroundStyle(.tertiary) }
+                }.font(.caption).lineLimit(1)
+                if let savings = item.savings, let result = item.result {
+                    Label(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100),
+                          systemImage: savings >= 0 ? "arrow.down.right" : "arrow.up.right")
+                        .font(.callout.weight(.semibold)).monospacedDigit().foregroundStyle(changeColor)
+                        .help("原始 \(item.measuredSourceBytes) bytes → 輸出 \(result.bytes) bytes；\(savings >= 0 ? "節省" : "增加") \(CompressionModel.bytes(abs(item.measuredSourceBytes - result.bytes)))")
+                    Text("\(CompressionModel.bytes(item.measuredSourceBytes)) → \(CompressionModel.bytes(result.bytes))")
+                        .font(.caption2).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                } else if item.state == .running {
+                    ProgressView(value: item.progress, total: 100).controlSize(.small)
+                    Text(String(format: "%.0f%%", item.progress)).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                } else {
+                    Text(CompressionModel.bytes(item.measuredSourceBytes)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 148, alignment: .trailing)
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
     }
 }
 

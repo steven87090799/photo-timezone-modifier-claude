@@ -123,9 +123,6 @@ struct OffsetChooserView: View {
         }
         .padding(22)
         .frame(width: 660)
-        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.secondary.opacity(0.3)))
-        .shadow(color: .black.opacity(0.4), radius: 30, y: 12)
         .onExitCommand(perform: onCancel)
         .accessibilityIdentifier("offsetChooserDialog")
     }
