@@ -221,9 +221,11 @@ extern "C" int pt_jxl_encode_rgba(
   if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
 
   try {
+    // Use libjxl's host-dependent worker count without an app-level CPU cap.
+    // The scoped runner releases its workers when this encode finishes.
     std::unique_ptr<void, RunnerDeleter> runner(
         JxlThreadParallelRunnerCreate(
-            nullptr, std::min<size_t>(4, JxlThreadParallelRunnerDefaultNumWorkerThreads())));
+            nullptr, JxlThreadParallelRunnerDefaultNumWorkerThreads()));
     if (!runner) {
       setError(error, error_capacity, "無法建立 JPEG XL 工作執行緒。\n");
       return 1;

@@ -80,7 +80,7 @@ struct CompressionView: View {
                         }.buttonStyle(.borderless)
                     }
                     Stepper("並行處理：\(model.parallelism) 張", value: $model.parallelism, in: 1...CompressionModel.maximumParallelism)
-                        .help("最多 8 張；並行估算預算最高 2 GiB，小容量 Mac 依總記憶體降低。實際並行數依相片尺寸與格式調整；不是整個程式的記憶體硬上限。")
+                        .help("最多 8 張；CPU 不設使用率上限。並行估算預算最高 2 GiB，小容量 Mac 依總記憶體降低。實際並行數依相片尺寸與格式調整；不是整個程式的記憶體硬上限。")
                         .accessibilityIdentifier("compressionParallelism")
                 }
                 Section("儲存") {
