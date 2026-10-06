@@ -143,12 +143,12 @@ struct CompressionTests {
         #expect(host.webView == nil)
     }
 
-    @Test func highResolutionJXLUsesOneEncoderWithinMemoryBudget() {
+    @Test func highResolutionConcurrencyRespectsMemoryBudget() {
         let memory = UInt64(16 * 1024 * 1024 * 1024)
         #expect(CompressionModel.concurrencyLimit(format: .jxl, requested: 4,
             pixelCount: 24_000_000, physicalMemory: memory) == 1)
         #expect(CompressionModel.concurrencyLimit(format: .jpeg, requested: 4,
-            pixelCount: 24_000_000, physicalMemory: memory) == 1)
+            pixelCount: 24_000_000, physicalMemory: memory) == 3)
     }
 
     @Test func nativeJXLRetainsICCThroughMetadataWrite() throws {

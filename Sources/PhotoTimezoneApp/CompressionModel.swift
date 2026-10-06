@@ -476,8 +476,10 @@ final class CompressionModel: ObservableObject {
                                  pixelCount: Int, physicalMemory: UInt64) -> Int {
         // Conservative 16-bit buffers and codec scratch space; this is not a process RSS cap.
         let bytesPerPixel = format == .jxl ? 48 : format == .avif ? 32 : 28
-        let budget = min(512 * 1024 * 1024,
-            max(128 * 1024 * 1024, Int(physicalMemory / 16)))
+        // A 16 GiB or larger Mac gets the full 2 GiB scheduling budget.
+        // Smaller Macs use at most one eighth of physical memory for this estimate.
+        let budget = min(2 * 1024 * 1024 * 1024,
+            max(128 * 1024 * 1024, Int(physicalMemory / 8)))
         return min(max(1, requested), max(1, budget / max(1, pixelCount * bytesPerPixel)))
     }
 
