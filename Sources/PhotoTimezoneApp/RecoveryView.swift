@@ -53,6 +53,7 @@ struct RecoveryView: View {
             }
         }
         .padding(24).frame(minWidth: 720, minHeight: 440)
+        .background { AppWindowBackdrop() }
         .task { reload() }
         .confirmationDialog("確認已檢查檔案與備份？", isPresented: $state.confirm, titleVisibility: .visible) {
             Button("確認，僅封存此交易記錄") {
