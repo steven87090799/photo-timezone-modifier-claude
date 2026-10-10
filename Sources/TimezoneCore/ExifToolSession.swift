@@ -110,7 +110,7 @@ final class ExifToolSession {
             child.environment = ["PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"]
             child.standardInput = pipe; child.standardOutput = outWriter; child.standardError = errWriter
             child.terminationHandler = { _ in done.signal() }
-            try child.run()
+            try ChildProcessRegistry.shared.launch(child)
             process = child; completed = done; input = pipe.fileHandleForWriting
             try? pipe.fileHandleForReading.close()
             outputOffset = 0; errorOffset = 0; sequence = 0
@@ -129,6 +129,7 @@ final class ExifToolSession {
             }
             process.waitUntilExit()
         }
+        if let process { ChildProcessRegistry.shared.finished(process) }
         try? input?.close(); try? outWriter?.close(); try? errWriter?.close()
         try? outReader?.close(); try? errReader?.close()
         if let directory { try? FileManager.default.removeItem(at: directory) }

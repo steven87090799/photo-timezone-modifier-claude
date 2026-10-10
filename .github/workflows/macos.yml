@@ -20,12 +20,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-jpegli:
+    uses: ./.github/workflows/jpegli-windows.yml
+
   test-and-build-macos:
     # Shipping/test baseline is Apple Silicon running macOS 27+.
     runs-on: xcode-27
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Ensure native codec build tool
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          command -v node >/dev/null || brew install node
+          command -v pkg-config >/dev/null || brew install pkg-config
+          brew list highway brotli little-cms2 >/dev/null || brew install highway brotli little-cms2
 
       - name: Fetch pinned real Sony A7 IV ARW fixture
         shell: bash
@@ -47,12 +57,11 @@ jobs:
         run: ./scripts/test.sh --filter testThousand
 
       - name: Identify automatic build
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" app/Info.plist
 
       - name: Build Apple Silicon app
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: ./build.sh
 
       - name: Check verified build archive
@@ -67,7 +76,7 @@ jobs:
   publish-app:
     # PRs get downloadable Actions artifacts; only main can publish Releases.
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [test-and-build-macos]
+    needs: [test-and-build-macos, windows-jpegli]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -64,8 +64,9 @@ final class ExifTool {
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
         if cancellation?.isCancelled == true { throw CancellationError() }
-        try process.run()
+        try ChildProcessRegistry.shared.launch(process)
         defer {
+            defer { ChildProcessRegistry.shared.finished(process) }
             if process.isRunning {
                 process.terminate()
                 if finished.wait(timeout: .now() + 1) == .timedOut, process.isRunning {

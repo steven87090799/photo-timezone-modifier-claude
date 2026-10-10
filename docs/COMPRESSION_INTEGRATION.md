@@ -14,18 +14,20 @@ Webhook 預設關閉，只有啟用後才傳送壓縮檔及摘要。設定支援
 
 ## 執行引擎與格式
 
-編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。WKWebView 只在需要壓縮時執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
+編碼器來自私人專案 `steven87090799/nexpress` 的 `d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a`（3.2.1）。`CompressionWeb` 僅保留編码 Worker、WASM、執行期政策與身分驗證程式。原網頁的外觀、主控制程式、字型、圖示、PWA、Service Worker 與 JSZip 已移除。JPEG 已替換為原生 Jpegli 靜態函式庫，不依賴 WebKit；MozJPEG 的 WASM 與 JS 已移除。WKWebView 只在選用其他壓縮格式時執行不可見的 `engine.html`，本機服務僅監聽 loopback 的隨機連接埠。控制項、檔案匯入、預覽檢視、進度、匯出與 Webhook 均由原生程式提供。
 
 | 格式 | 完整輸出 | 色彩處理 |
 | --- | --- | --- |
-| JPEG | MozJPEG，漸進式、Trellis，高品質 4:4:4 | 保留來源 RGB ICC，其他色彩模式轉 sRGB |
+| JPEG | 原生 Jpegli，普通漸進式 JPEG、自適應量化、高品質 4:4:4（不使用 XYB） | 保留來源 RGB ICC，其他色彩模式轉 sRGB |
 | PNG | OxiPNG，像素無損，努力度 0–6 | 保留來源 RGB ICC |
 | WebP | libwebp，method 6、sharp YUV | 保留來源 RGB ICC |
 | AVIF | libavif／libaom，speed 6、CQ 品質映射 | 明示轉換為 sRGB |
 | HEIF／HEIC | macOS ImageIO `public.heic` 原生 HEVC | 保留來源 RGB ICC |
-| JPEG XL | libjxl，品質 100 為解碼後像素無損，依尺寸調整 effort | 明示轉換為 sRGB |
+| JPEG XL | 原生 libjxl 0.12.0，品質 100 為解碼後 RGBA 像素無損，依尺寸調整 effort | 保留來源 RGB ICC，並驗證轉換後色彩特性一致 |
 
-HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。「最佳」仍取決於畫質、體積、速度及相容性；保留現有已調校的編碼器，未宣稱完成所有照片及演算法的畫質比較。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。
+HEIF／HEIC 輸入、預覽與輸出都使用 macOS ImageIO，沒有第三方 HEIF 轉換工具。JPEG 預設品質為 86；舊版 MozJPEG 預設 82 會遷移到 86，使用者自訂值會保留。JPEG 品質數字不能直接跨編碼器比較；同一張 24 MP 照片的 Jpegli／MozJPEG 大小與 SSIMULACRA2 實測見 [JPEG 方案比較](JPEG_OPTIONS.md)。Jpegli 編碼器支援 Windows，但此 SwiftUI App 仍為 macOS 專用；固定版本與驗證見 [NATIVE_JPEGLI.md](NATIVE_JPEGLI.md)。JPEG 品質 100 仍是有損，透明輸入轉白底。JPEG XL 品質 100 無損編碼失敗時明確報錯，不會自動改為有損。原生 libjxl 及其執行期函式庫隨 App 一起簽署和封裝，安裝後不依賴 Homebrew 或 JXL WASM。
+
+PNG 品質滑桿控制 OxiPNG 壓縮努力度，使用平方曲線映射到 0–6 級，讓預設品質 86 對應 effort 4，最高品質 100 才使用 effort 6。努力度只影響處理時間與檔案大小，不影響解碼後像素。本次一張 24 MP 照片在 effort 4 與 5 產生相同 SHA-256 的 35.76 MB PNG，實測時間由 295 秒降到 148 秒；這是該照片的結果，不代表每張圖片都會得到相同收益。AVIF 維持 speed 6；本次試驗 speed 8 沒有穩定縮短時間，因此未保留該調整。
 
 ## 中繼資料與檔案安全
 

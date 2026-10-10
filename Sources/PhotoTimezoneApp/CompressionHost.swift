@@ -30,6 +30,9 @@ final class CompressionLocalServer {
     private let registryLock = NSLock()
     private var sources: [String: URL] = [:]
     private var outputs: [String: URL] = [:]
+    private let connectionLock = NSLock()
+    private var clients: Set<Int32> = []
+    private var stopped = false
 
     func register(id: String, source: URL, output: URL) {
         registryLock.lock(); defer { registryLock.unlock() }
@@ -113,7 +116,15 @@ final class CompressionLocalServer {
     }
 
     /// Cancellation releases the listener even when there are no connections.
-    func stop() { listenerSource?.cancel() }
+    func stop() {
+        connectionLock.lock()
+        stopped = true
+        // Workers own close(). Shutdown under this lock wakes blocked I/O without
+        // closing a descriptor that another thread could already have reused.
+        for client in clients { Darwin.shutdown(client, SHUT_RDWR) }
+        connectionLock.unlock()
+        listenerSource?.cancel()
+    }
     deinit { stop() }
 
     private func acceptConnections() {
@@ -124,14 +135,26 @@ final class CompressionLocalServer {
             guard flags >= 0, fcntl(client, F_SETFL, flags & ~O_NONBLOCK) >= 0 else {
                 Darwin.close(client); continue
             }
+            connectionLock.lock()
+            if stopped {
+                Darwin.close(client); connectionLock.unlock(); return
+            }
+            clients.insert(client)
+            connectionLock.unlock()
             DispatchQueue.global(qos: .userInitiated).async { [self] in
                 autoreleasepool {
+                    defer {
+                        connectionLock.lock()
+                        clients.remove(client)
+                        Darwin.close(client)
+                        connectionLock.unlock()
+                    }
                     var noSignal: Int32 = 1
                     setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
                     var timeout = timeval(tv_sec: 40, tv_usec: 0)
                     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
                     serve(client)
-                    Darwin.close(client)
                 }
             }
         }

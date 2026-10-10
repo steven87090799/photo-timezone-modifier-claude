@@ -21,7 +21,6 @@ struct PhotoTimezoneApp: App {
                     else { model.addInputs([url]) }
                 }
                 .frame(minWidth: 1100, minHeight: 760)
-                .preferredColorScheme(.dark)
                 .sheet(isPresented: $model.showingRecovery) { RecoveryView() }
         }
         .defaultSize(width: 1320, height: 900)
@@ -100,12 +99,10 @@ private struct PhotoMainView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
             if model.activePage == .photos {
                 HStack(alignment: .top, spacing: 0) {
                     settings
-                        .frame(width: 290)
+                        .frame(width: 300)
                     Divider()
                     workspace
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -134,152 +131,105 @@ private struct PhotoMainView: View {
                     .allowsHitTesting(false)
             }
         }
-        .overlay {
-            if model.showingOffsetChooser {
-                Color.black.opacity(0.7).ignoresSafeArea()
-                    .accessibilityHidden(true)
-                OffsetChooserView(selected: model.offset, onConfirm: { chosen in
-                    model.setOffset(chosen)
-                    model.showingOffsetChooser = false
-                }, onCancel: { model.showingOffsetChooser = false })
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        .sheet(isPresented: $model.showingOffsetChooser) {
+            OffsetChooserView(selected: model.offset, onConfirm: { chosen in
+                model.setOffset(chosen)
+                model.showingOffsetChooser = false
+            }, onCancel: { model.showingOffsetChooser = false })
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) { navigationPicker }
         }
         .alert(item: $model.notice, content: alert)
         .sheet(isPresented: $model.showingReportDetails) { reportDetailsSheet }
         .onChange(of: model.selectedItem?.id) { _, _ in model.showingMoreMetadata = false }
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: AppArtwork.icon)
-                .resizable().interpolation(.high)
-                .frame(width: 30, height: 30)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("相片時區修改器").font(.headline)
-                    Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "3.5.0")
-                        .font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-            Spacer(minLength: 12)
-            Picker("頁面", selection: $model.activePage) {
-                ForEach(AppPage.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 340)
-            .accessibilityIdentifier("mainPagePicker")
+    private var navigationPicker: some View {
+        Picker("頁面", selection: $model.activePage) {
+            ForEach(AppPage.allCases, id: \.self) { Text($0.rawValue).tag($0) }
         }
-        .controlSize(.regular)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
+        .pickerStyle(.segmented).labelsHidden().frame(width: 350)
+        .accessibilityIdentifier("mainPagePicker")
     }
 
     private var settings: some View {
         VStack(spacing: 0) {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                sources
-                Divider()
-                VStack(alignment: .leading, spacing: 12) {
-                    sectionHeading("02", "設定固定時區")
-                    Button {
-                        model.showingOffsetChooser = true
-                    } label: {
+            Form {
+                Section { sources }
+                Section {
+                    Button { model.showingOffsetChooser = true } label: {
                         HStack {
                             Label(model.offset.label, systemImage: "globe.asia.australia")
-                                .font(.body.monospacedDigit().weight(.semibold))
+                                .monospacedDigit()
                             Spacer()
                             Image(systemName: "chevron.right").font(.caption)
                         }
                     }
-                    .buttonStyle(.bordered)
+                    .disabled(model.isRunning)
                     .accessibilityLabel("選擇固定 UTC 時區偏移，現在為 \(model.offset.label)")
                     .accessibilityIdentifier("chooseOffsetButton")
+                    Picker("寫入", selection: Binding(get: { model.mode }, set: model.setMode)) {
+                        Text("只補缺漏").tag(WriteMode.fillMissing)
+                        Text("覆寫時區").tag(WriteMode.replaceAll)
+                    }
                     .disabled(model.isRunning)
+                    .accessibilityIdentifier("writeModePicker")
                     Toggle("加入 GPS 位置", isOn: $model.gpsEnabled)
                         .disabled(model.isRunning)
                         .accessibilityIdentifier("batchGPSToggle")
-                        .help("對本次掃描的全部支援照片批次處理；搜尋、篩選與單張選取不會縮小 GPS 範圍。")
+                        .help("對本次掃描的全部支援照片處理；搜尋與選取不會縮小 GPS 範圍。")
                     if model.gpsEnabled {
-                        TextField("緯度（−90～90）", text: $model.gpsLatitudeInput)
-                            .textFieldStyle(.roundedBorder)
+                        TextField("緯度", text: $model.gpsLatitudeInput, prompt: Text("−90～90"))
                             .accessibilityIdentifier("gpsLatitudeField")
-                        TextField("經度（−180～180）", text: $model.gpsLongitudeInput)
-                            .textFieldStyle(.roundedBorder)
+                        TextField("經度", text: $model.gpsLongitudeInput, prompt: Text("−180～180"))
                             .accessibilityIdentifier("gpsLongitudeField")
-                        TextField("高度 m，可留空", text: $model.gpsAltitudeInput)
-                            .textFieldStyle(.roundedBorder)
+                        TextField("高度", text: $model.gpsAltitudeInput, prompt: Text("公尺，可留空"))
                             .accessibilityIdentifier("gpsAltitudeField")
                         Toggle("GPS 覆蓋", isOn: $model.gpsOverwrite)
-                            .disabled(model.isRunning)
                             .accessibilityIdentifier("gpsOverwriteToggle")
-                            .help("勾選後才會覆蓋既有位置；未勾選時只補完全沒有 GPS 的相片。")
+                            .help("只補完全沒有 GPS 的相片；勾選後才覆蓋既有位置。")
                     }
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    sectionHeading("03", "選擇寫入方式")
-                    Picker("寫入方式", selection: Binding(get: { model.mode }, set: model.setMode)) {
-                        Text("只補上缺少的時區").tag(WriteMode.fillMissing)
-                        Text("覆寫所選時區").tag(WriteMode.replaceAll)
-                    }
-                    .pickerStyle(.radioGroup)
-                    .labelsHidden()
-                    .disabled(model.isRunning)
-                    .accessibilityLabel("時區寫入方式")
-                    .accessibilityIdentifier("writeModePicker")
-                    Toggle("Sony 相容模式（預設開啟）", isOn: Binding(
-                        get: { model.sonyCompatibility }, set: model.setSonyCompatibility
-                    ))
-                    .disabled(model.isRunning)
-                    .accessibilityIdentifier("sonyCompatibilityToggle")
-                }
-                VStack(alignment: .leading, spacing: 11) {
-                    sectionHeading("04", "選擇輸出位置")
-                    Toggle("替換來源資料夾中的原照片", isOn: Binding(
-                        get: { model.replaceOriginals }, set: model.setReplaceOriginals
-                    ))
-                    .font(.callout)
-                    .disabled(model.isRunning)
-                    .accessibilityIdentifier("replaceOriginalsToggle")
-                    if !model.replaceOriginals {
-                        Button(model.outputDirectory == nil ? "選擇副本輸出資料夾…" : "變更副本輸出資料夾…") {
-                            model.chooseOutputDirectory()
-                        }
+                } header: { sectionHeading("", "設定固定時區") }
+                Section {
+                    Toggle("替換原始照片", isOn: Binding(get: { model.replaceOriginals }, set: model.setReplaceOriginals))
                         .disabled(model.isRunning)
-                        .accessibilityIdentifier("chooseOutputDirectoryButton")
-                        if let destination = model.outputDirectory {
-                            Text(destination.path).font(.caption2).textSelection(.enabled)
-                                .lineLimit(2).truncationMode(.middle)
+                        .accessibilityIdentifier("replaceOriginalsToggle")
+                        .help("啟用後，先備份再替換原檔；預設輸出副本。")
+                    if !model.replaceOriginals {
+                        Button { model.chooseOutputDirectory() } label: {
+                            Label(model.outputDirectory?.lastPathComponent ?? "選擇副本資料夾…", systemImage: "folder")
+                                .lineLimit(1).truncationMode(.middle)
                         }
+                        .help(model.outputDirectory?.path ?? "寫入前選擇副本儲存位置。")
+                        .disabled(model.isRunning || model.inputs.isEmpty)
+                        .accessibilityIdentifier("chooseOutputDirectoryButton")
                     }
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    sectionHeading("05", "時區處理範圍")
-                    Picker("處理範圍", selection: $model.scope) {
+                    Picker("時區範圍", selection: $model.scope) {
                         Text("全部").tag(ProcessingScope.all)
                         Text("篩選").tag(ProcessingScope.filtered)
                         Text("已選").tag(ProcessingScope.selected)
                     }
-                    .pickerStyle(.segmented).labelsHidden()
                     .disabled(model.isRunning)
                     .accessibilityIdentifier("processingScopePicker")
-                    Text("時區：\(model.processingCount) 張 · GPS：\(model.gpsEnabled ? "本次掃描全部" : "未啟用")")
+                    Text("時區 \(model.processingCount) 張 · GPS \(model.gpsEnabled ? "本次掃描全部" : "未啟用")")
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("處理開始與完成時通知", isOn: Binding(
-                        get: { model.notificationsEnabled }, set: model.setNotificationsEnabled
-                    ))
-                    .accessibilityIdentifier("completionNotificationsToggle")
+                } header: { sectionHeading("", "選擇輸出位置") }
+                Section {
+                    DisclosureGroup("其他選項") {
+                        Toggle("Sony 相容模式", isOn: Binding(get: { model.sonyCompatibility }, set: model.setSonyCompatibility))
+                            .accessibilityIdentifier("sonyCompatibilityToggle")
+                            .help("預設開啟；允許已知的相機內部位置指標重排。")
+                        Toggle("處理開始與完成時通知", isOn: Binding(get: { model.notificationsEnabled }, set: model.setNotificationsEnabled))
+                            .accessibilityIdentifier("completionNotificationsToggle")
+                    }
                 }
             }
-                .padding(14)
+            .formStyle(.grouped).scrollContentBackground(.hidden)
+            .disabled(model.isRunning)
+            actionPanel.padding(16)
         }
-        Divider()
-        actionPanel.padding(12)
-        }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .background(.regularMaterial)
     }
 
     private var actionPanel: some View {
@@ -288,7 +238,7 @@ private struct PhotoMainView: View {
                 Label("檢查並寫入 \(model.offset.label)", systemImage: "clock.badge.checkmark")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent).controlSize(.large)
+            .buttonStyle(.glassProminent).controlSize(.large)
             .disabled(!model.canWrite).accessibilityIdentifier("writeButton")
             Button("從原始備份還原…", action: model.requestRestore)
                 .buttonStyle(.link).disabled(!model.canRestore)
@@ -299,7 +249,7 @@ private struct PhotoMainView: View {
     private var sources: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                sectionHeading("01", "加入相片與資料夾")
+                sectionHeading("", "加入相片與資料夾")
                 Spacer(minLength: 0)
                 if !model.inputs.isEmpty {
                     Button("清空", action: model.clearInputs)
@@ -329,7 +279,7 @@ private struct PhotoMainView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isRunning)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.3), style: StrokeStyle(dash: [5])))
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
                 .accessibilityIdentifier("chooseSourceArea")
             } else {
                 Text("已加入 \(model.inputs.count) 個來源")
@@ -390,7 +340,7 @@ private struct PhotoMainView: View {
                             ScrollView {
                                 metadataDetails(item)
                             }
-                            .frame(height: min(280, max(160, geometry.size.height * 0.30)))
+                            .frame(height: model.showingMoreMetadata ? min(280, geometry.size.height * 0.4) : 166)
                             .accessibilityIdentifier("photoMetadataScrollArea")
                         }
                     }
@@ -415,7 +365,7 @@ private struct PhotoMainView: View {
                 .accessibilityHidden(true)
             Text(model.isRunning ? "正在準備相片清單" : (model.inputs.isEmpty ? "讓每張相片，保留正確時區" : "來源已就緒，先看看相片資訊"))
                 .font(.title3.weight(.semibold))
-            Text(model.isRunning ? "正在自動讀取，沒有修改任何相片。" : "拖入相片 → 自動看照片與資訊 → 你決定要不要修改")
+            Text(model.isRunning ? "正在讀取相片資訊…" : "加入相片，檢查時區與 GPS")
                 .font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             if !model.isRunning {
@@ -526,7 +476,7 @@ private struct PhotoMainView: View {
     }
 
     private func metadataDetails(_ item: PhotoItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text(item.url.lastPathComponent).font(.callout.weight(.semibold))
                     .lineLimit(1).truncationMode(.middle).help(item.url.path)
@@ -538,34 +488,38 @@ private struct PhotoMainView: View {
             }
             HStack(alignment: .top, spacing: 14) {
                 PhotoThumbnail(url: item.url, revision: item.transactionID, allowDecode: !model.isRunning)
-                    .frame(width: 140, height: 105)
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(item.metadata?.camera ?? "未知相機").font(.headline)
-                        .lineLimit(2).help(item.metadata?.camera ?? "未知相機")
+                    .frame(width: 88, height: 66)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.metadata?.camera ?? "未知相機").font(.callout.weight(.semibold))
+                        .lineLimit(1).help(item.metadata?.camera ?? "未知相機")
                     Text(item.metadata?.lensModel ?? "鏡頭資訊未記錄")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).help(item.metadata?.lensModel ?? "")
                     Text("ISO \(item.metadata?.iso ?? "—") · \(item.metadata?.exposureTime ?? "—") 秒 · f/\(item.metadata?.aperture ?? "—")")
                         .font(.caption).textSelection(.enabled)
-                    Text(item.metadata?.focalLength ?? "焦距未記錄")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("\(item.metadata?.dimensions ?? "尺寸未記錄") · \(fileSizeText(item.metadata?.fileSize))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("\(item.metadata?.dimensions ?? "尺寸未記錄") · \(fileSizeText(item.metadata?.fileSize)) · \(item.metadata?.focalLength ?? "—")")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                .frame(width: 200, alignment: .leading)
+                .frame(minWidth: 135, idealWidth: 170, maxWidth: 190, alignment: .leading)
                 if let metadata = item.metadata {
                     Divider()
-                    VStack(alignment: .leading, spacing: 4) {
-                        metadataSection("時間與時區", fields: [
-                            .init(title: "拍攝時間", spec: "ExifIFD:DateTimeOriginal · 0x9003", value: metadata.dateTimeOriginal),
-                            .init(title: "拍攝時區", spec: "ExifIFD:OffsetTimeOriginal · 0x9011", value: metadata.offsetOriginal),
-                            .init(title: "數位化時間", spec: "ExifIFD:CreateDate · 0x9004", value: metadata.createDate),
-                            .init(title: "數位化時區", spec: "ExifIFD:OffsetTimeDigitized · 0x9012", value: metadata.offsetDigitized),
-                            .init(title: "修改時間", spec: "IFD0:ModifyDate · 0x0132", value: metadata.modifyDate),
-                            .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime)
-                        ], minimumWidth: 130, showsSpecifications: false)
-                        gpsEditor(item: item, metadata: metadata)
-                        metadataSection("EXIF GPS 資訊", fields: gpsPreviewFields(metadata),
-                                        minimumWidth: 105, maximumWidth: 200, showsSpecifications: false)
+                    HStack(alignment: .top, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            metadataField("拍攝時間", tag: "DateTimeOriginal", value: metadata.dateTimeOriginal, showsSpecification: false)
+                            Text("拍攝 \(display(metadata.offsetOriginal)) · 數位化 \(display(metadata.offsetDigitized)) · 修改 \(display(metadata.offsetTime))")
+                                .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help("拍攝、數位化及修改時區；其他日期欄位在『顯示更多』。")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 4) {
+                            gpsEditor(item: item, metadata: metadata)
+                            metadataSection("GPS", fields: [
+                                .init(title: "緯度", spec: "GPSLatitude", value: metadata.gpsLatitude.map { $0 + " " + (metadata.gpsLatitudeRef ?? "") }),
+                                .init(title: "經度", spec: "GPSLongitude", value: metadata.gpsLongitude.map { $0 + " " + (metadata.gpsLongitudeRef ?? "") }),
+                                .init(title: "高度", spec: "GPSAltitude", value: metadata.gpsAltitude.map { (metadata.gpsAltitudeRef == "1" ? "−" : "") + $0 + " m" })
+                            ], minimumWidth: 85, maximumWidth: 140, showsSpecifications: false)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
@@ -624,6 +578,7 @@ private struct PhotoMainView: View {
                             .init(title: "修改時區", spec: "ExifIFD:OffsetTime · 0x9010", value: metadata.offsetTime),
                             .init(title: "修改次秒", spec: "ExifIFD:SubSecTime · 0x9290", value: metadata.subSecTime)
                         ])
+                        metadataSection("GPS 詳細資訊", fields: gpsPreviewFields(metadata))
                         metadataSection("曝光與拍攝參數", fields: [
                             .init(title: "ISO", spec: "ExifIFD:ISO · EXIF PhotographicSensitivity · 0x8827", value: metadata.iso),
                             .init(title: "曝光時間", spec: "ExifIFD:ExposureTime · 0x829A", value: metadata.exposureTime),
@@ -662,12 +617,14 @@ private struct PhotoMainView: View {
                     }
                 }
             }
-            Text(item.url.path).font(.caption2).foregroundStyle(.tertiary)
-                .lineLimit(1).truncationMode(.middle).help(item.url.path).textSelection(.enabled)
+            if model.showingMoreMetadata {
+                Text(item.url.path).font(.caption2).foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle).help(item.url.path).textSelection(.enabled)
+            }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
         .accessibilityIdentifier("metadataDetails")
         .id(item.id)
     }
@@ -958,11 +915,6 @@ private struct PhotoMainView: View {
 
     private func sectionHeading(_ number: String, _ title: String) -> some View {
         HStack(spacing: 8) {
-            Text(number).font(.system(.caption2, design: .rounded).weight(.bold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 24, height: 24)
-                .background(Color.accentColor.opacity(0.1), in: Circle())
-                .accessibilityHidden(true)
             Text(title).font(.callout.weight(.semibold))
             Image(systemName: "questionmark.circle")
                 .font(.caption).foregroundStyle(.secondary)
@@ -1099,7 +1051,10 @@ final class PhotoAppDelegate: NSObject, NSApplicationDelegate {
         return .terminateCancel
     }
 
-    func applicationWillTerminate(_ notification: Notification) { compression?.host.shutdown() }
+    func applicationWillTerminate(_ notification: Notification) {
+        compression?.host.shutdown()
+        ChildProcessRegistry.shared.shutdown()
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

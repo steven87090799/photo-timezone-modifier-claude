@@ -56,8 +56,8 @@ final class CompressionWebhook: NSObject, URLSessionTaskDelegate {
         guard let result = item.result, let format = item.format else { return }
         let metadata: [String: Any] = ["app": "NEXPRESS", "version": "3.2.1", "type": "file", "batchId": batchID,
             "fileName": item.outputName, "sourceName": item.source.lastPathComponent,
-            "origSize": item.originalBytes, "compSize": result.bytes, "format": format.mime,
-            "ratio": (1 - Double(result.bytes) / Double(max(1, item.originalBytes))) * 100, "elapsedSec": item.elapsed,
+            "origSize": item.measuredSourceBytes, "compSize": result.bytes, "format": format.mime,
+            "ratio": (item.savings ?? 0) * 100, "elapsedSec": item.elapsed,
             "metadataStatus": result.metadataStatus, "timezone": NSNull(), "timeShiftMinutes": NSNull(), "exif": NSNull()]
         let json = try JSONSerialization.data(withJSONObject: metadata)
         let source = result.url, name = item.outputName, mime = format.mime
@@ -98,8 +98,8 @@ final class CompressionWebhook: NSObject, URLSessionTaskDelegate {
             "totals": totals, "deadLetters": deadLetters,
             "total": items.count, "success": items.filter { $0.state == .success }.count,
             "failed": items.filter { $0.state == .failed }.count,
-            "origSize": items.reduce(Int64(0)) { $0 + $1.originalBytes },
-            "compSize": items.reduce(Int64(0)) { $0 + ($1.result?.bytes ?? 0) }]
+            "origSize": items.filter { $0.state == .success }.reduce(Int64(0)) { $0 + $1.measuredSourceBytes },
+            "compSize": items.filter { $0.state == .success }.reduce(Int64(0)) { $0 + ($1.result?.bytes ?? 0) }]
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
         let (_, response) = try await session.data(for: request)
         try validate(response)

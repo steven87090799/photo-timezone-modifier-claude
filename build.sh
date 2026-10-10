@@ -20,6 +20,8 @@ if [[ $# != 0 ]]; then
   exit 1
 fi
 ./scripts/prepare-exiftool.sh
+python3 ./scripts/prepare-jpegli.py
+./scripts/prepare-jxl.sh
 bash ./scripts/prepare-icon.sh
 mkdir -p "$PROJECT_DIR/dist"
 # Build outside FileProvider-managed Documents so Finder attributes cannot be
@@ -31,6 +33,7 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 swift build --scratch-path "/private/tmp/PhotoTimezone-build-$UID" -c release --arch arm64 -Xswiftc -Osize
 APP_BIN="$(swift build --scratch-path "/private/tmp/PhotoTimezone-build-$UID" -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
 /bin/cp "$APP_BIN" "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
+python3 ./scripts/bundle-jxl-libraries.py "$APP_PATH/Contents/MacOS/PhotoTimezoneApp" "$APP_PATH/Contents/Frameworks/JXL"
 APP_ARCHS="$(/usr/bin/lipo -archs "$APP_PATH/Contents/MacOS/PhotoTimezoneApp")"
 if [[ "$APP_ARCHS" != "arm64" ]]; then
   echo "App 架構不符：預期 arm64，實際為 $APP_ARCHS" >&2
@@ -41,20 +44,29 @@ fi
 /bin/cp -R app/Localization/zh-Hant-TW.lproj "$APP_PATH/Contents/Resources/"
 ./scripts/stage-runtime.sh "$PROJECT_DIR/.build/vendor-exiftool" "$APP_PATH/Contents/Resources/ExifTool"
 /bin/cp THIRD_PARTY_NOTICES.md "$APP_PATH/Contents/Resources/"
+/bin/cp -R "$PROJECT_DIR/.build/vendor-jpegli/licenses" "$APP_PATH/Contents/Resources/JpegliLicenses"
+/bin/cp -R "$PROJECT_DIR/.build/vendor-jxl/licenses" "$APP_PATH/Contents/Resources/JXLLicenses"
 /bin/cp -R CompressionWeb "$APP_PATH/Contents/Resources/"
+NEXPRESS_ROOT="$APP_PATH/Contents/Resources/CompressionWeb" NEXPRESS_BUILD_REVISION="$(git rev-parse HEAD)" node CompressionWeb/scripts/generate-build-info.mjs
+python3 scripts/write-build-identity.py "$APP_PATH/Contents/Resources/BuildIdentity.json"
 /bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"
 /usr/bin/strip -x "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
 /usr/bin/plutil -lint "$APP_PATH/Contents/Info.plist"
 # Copied browser assets can inherit Finder provenance/resource-fork attributes,
 # which codesign rejects. Clear them only from this disposable staging bundle.
 /usr/bin/xattr -cr "$APP_PATH"
+for JXL_LIBRARY in "$APP_PATH"/Contents/Frameworks/JXL/*.dylib; do
+  [[ -f "$JXL_LIBRARY" ]] || continue
+  /usr/bin/codesign --force --sign - "$JXL_LIBRARY"
+  /usr/bin/codesign --verify --strict "$JXL_LIBRARY"
+done
 /usr/bin/codesign --force --sign - "$APP_PATH"
 /usr/bin/codesign --verify --strict "$APP_PATH"
 ZIP_STAGE="$APP_STAGE/PhotoTimezone-macOS-local.zip"
 /usr/bin/ditto -c -k --norsrc --keepParent "$APP_PATH" "$ZIP_STAGE"
 ZIP_VERIFY="$(mktemp -d /tmp/phototimezone-zip-verify.XXXXXX)"
 /usr/bin/ditto -x -k "$ZIP_STAGE" "$ZIP_VERIFY"
-/usr/bin/codesign --verify --strict "$ZIP_VERIFY/相片時區修改器.app"
+/usr/bin/codesign --verify --deep --strict "$ZIP_VERIFY/相片時區修改器.app"
 if [[ "$(/usr/bin/lipo -archs "$ZIP_VERIFY/相片時區修改器.app/Contents/MacOS/PhotoTimezoneApp")" != "arm64" ]]; then
   echo "ZIP 內 App 架構不是 arm64。" >&2
   exit 1
