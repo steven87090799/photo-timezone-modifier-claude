@@ -148,6 +148,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             }
             let result: [String: Any]
             if format == .heif || highDepthPNG {
+                onProgress(60, format == .heif ? "macOS HEIF 編碼中" : "16 位元 PNG 編碼中")
                 let native = try await Task.detached(priority: .userInitiated) {
                     try CompressionNative.encode(source: stagedSource, output: output, format: format,
                         quality: quality, preview: preview, cancellation: cancellation, orientation: orientation)
@@ -199,6 +200,15 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                             CompressionJXL.profileMatches(file, expected: expected)
                         } : nil, preservePhotoEXIF: format == .jpeg || format == .heif)
                 }.value
+                if format == .heif {
+                    try await Task.detached(priority: .userInitiated) {
+                        guard let decoded = CGImageSourceCreateWithURL(output as CFURL, nil),
+                              let image = CGImageSourceCreateImageAtIndex(decoded, 0, nil),
+                              image.width == width, image.height == height else {
+                            throw PhotoError("HEIF 中繼資料寫入後無法正確解碼，未接受此輸出。")
+                        }
+                    }.value
+                }
                 if let actualQuality = result["quality"] as? Int, actualQuality != quality {
                     metadata += "；品質 \(quality) 編碼失敗，已以品質 \(actualQuality) 重試（非無損）"
                 }

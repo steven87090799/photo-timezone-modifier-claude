@@ -117,12 +117,13 @@ struct OffsetChooserView: View {
                 Spacer()
                 Button("取消", action: onCancel)
                 Button("使用 \(state.draft.label)") { onConfirm(state.draft) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .accessibilityIdentifier("confirmOffsetButton")
             }
         }
         .padding(22)
         .frame(width: 660)
+        .background { AppWindowBackdrop() }
         .onExitCommand(perform: onCancel)
         .accessibilityIdentifier("offsetChooserDialog")
     }
