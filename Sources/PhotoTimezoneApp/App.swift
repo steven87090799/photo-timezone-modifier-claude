@@ -100,13 +100,14 @@ private struct PhotoMainView: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.activePage == .photos {
-                HStack(alignment: .top, spacing: 12) {
-                    settings
-                        .frame(width: 290)
-                    workspace
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                NavigationSplitView {
+                    settings.navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 360)
+                } detail: {
+                    GlassEffectContainer(spacing: 8) {
+                        workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
-                .padding(12)
+                .navigationSplitViewStyle(.balanced)
                 .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
             } else if model.activePage == .compression {
                 CompressionView(model: compression)
@@ -116,7 +117,6 @@ private struct PhotoMainView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background { AppWindowBackdrop().ignoresSafeArea() }
         .background {
             if compression.host.webView != nil {
                 CompressionRuntimeView(host: compression.host).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true)
@@ -167,6 +167,7 @@ private struct PhotoMainView: View {
                         }
                     }
                     .disabled(model.isRunning)
+                    .buttonStyle(.glass)
                     .accessibilityLabel("選擇固定 UTC 時區偏移，現在為 \(model.offset.label)")
                     .accessibilityIdentifier("chooseOffsetButton")
                     Picker("寫入", selection: Binding(get: { model.mode }, set: model.setMode)) {
@@ -229,7 +230,7 @@ private struct PhotoMainView: View {
             .disabled(model.isRunning)
             actionPanel.padding(16)
         }
-        .appGlass()
+        .containerShape(.rect(cornerRadius: 28))
     }
 
     private var actionPanel: some View {
@@ -265,21 +266,10 @@ private struct PhotoMainView: View {
                 Button(action: model.inspect) { Label("重新掃描", systemImage: "arrow.clockwise") }
                     .disabled(!model.canInspect)
                     .accessibilityIdentifier("inspectButton")
-            }
+            }.buttonStyle(.glass)
             if model.inputs.isEmpty {
-                Button(action: model.chooseInputs) {
-                    VStack(spacing: 8) {
-                        Image(systemName: "square.and.arrow.down").font(.title2)
-                        Text("拖入相片或資料夾").font(.callout.weight(.medium))
-                        Text("或按一下選取多個項目").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isRunning)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                PhotoImportArea(targeted: model.dropTargeted, action: model.chooseInputs)
+                    .disabled(model.isRunning)
                 .accessibilityIdentifier("chooseSourceArea")
             } else {
                 Text("已加入 \(model.inputs.count) 個來源")

@@ -69,7 +69,7 @@ struct DiagnosticsView: View {
                     detail("相片處理格式", "JPEG、TIFF、Sony ARW；時區與 GPS 處理，不轉換原格式")
                     detail("影像壓縮格式", CompressionFormat.allCases.map(\.rawValue).joined(separator: "、"))
                     DisclosureGroup("版本紀錄") {
-                        Text("3.7：原生玻璃介面、完整 EXIF／ICC 保留及失敗重試。\n3.6：原生 Jpegli、HEIF 轉換與中繼資料核對。\n3.5：時區與 GPS、交易復原及資源管理。\n3.4：Sony 相容模式與逐張驗證。")
+                        Text("3.7.1：原生分割側欄、同心圓角與滑動疊合比較。\n3.7：原生玻璃介面、完整 EXIF／ICC 保留及失敗重試。\n3.6：原生 Jpegli、HEIF 轉換與中繼資料核對。\n3.5：時區與 GPS、交易復原及資源管理。\n3.4：Sony 相容模式與逐張驗證。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

@@ -12,19 +12,44 @@ private struct AppGlassSurface: ViewModifier {
             content.background(Color(nsColor: .windowBackgroundColor),
                                in: RoundedRectangle(cornerRadius: radius))
         } else {
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: radius))
+            content.glassEffect(.regular, in: .rect(corners: .concentric(minimum: .fixed(radius))))
         }
     }
 }
 
 extension View {
-    func appGlass(cornerRadius: CGFloat = 18) -> some View {
+    func appGlass(cornerRadius: CGFloat = 24) -> some View {
         modifier(AppGlassSurface(radius: cornerRadius))
     }
 
     func appContentSurface(cornerRadius: CGFloat = 14) -> some View {
-        background(.background.opacity(0.45), in: RoundedRectangle(cornerRadius: cornerRadius))
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        background(.background.opacity(0.18), in: .rect(corners: .concentric(minimum: .fixed(cornerRadius))))
+            .clipShape(.rect(corners: .concentric(minimum: .fixed(cornerRadius))))
+    }
+}
+
+/// Shared import control: identical wording, hit area and drop feedback in
+/// both workflows. Native glass supplies the pointer response and contrast.
+struct PhotoImportArea: View {
+    let targeted: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: "square.and.arrow.down").font(.title2)
+                Text("拖入相片或資料夾").font(.callout.weight(.medium))
+                Text("或按一下選取多個項目").font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 18)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.roundedRectangle(radius: 20))
+        .overlay {
+            if targeted {
+                RoundedRectangle(cornerRadius: 20).strokeBorder(.tint, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 
