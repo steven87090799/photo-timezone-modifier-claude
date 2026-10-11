@@ -175,9 +175,9 @@ struct ReviewFindingsTests {
         let url = folder.appendingPathComponent("stripes.png")
         let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
         CGImageDestinationAddImage(destination, image, nil); #expect(CGImageDestinationFinalize(destination))
-        let crop = try #require(CompressionImages.comparisonCrop(url, x: 0, y: 0))
-        let cg = try #require(crop.cgImage(forProposedRect: nil, context: nil, hints: nil))
-        #expect(cg.width == 1024 && cg.height == 1024)
+        let cg = try #require(CompressionImages.comparisonImage(url))
+        #expect(cg.width == width && cg.height == height,
+                "The swipe comparison must decode the full image at native resolution")
         var samples = Data(count: cg.width * cg.height * 4)
         try samples.withUnsafeMutableBytes { bytes in
             let context = try #require(CGContext(data: bytes.baseAddress, width: cg.width, height: cg.height,
@@ -185,7 +185,9 @@ struct ReviewFindingsTests {
                 bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue))
             context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
         }
-        #expect(samples[0] == 0 && samples[4] == 255, "Alternating original pixels must not be resized")
+        #expect((0..<(width * height)).allSatisfy { index in
+            samples[index * 4] == (index % width % 2 == 0 ? 0 : 255)
+        }, "Alternating original pixels must remain exact across the full comparison image")
     }
 
     @Test func transparent16BitIntegerSamplesRemainExact() async throws {

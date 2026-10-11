@@ -4,24 +4,31 @@ import UniformTypeIdentifiers
 
 struct CompressionView: View {
     @ObservedObject var model: CompressionModel
+    @ObservedObject var viewState: CompressionViewState
+    enum Panel { case settings, workspace }
+    var panel: Panel = .workspace
     private var locked: Bool { model.isRunning || model.isImporting || model.isExporting }
+    private var failures: Int { model.items.filter { $0.state == .failed }.count }
+    private var visibleItems: [CompressionItem] { viewState.failuresOnly ? model.items.filter { $0.state == .failed } : model.items }
 
     var body: some View {
-        HStack(spacing: 0) {
-            settings.frame(width: 300)
-            Divider()
-            workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if model.selected != nil {
-                Divider()
-                inspector.frame(width: 300)
+        Group {
+            if panel == .settings {
+                settings
+            } else {
+                workspacePane
             }
         }
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
-        .overlay {
-            if model.dropTargeted {
-                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
-                    .padding(8).allowsHitTesting(false)
-            }
+    }
+
+    private var workspacePane: some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 16) {
+                workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if model.selected != nil && viewState.inspectorVisible {
+                    inspector.frame(width: 310)
+                }
+            }.padding(16)
         }
         .sheet(isPresented: $model.showingComparison) { CompressionComparison(model: model) }
         .sheet(isPresented: $model.showingWebhook) { webhookSettings }
@@ -34,13 +41,22 @@ struct CompressionView: View {
     private var settings: some View {
         VStack(spacing: 0) {
             Form {
-                Section("輸入") {
-                    Button(action: model.chooseInputs) {
-                        Label("加入圖片或資料夾…", systemImage: "plus")
-                    }.accessibilityIdentifier("compressionAddInputs")
-                    Toggle("包含子資料夾", isOn: $model.recursive)
-                        .help("下一次加入資料夾時，搜尋其中的子資料夾。")
-                    if model.isImporting { ProgressView("正在讀取影像…").controlSize(.small) }
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("加入相片與資料夾").font(.headline)
+                            Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+                                .help("加入後讀取相片；包含子資料夾時一併搜尋其中影像。")
+                        }
+                        Button(action: model.chooseInputs) {
+                            Label("加入項目", systemImage: "plus")
+                        }.buttonStyle(.glass).accessibilityIdentifier("compressionAddInputs")
+                        PhotoImportArea(targeted: model.dropTargeted, action: model.chooseInputs)
+                            .accessibilityIdentifier("compressionDropArea")
+                        Toggle("包含子資料夾", isOn: $model.recursive)
+                            .help("下一次加入資料夾時，搜尋其中的子資料夾。")
+                        if model.isImporting { ProgressView("正在讀取影像…").controlSize(.small) }
+                    }
                 }
                 Section("壓縮") {
                     Picker("格式", selection: $model.format) {
@@ -117,7 +133,7 @@ struct CompressionView: View {
                     }.buttonStyle(.glassProminent).disabled(!model.canStart).accessibilityIdentifier("compressionStart")
                 }
             }.padding(16)
-        }.background(.regularMaterial)
+        }.containerShape(.rect(cornerRadius: 28))
     }
 
     private var workspace: some View {
@@ -129,9 +145,19 @@ struct CompressionView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(action: model.removeSelected) { Image(systemName: "minus.circle") }.help("移除選取的圖片").disabled(locked || model.selected == nil)
-                Button("清空", action: model.clear).disabled(locked || model.items.isEmpty)
+                if failures > 0 {
+                    Toggle(isOn: $viewState.failuresOnly) {
+                        Label("失敗 \(failures)", systemImage: "exclamationmark.circle")
+                    }.toggleStyle(.button).tint(.red).help("只篩選畫面清單，不改變批次壓縮範圍。")
+                }
+                Menu {
+                    Button("移除選取的圖片", action: model.removeSelected).disabled(locked || model.selected == nil)
+                    Button("清空清單", action: model.clear).disabled(locked || model.items.isEmpty)
+                } label: { Image(systemName: "ellipsis") }.help("清單操作")
+                Button { viewState.inspectorVisible.toggle() } label: { Image(systemName: "sidebar.right") }
+                    .disabled(model.selected == nil).help(viewState.inspectorVisible ? "隱藏預覽，放大清單" : "顯示預覽")
             }.padding(16)
+            .buttonStyle(.glass)
             if model.isRunning {
                 VStack(spacing: 5) {
                     ProgressView(value: model.progress)
@@ -139,23 +165,29 @@ struct CompressionView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(.horizontal, 16).padding(.bottom, 12)
             }
-            Divider()
             if model.items.isEmpty {
                 VStack(spacing: 14) {
                     Image(systemName: "photo.on.rectangle.angled").font(.system(size: 42)).foregroundStyle(.tertiary)
-                    Text("拖入圖片或資料夾").font(.headline)
+                    Text("拖入相片或資料夾").font(.headline)
                     Text("選擇格式與品質，預覽後整批壓縮").font(.callout).foregroundStyle(.secondary)
-                    Button("加入圖片…", action: model.chooseInputs).disabled(locked)
+                    Button("加入相片…", action: model.chooseInputs).buttonStyle(.glassProminent).disabled(locked)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(selection: $model.selection) {
-                    ForEach(model.items) { item in CompressionRow(item: item).tag(item.id) }
-                }.listStyle(.inset).accessibilityIdentifier("compressionFileList")
+                    ForEach(visibleItems) { item in CompressionRow(item: item).tag(item.id) }
+                }.listStyle(.inset).scrollContentBackground(.hidden)
+                    .appContentSurface().accessibilityIdentifier("compressionFileList")
+                    .overlay {
+                        if viewState.failuresOnly && visibleItems.isEmpty {
+                            Text("沒有失敗的圖片").foregroundStyle(.secondary)
+                        }
+                    }
             }
-            Divider()
-            HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
+              HStack(spacing: 8) {
                 if model.isExporting { ProgressView().controlSize(.small) }
                 else { Text("完成 \(model.completed.count) 張 · \(CompressionModel.bytes(model.resultBytes))").font(.caption).foregroundStyle(.secondary) }
+                if failures > 0 { Text("失敗 \(failures) 張").font(.caption.weight(.medium)).foregroundStyle(.red) }
                 if let savings = model.batchSavings {
                     Label(String(format: savings >= 0 ? "減少 %.1f%%" : "增加 %.1f%%", abs(savings) * 100),
                           systemImage: savings >= 0 ? "arrow.down.right" : "arrow.up.right")
@@ -165,14 +197,21 @@ struct CompressionView: View {
                         .background((savings >= 0 ? Color.green : .orange).opacity(0.10), in: Capsule())
                 }
                 Spacer(minLength: 2)
+              }
+              HStack {
+                if failures > 0 {
+                    Button("重試失敗", action: model.retryFailed).disabled(locked || !model.canStart)
+                        .help("依目前格式與品質重試失敗項目，保留已成功的結果。")
+                }
+                Spacer()
                 Menu {
-                    Button("儲存全部圖片…", action: model.saveAll).disabled(model.completed.isEmpty)
                     Button("儲存為 ZIP…", action: model.saveZIP).disabled(model.completed.isEmpty)
-                    Divider()
-                    Button("匯出處理報告…", action: model.exportReport)
-                } label: { Label("輸出", systemImage: "square.and.arrow.up") }
-                .disabled(locked || model.items.isEmpty)
-            }.padding(12)
+                } label: { Label("ZIP", systemImage: "archivebox") }
+                .disabled(locked || model.completed.isEmpty)
+                Button(action: model.saveAll) { Label("儲存全部…", systemImage: "square.and.arrow.down") }
+                    .buttonStyle(.glassProminent).disabled(locked || model.completed.isEmpty)
+              }.buttonStyle(.glass)
+            }.padding(12).appGlass(cornerRadius: 14).padding(.top, 10)
         }
     }
 
@@ -182,8 +221,10 @@ struct CompressionView: View {
                 if let item = model.selected {
                     Text(item.source.lastPathComponent).font(.headline).textSelection(.enabled).lineLimit(3)
                     Text("\(item.width) × \(item.height) · \(CompressionModel.bytes(item.measuredSourceBytes))").font(.caption).foregroundStyle(.secondary)
-                    imagePanel(model.originalPreview, title: "原始影像")
-                    imagePanel(model.compressedPreview, title: model.previewIsActual ? "實際輸出" : "壓縮預覽")
+                    HStack(spacing: 10) {
+                        imagePanel(model.originalPreview, title: "原始影像")
+                        imagePanel(model.compressedPreview, title: model.previewIsActual ? "實際輸出" : "壓縮預覽")
+                    }
                     if model.previewLoading { HStack { ProgressView().controlSize(.small); Text("產生完整壓縮預覽…").font(.caption) } }
                     if let size = model.estimate {
                         HStack {
@@ -198,7 +239,7 @@ struct CompressionView: View {
                     }
                     Text(model.previewNote).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("放大比較") { model.showingComparison = true }.disabled(model.originalPreview == nil)
+                        Button("放大比較") { model.showingComparison = true }.disabled(model.originalPreview == nil || model.comparisonOutput == nil || locked)
                         Spacer()
                         Button("儲存單張…", action: model.saveSelected).disabled(item.result == nil || locked)
                     }
@@ -207,12 +248,18 @@ struct CompressionView: View {
                         Label("中繼資料", systemImage: "checkmark.shield").font(.callout.weight(.semibold))
                         Text(result.metadataStatus).font(.caption).textSelection(.enabled)
                     }
+                    Divider()
+                    Label("相片資訊", systemImage: "info.circle").font(.callout.weight(.semibold))
+                    LabeledContent("拍攝", value: item.dateInfo)
+                    LabeledContent("時區", value: item.timezoneInfo)
+                    LabeledContent("GPS", value: item.gpsInfo)
+                    Text(item.basicInfo).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     if let error = item.error { Text(error).font(.caption).foregroundStyle(item.state == .failed ? .red : .orange).textSelection(.enabled) }
                     if let webhook = item.webhookStatus { Text("Webhook：" + webhook).font(.caption).foregroundStyle(.secondary) }
                     Text(item.source.path).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
                 }
             }.padding(16)
-        }.background(.regularMaterial)
+        }.font(.caption).appContentSurface(cornerRadius: 24)
     }
 
     private func imagePanel(_ image: NSImage?, title: String) -> some View {
@@ -220,9 +267,9 @@ struct CompressionView: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .textBackgroundColor))
-                if let image { Image(nsImage: image).resizable().interpolation(.high).scaledToFit().padding(4) }
+                if let image { Image(nsImage: image).resizable().interpolation(.high).scaledToFit().padding(4).backgroundExtensionEffect() }
                 else { Image(systemName: "photo").foregroundStyle(.tertiary) }
-            }.frame(height: 160)
+            }.frame(height: 145)
         }
     }
 
@@ -235,7 +282,7 @@ struct CompressionView: View {
             HStack { Button("測試連線", action: model.testWebhook); Text(model.webhookStatus).font(.caption).foregroundStyle(.secondary) }
             Text("傳送 multipart 的 file 與 metadata，及 JSON 批次摘要。檔案傳送失敗會重試兩次，結果另行記錄，已完成的壓縮檔仍可儲存。")
                 .font(.callout).foregroundStyle(.secondary)
-        }.padding(24).frame(width: 540).disabled(model.isRunning)
+        }.padding(24).frame(width: 540).background { AppWindowBackdrop() }.disabled(model.isRunning)
     }
 
     private var engineInfo: some View {
@@ -249,8 +296,14 @@ struct CompressionView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Text("處理在本機完成；開啟 Webhook 後才會傳送影像。此頁不提供修改時區或 GPS 的控制。")
                 .font(.callout).foregroundStyle(.secondary)
-        }.padding(24).frame(width: 570)
+        }.padding(24).frame(width: 570).background { AppWindowBackdrop() }
     }
+}
+
+@MainActor
+final class CompressionViewState: ObservableObject {
+    @Published var failuresOnly = false
+    @Published var inspectorVisible = true
 }
 
 private struct CompressionRow: View {
@@ -308,73 +361,6 @@ private struct CompressionRow: View {
         .padding(.vertical, 6)
         .accessibilityElement(children: .contain)
     }
-}
-
-private struct CompressionComparison: View {
-    @ObservedObject var model: CompressionModel
-    @Environment(\.displayScale) private var displayScale
-    @StateObject private var state = CompressionComparisonState()
-    private var request: String { "\(model.selection?.uuidString ?? "")|\(model.comparisonOutput?.path ?? "")|\(state.x)|\(state.y)" }
-    var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("原尺寸細節比較").font(.headline)
-                Spacer()
-                Text("縮放").font(.caption)
-                Slider(value: $model.comparisonScale, in: 0.5...4).frame(width: 150)
-                Text(String(format: "%.0f%%", model.comparisonScale * 100)).font(.caption.monospacedDigit()).frame(width: 45)
-                Button("完成") { model.showingComparison = false }
-            }
-            HStack {
-                Text("水平位置").font(.caption)
-                Slider(value: $state.x, in: 0...1)
-                Text("垂直位置").font(.caption)
-                Slider(value: $state.y, in: 0...1)
-            }
-            HStack(spacing: 16) {
-                comparisonImage(state.original, title: "原始影像")
-                comparisonImage(state.output, title: "實際輸出")
-            }
-            if state.loading { ProgressView().controlSize(.small) }
-            Text("比較同位置的原尺寸區塊（最多 1024 × 1024）；100% 為一個影像像素對應一個螢幕像素。移動位置可檢查不同細節。").font(.caption).foregroundStyle(.secondary)
-        }.padding(20).frame(width: 940, height: 650)
-        .task(id: request) {
-            state.loading = true
-            defer { if !Task.isCancelled { state.loading = false } }
-            try? await Task.sleep(nanoseconds: 180_000_000)
-            guard !Task.isCancelled, let source = model.selected?.source else { return }
-            let target = model.comparisonOutput, cx = state.x, cy = state.y
-            let pair = await Task.detached { () -> (NSImage?, NSImage?) in
-                let before = autoreleasepool { CompressionImages.comparisonCrop(source, x: cx, y: cy) }
-                let after = target.flatMap { url in autoreleasepool { CompressionImages.comparisonCrop(url, x: cx, y: cy) } }
-                return (before, after)
-            }.value
-            guard !Task.isCancelled else { return }
-            state.original = pair.0; state.output = pair.1
-        }
-        .onDisappear { state.original = nil; state.output = nil }
-    }
-    private func comparisonImage(_ image: NSImage?, title: String) -> some View {
-        VStack {
-            Text(title).font(.callout.weight(.semibold))
-            ScrollView([.horizontal, .vertical]) {
-                if let image {
-                    Image(nsImage: image).resizable().interpolation(.none)
-                        .frame(width: image.size.width / displayScale * model.comparisonScale,
-                               height: image.size.height / displayScale * model.comparisonScale)
-                } else { Text("此格式無法顯示原尺寸細節，或尚未產生輸出").foregroundStyle(.secondary).frame(width: 430, height: 490) }
-            }.background(Color.black.opacity(0.25)).frame(width: 430, height: 490)
-        }
-    }
-}
-
-@MainActor
-private final class CompressionComparisonState: ObservableObject {
-    @Published var x = 0.5
-    @Published var y = 0.5
-    @Published var original: NSImage?
-    @Published var output: NSImage?
-    @Published var loading = false
 }
 
 /// List rows load only the visible thumbnails; the shared cache is bounded.

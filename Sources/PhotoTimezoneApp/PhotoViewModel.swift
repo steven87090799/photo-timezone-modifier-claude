@@ -272,7 +272,7 @@ final class PhotoViewModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.begin { [weak self] response in
+        AppFilePanels.present(panel) { [weak self] response in
             Task { @MainActor in
                 guard response == .OK, let selected = panel.url, let self else { return }
                 do {
@@ -373,7 +373,7 @@ final class PhotoViewModel: ObservableObject {
         // As a sheet, this mixed file/directory chooser can leave "Add"
         // disabled despite a selected file on current macOS. A standalone
         // panel validates the same selection correctly.
-        panel.begin(completionHandler: completion)
+        AppFilePanels.present(panel, asSheet: false, completion: completion)
     }
 
     func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -785,10 +785,6 @@ final class PhotoViewModel: ObservableObject {
                 }
             }
         }
-        if let window = NSApp.keyWindow {
-            panel.beginSheetModal(for: window, completionHandler: completion)
-        } else {
-            panel.begin(completionHandler: completion)
-        }
+        AppFilePanels.present(panel, completion: completion)
     }
 }
