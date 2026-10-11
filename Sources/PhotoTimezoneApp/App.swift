@@ -90,6 +90,9 @@ private struct PhotoMainView: View {
     @ObservedObject var model: PhotoViewModel
     @ObservedObject var compression: CompressionModel
 
+    @StateObject private var compressionViewState = CompressionViewState()
+    @StateObject private var diagnosticsState = DiagnosticsStorageState()
+
     private struct MetadataSpecField: Identifiable {
         let title: String
         let spec: String
@@ -98,32 +101,48 @@ private struct PhotoMainView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if model.activePage == .photos {
-                NavigationSplitView {
-                    settings.navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 360)
-                } detail: {
+        NavigationSplitView {
+            Group {
+                switch model.activePage {
+                case .photos: settings
+                case .compression:
+                    CompressionView(model: compression, viewState: compressionViewState, panel: .settings)
+                case .diagnostics: diagnosticsSidebar
+                }
+            }.navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 360)
+        } detail: {
+            Group {
+                switch model.activePage {
+                case .photos:
+                    GlassEffectContainer(spacing: 8) { workspace }
+                case .compression:
+                    CompressionView(model: compression, viewState: compressionViewState)
+                case .diagnostics:
                     GlassEffectContainer(spacing: 8) {
-                        workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        DiagnosticsView(model: model, compression: compression, state: diagnosticsState)
                     }
                 }
-                .navigationSplitViewStyle(.balanced)
-                .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
-            } else if model.activePage == .compression {
-                CompressionView(model: compression)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                DiagnosticsView(model: model, compression: compression)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .animation(nil, value: model.activePage)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: Binding(
+            get: { model.activePage == .compression ? compression.dropTargeted : model.dropTargeted },
+            set: { if model.activePage == .compression { compression.dropTargeted = $0 } else { model.dropTargeted = $0 } }
+        )) { providers in
+            switch model.activePage {
+            case .photos: return model.acceptDrop(providers)
+            case .compression: return compression.acceptDrop(providers)
+            case .diagnostics: return false
             }
         }
         .background {
-            if compression.host.webView != nil {
-                CompressionRuntimeView(host: compression.host).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true)
+            if let webView = compression.host.webView {
+                CompressionRuntimeView(webView: webView).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .overlay {
-            if model.activePage == .photos && model.dropTargeted {
+            if (model.activePage == .photos && model.dropTargeted) || (model.activePage == .compression && compression.dropTargeted) {
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
                     .background(Color.accentColor.opacity(0.07))
@@ -143,6 +162,18 @@ private struct PhotoMainView: View {
         .alert(item: $model.notice, content: alert)
         .sheet(isPresented: $model.showingReportDetails) { reportDetailsSheet }
         .onChange(of: model.selectedItem?.id) { _, _ in model.showingMoreMetadata = false }
+    }
+
+    private var diagnosticsSidebar: some View {
+        Form {
+            Section("版本與診斷") {
+                Label("程式與壓縮引擎", systemImage: "info.circle")
+                Label("CPU 與記憶體", systemImage: "cpu")
+                Label("工作與儲存空間", systemImage: "externaldrive")
+                Text("儲存空間為上次計算的快照，可在右側重新計算。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped).scrollContentBackground(.hidden)
     }
 
     private var navigationPicker: some View {

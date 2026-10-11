@@ -147,6 +147,8 @@ final class CompressionModel: ObservableObject {
     private let webhook = CompressionWebhook()
     private var batchID = ""
     private var isActive = false
+    private var inactiveCleanup: Task<Void, Never>?
+    private var displayedPreviewKey: String?
     @Published var exportStatus = ""
 
     init(defaults: UserDefaults = .standard) {
@@ -182,13 +184,21 @@ final class CompressionModel: ObservableObject {
     }
 
     func setActive(_ active: Bool) {
+        guard isActive != active else { return }
+        inactiveCleanup?.cancel(); inactiveCleanup = nil
         isActive = active
-        if active { prepareSelectedFormat(); updatePreview() }
+        if active { updatePreview() }
         else {
             previewTask?.cancel()
             previewLoading = false
-            originalPreview = nil; compressedPreview = nil
-            if !isRunning { discardPreviewCache(); host.cancelAll(); host.releaseRuntime() }
+            // Keep only two bounded display thumbnails and one verified
+            // preview file. No encoder or sampling work runs for these caches.
+            // Let navigation render first; rapid tab changes cancel teardown.
+            inactiveCleanup = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled, let self, !self.isActive, !self.isRunning else { return }
+                self.host.cancelAll(); self.host.releaseRuntime()
+            }
         }
     }
 
@@ -328,16 +338,31 @@ final class CompressionModel: ObservableObject {
         previewTask?.cancel()
         if !isRunning && previewLoading { host.cancelAll() }
         guard isActive else { return }
-        previewLoading = false; previewIsActual = false
+        previewLoading = false
         guard let item = selected else {
             discardPreviewCache()
             originalPreview = nil; compressedPreview = nil; estimate = nil
             return
         }
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
-        let cached = matchingPreviewCache(for: item, format: chosenFormat, quality: chosenQuality)
-        if previewCache != nil && cached == nil { discardPreviewCache() }
+        let key = "\(item.id)|\(chosenFormat.rawValue)|\(chosenQuality)|\(item.result?.url.path ?? "")"
+        let candidate = previewCache
         previewTask = Task {
+            // FileProvider attributes can be slow; validate away from the UI
+            // thread before reusing a file. Batch writes still revalidate too.
+            let cached = await Task.detached { () -> PreviewCache? in
+                guard let candidate, candidate.source.path == item.source.path,
+                      candidate.format == chosenFormat, candidate.quality == chosenQuality,
+                      FileManager.default.fileExists(atPath: candidate.result.url.path) else { return nil }
+                do { try candidate.identity.verify(item.source) } catch { return nil }
+                return candidate
+            }.value
+            guard !Task.isCancelled else { return }
+            if cached != nil, displayedPreviewKey == key,
+               originalPreview != nil, compressedPreview != nil { return }
+            if previewCache != nil && cached == nil { discardPreviewCache() }
+            previewIsActual = false
+            displayedPreviewKey = nil
             let original = await Task.detached { CompressionImages.thumbnail(item.source) }.value
             guard !Task.isCancelled else { return }
             originalPreview = original
@@ -349,6 +374,7 @@ final class CompressionModel: ObservableObject {
                 estimate = result.bytes
                 previewNote = compressedPreview == nil ? "此系統無法預覽輸出格式；檔案仍可儲存。" : "顯示實際壓縮結果"
                 previewLoading = false
+                displayedPreviewKey = key
                 return
             }
             if let cached {
@@ -361,6 +387,7 @@ final class CompressionModel: ObservableObject {
                 estimate = cached.result.bytes
                 previewNote = actualPreview == nil ? "此系統無法預覽輸出格式；檔案仍可儲存。" : "顯示完整影像輸出；開始批次時會重用此結果。"
                 previewLoading = false
+                displayedPreviewKey = key
                 return
             }
             compressedPreview = nil; estimate = nil
@@ -397,6 +424,7 @@ final class CompressionModel: ObservableObject {
                 estimate = result.bytes
                 previewNote = actualPreview == nil ? "此系統無法預覽輸出格式；完整輸出大小已取得。" : "顯示完整影像輸出；開始批次時會重用此結果。"
                 previewLoading = false
+                displayedPreviewKey = key
             } catch {
                 guard !Task.isCancelled else { return }
                 previewNote = "預覽無法完成：\(error.localizedDescription)"; previewLoading = false

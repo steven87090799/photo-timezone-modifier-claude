@@ -282,7 +282,7 @@ private final class WeakCompressionHandler: NSObject, WKScriptMessageHandler {
 }
 
 struct CompressionRuntimeView: NSViewRepresentable {
-    let host: CompressionHost
-    func makeNSView(context: Context) -> WKWebView { host.webView! }
+    let webView: WKWebView
+    func makeNSView(context: Context) -> WKWebView { webView }
     func updateNSView(_ view: WKWebView, context: Context) {}
 }

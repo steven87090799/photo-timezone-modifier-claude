@@ -5,7 +5,8 @@ import TimezoneCore
 // Match RecoveryView's state pattern so standalone CLT builds do not require
 // the SDK's SwiftUIMacros plugin.
 @MainActor
-private final class DiagnosticsStorageState: ObservableObject {
+final class DiagnosticsStorageState: ObservableObject {
+    let metrics = ProcessDiagnostics()
     @Published var storage: StorageUsage?
     @Published var storageMessage = ""
     @Published var storageBusy = false
@@ -16,8 +17,13 @@ private final class DiagnosticsStorageState: ObservableObject {
 struct DiagnosticsView: View {
     @ObservedObject var model: PhotoViewModel
     @ObservedObject var compression: CompressionModel
-    @StateObject private var metrics = ProcessDiagnostics()
-    @StateObject private var state = DiagnosticsStorageState()
+    @ObservedObject var state: DiagnosticsStorageState
+    @ObservedObject private var metrics: ProcessDiagnostics
+
+    init(model: PhotoViewModel, compression: CompressionModel, state: DiagnosticsStorageState) {
+        self.model = model; self.compression = compression; self.state = state
+        self.metrics = state.metrics
+    }
 
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
@@ -33,7 +39,7 @@ struct DiagnosticsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 14) {
                     Image(nsImage: AppArtwork.icon).resizable().frame(width: 44, height: 44)
                         .accessibilityHidden(true)
@@ -69,7 +75,7 @@ struct DiagnosticsView: View {
                     detail("相片處理格式", "JPEG、TIFF、Sony ARW；時區與 GPS 處理，不轉換原格式")
                     detail("影像壓縮格式", CompressionFormat.allCases.map(\.rawValue).joined(separator: "、"))
                     DisclosureGroup("版本紀錄") {
-                        Text("3.7.1：原生分割側欄、同心圓角與滑動疊合比較。\n3.7：原生玻璃介面、完整 EXIF／ICC 保留及失敗重試。\n3.6：原生 Jpegli、HEIF 轉換與中繼資料核對。\n3.5：時區與 GPS、交易復原及資源管理。\n3.4：Sony 相容模式與逐張驗證。")
+                        Text("3.7.2：固定分割視窗、預覽快取與更順暢的分頁切換。\n3.7.1：原生分割側欄、同心圓角與滑動疊合比較。\n3.7：原生玻璃介面、完整 EXIF／ICC 保留及失敗重試。\n3.6：原生 Jpegli、HEIF 轉換與中繼資料核對。\n3.5：時區與 GPS、交易復原及資源管理。\n3.4：Sony 相容模式與逐張驗證。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -133,7 +139,7 @@ struct DiagnosticsView: View {
         }
         .onAppear {
             metrics.start()
-            refreshStorage()
+            if state.storage == nil { refreshStorage() }
         }
         .onDisappear { metrics.stop() }
         .confirmationDialog("清除 App logs 與可移除的歷史交易記錄？",

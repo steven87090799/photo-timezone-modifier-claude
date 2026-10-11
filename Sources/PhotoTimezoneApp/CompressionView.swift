@@ -4,31 +4,31 @@ import UniformTypeIdentifiers
 
 struct CompressionView: View {
     @ObservedObject var model: CompressionModel
-    @StateObject private var viewState = CompressionViewState()
+    @ObservedObject var viewState: CompressionViewState
+    enum Panel { case settings, workspace }
+    var panel: Panel = .workspace
     private var locked: Bool { model.isRunning || model.isImporting || model.isExporting }
     private var failures: Int { model.items.filter { $0.state == .failed }.count }
     private var visibleItems: [CompressionItem] { viewState.failuresOnly ? model.items.filter { $0.state == .failed } : model.items }
 
     var body: some View {
-        NavigationSplitView {
-            settings.navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 360)
-        } detail: {
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 16) {
-                    workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if model.selected != nil && viewState.inspectorVisible {
-                        inspector.frame(width: 310)
-                    }
-                }.padding(16)
+        Group {
+            if panel == .settings {
+                settings
+            } else {
+                workspacePane
             }
         }
-        .navigationSplitViewStyle(.balanced)
-        .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
-        .overlay {
-            if model.dropTargeted {
-                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
-                    .padding(8).allowsHitTesting(false)
-            }
+    }
+
+    private var workspacePane: some View {
+        GlassEffectContainer(spacing: 8) {
+            HStack(spacing: 16) {
+                workspace.frame(maxWidth: .infinity, maxHeight: .infinity)
+                if model.selected != nil && viewState.inspectorVisible {
+                    inspector.frame(width: 310)
+                }
+            }.padding(16)
         }
         .sheet(isPresented: $model.showingComparison) { CompressionComparison(model: model) }
         .sheet(isPresented: $model.showingWebhook) { webhookSettings }
@@ -301,7 +301,7 @@ struct CompressionView: View {
 }
 
 @MainActor
-private final class CompressionViewState: ObservableObject {
+final class CompressionViewState: ObservableObject {
     @Published var failuresOnly = false
     @Published var inspectorVisible = true
 }
