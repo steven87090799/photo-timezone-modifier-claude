@@ -33,7 +33,7 @@ struct CompressionComparison: View {
                     Color(nsColor: .underPageBackgroundColor)
                     if let original = state.original, let output = state.output {
                         ComparisonCanvas(original: original, output: output,
-                                         zoom: model.comparisonScale, split: state.split)
+                                         zoom: model.comparisonScale, split: $state.split)
                             .accessibilityLabel("原始與輸出影像；拖曳照片或使用滾輪移動檢視位置")
                         divider(in: geometry.size)
                         HStack {
@@ -96,8 +96,9 @@ struct CompressionComparison: View {
         }
         .frame(width: 44, height: size.height).contentShape(Rectangle())
         .position(x: size.width * state.split, y: size.height / 2)
-        .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("comparisonViewport"))
-            .onChanged { state.split = min(1, max(0, $0.location.x / max(1, size.width))) })
+        // AppKit owns mouse dragging for the complete canvas. An NSView can
+        // otherwise intercept the SwiftUI overlay's gesture on macOS.
+        .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("原始與輸出分隔線")
         .accessibilityValue("左側原始照片 \(Int(state.split * 100))%")
@@ -122,12 +123,13 @@ private struct ComparisonCanvas: NSViewRepresentable {
     let original: CGImage
     let output: CGImage
     let zoom: Double
-    let split: Double
+    @Binding var split: Double
     func makeNSView(context: Context) -> PixelComparisonView { PixelComparisonView() }
     func updateNSView(_ view: PixelComparisonView, context: Context) {
         if view.original !== original { view.pan = .zero }
         view.original = original; view.output = output
         view.zoom = zoom; view.split = split
+        view.onSplitChanged = { split = $0 }
         view.clampPan(); view.needsDisplay = true
     }
 }
@@ -139,9 +141,11 @@ private final class PixelComparisonView: NSView {
     var output: CGImage?
     var zoom = 1.0
     var split = 0.5
+    var onSplitChanged: ((Double) -> Void)?
     var pan = CGPoint.zero
     private var dragStart = CGPoint.zero
     private var startPan = CGPoint.zero
+    private var draggingDivider = false
     override var acceptsFirstResponder: Bool { true }
     private var pixelScale: CGFloat { window?.backingScaleFactor ?? 2 }
     private var imageSize: CGSize {
@@ -174,18 +178,26 @@ private final class PixelComparisonView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         dragStart = convert(event.locationInWindow, from: nil); startPan = pan
-        NSCursor.closedHand.push()
+        draggingDivider = abs(dragStart.x - bounds.width * split) <= 22
+        (draggingDivider ? NSCursor.resizeLeftRight : .closedHand).set()
     }
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        if draggingDivider {
+            split = min(1, max(0, point.x / max(1, bounds.width)))
+            onSplitChanged?(split); needsDisplay = true; return
+        }
         pan = CGPoint(x: startPan.x + point.x - dragStart.x, y: startPan.y + point.y - dragStart.y)
         clampPan(); needsDisplay = true
     }
-    override func mouseUp(with event: NSEvent) { NSCursor.pop() }
+    override func mouseUp(with event: NSEvent) { draggingDivider = false; NSCursor.openHand.set() }
     override func scrollWheel(with event: NSEvent) {
         let factor: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
         pan.x += event.scrollingDeltaX * factor; pan.y -= event.scrollingDeltaY * factor
         clampPan(); needsDisplay = true
     }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .openHand)
+        addCursorRect(CGRect(x: bounds.width * split - 22, y: 0, width: 44, height: bounds.height), cursor: .resizeLeftRight)
+    }
 }

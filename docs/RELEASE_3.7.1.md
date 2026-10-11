@@ -20,6 +20,7 @@
 
 - [Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass)
 - [Applying Liquid Glass to custom views](https://developer.apple.com/documentation/SwiftUI/Applying-Liquid-Glass-to-custom-views)
+- [What’s new in SwiftUI — WWDC26](https://developer.apple.com/videos/play/wwdc2026/269/)
 - [Build a SwiftUI app with the new design](https://developer.apple.com/videos/play/wwdc2025/323/)
 
 玻璃效果由作業系統依背景內容、視窗狀態與輔助使用設定決定，不加入假的光暈或持續動畫，也不修改使用者的系統外觀設定。
