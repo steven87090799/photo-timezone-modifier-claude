@@ -90,6 +90,9 @@ private struct PhotoMainView: View {
     @ObservedObject var model: PhotoViewModel
     @ObservedObject var compression: CompressionModel
 
+    @StateObject private var compressionViewState = CompressionViewState()
+    @StateObject private var diagnosticsState = DiagnosticsStorageState()
+
     private struct MetadataSpecField: Identifiable {
         let title: String
         let spec: String
@@ -98,32 +101,48 @@ private struct PhotoMainView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if model.activePage == .photos {
-                HStack(alignment: .top, spacing: 0) {
-                    settings
-                        .frame(width: 300)
-                    Divider()
-                    workspace
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        NavigationSplitView {
+            Group {
+                switch model.activePage {
+                case .photos: settings
+                case .compression:
+                    CompressionView(model: compression, viewState: compressionViewState, panel: .settings)
+                case .diagnostics: diagnosticsSidebar
                 }
-                .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.dropTargeted, perform: model.acceptDrop)
-            } else if model.activePage == .compression {
-                CompressionView(model: compression)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                DiagnosticsView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }.navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 360)
+        } detail: {
+            Group {
+                switch model.activePage {
+                case .photos:
+                    GlassEffectContainer(spacing: 8) { workspace }
+                case .compression:
+                    CompressionView(model: compression, viewState: compressionViewState)
+                case .diagnostics:
+                    GlassEffectContainer(spacing: 8) {
+                        DiagnosticsView(model: model, compression: compression, state: diagnosticsState)
+                    }
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .animation(nil, value: model.activePage)
+        .onDrop(of: [UTType.fileURL.identifier], isTargeted: Binding(
+            get: { model.activePage == .compression ? compression.dropTargeted : model.dropTargeted },
+            set: { if model.activePage == .compression { compression.dropTargeted = $0 } else { model.dropTargeted = $0 } }
+        )) { providers in
+            switch model.activePage {
+            case .photos: return model.acceptDrop(providers)
+            case .compression: return compression.acceptDrop(providers)
+            case .diagnostics: return false
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .background {
-            if compression.host.webView != nil {
-                CompressionRuntimeView(host: compression.host).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true)
+            if let webView = compression.host.webView {
+                CompressionRuntimeView(webView: webView).frame(width: 1, height: 1).opacity(0.01).allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .overlay {
-            if model.activePage == .photos && model.dropTargeted {
+            if (model.activePage == .photos && model.dropTargeted) || (model.activePage == .compression && compression.dropTargeted) {
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8]))
                     .background(Color.accentColor.opacity(0.07))
@@ -138,18 +157,30 @@ private struct PhotoMainView: View {
             }, onCancel: { model.showingOffsetChooser = false })
         }
         .toolbar {
-            ToolbarItem(placement: .principal) { navigationPicker }
+            ToolbarItem(placement: .primaryAction) { navigationPicker }
         }
         .alert(item: $model.notice, content: alert)
         .sheet(isPresented: $model.showingReportDetails) { reportDetailsSheet }
         .onChange(of: model.selectedItem?.id) { _, _ in model.showingMoreMetadata = false }
     }
 
+    private var diagnosticsSidebar: some View {
+        Form {
+            Section("版本與診斷") {
+                Label("程式與壓縮引擎", systemImage: "info.circle")
+                Label("CPU 與記憶體", systemImage: "cpu")
+                Label("工作與儲存空間", systemImage: "externaldrive")
+                Text("儲存空間為上次計算的快照，可在右側重新計算。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped).scrollContentBackground(.hidden)
+    }
+
     private var navigationPicker: some View {
         Picker("頁面", selection: $model.activePage) {
             ForEach(AppPage.allCases, id: \.self) { Text($0.rawValue).tag($0) }
         }
-        .pickerStyle(.segmented).labelsHidden().frame(width: 350)
+        .pickerStyle(.segmented).labelsHidden().controlSize(.large).frame(width: 350)
         .accessibilityIdentifier("mainPagePicker")
     }
 
@@ -167,6 +198,7 @@ private struct PhotoMainView: View {
                         }
                     }
                     .disabled(model.isRunning)
+                    .buttonStyle(.glass)
                     .accessibilityLabel("選擇固定 UTC 時區偏移，現在為 \(model.offset.label)")
                     .accessibilityIdentifier("chooseOffsetButton")
                     Picker("寫入", selection: Binding(get: { model.mode }, set: model.setMode)) {
@@ -229,7 +261,7 @@ private struct PhotoMainView: View {
             .disabled(model.isRunning)
             actionPanel.padding(16)
         }
-        .background(.regularMaterial)
+        .containerShape(.rect(cornerRadius: 28))
     }
 
     private var actionPanel: some View {
@@ -265,21 +297,10 @@ private struct PhotoMainView: View {
                 Button(action: model.inspect) { Label("重新掃描", systemImage: "arrow.clockwise") }
                     .disabled(!model.canInspect)
                     .accessibilityIdentifier("inspectButton")
-            }
+            }.buttonStyle(.glass)
             if model.inputs.isEmpty {
-                Button(action: model.chooseInputs) {
-                    VStack(spacing: 8) {
-                        Image(systemName: "square.and.arrow.down").font(.title2)
-                        Text("拖入相片或資料夾").font(.callout.weight(.medium))
-                        Text("或按一下選取多個項目").font(.caption).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isRunning)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+                PhotoImportArea(targeted: model.dropTargeted, action: model.chooseInputs)
+                    .disabled(model.isRunning)
                 .accessibilityIdentifier("chooseSourceArea")
             } else {
                 Text("已加入 \(model.inputs.count) 個來源")
@@ -379,30 +400,44 @@ private struct PhotoMainView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+        .appContentSurface()
     }
 
     private var catalogueToolbar: some View {
-        HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { catalogueSearch; catalogueFilters }
+            VStack(alignment: .leading, spacing: 8) {
+                catalogueSearch.frame(maxWidth: .infinity)
+                catalogueFilters
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private var catalogueSearch: some View {
             TextField("搜尋檔名、相機、鏡頭、日期…", text: $model.query)
                 .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 170, idealWidth: 250, maxWidth: 300)
+                .frame(minWidth: 150, idealWidth: 180, maxWidth: 250)
                 .accessibilityIdentifier("photoSearch")
+    }
+
+    private var catalogueFilters: some View {
+        HStack(spacing: 10) {
             Picker("狀態", selection: $model.filter) {
                 ForEach(PhotoFilter.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .frame(width: 140).accessibilityIdentifier("photoFilter")
+            .frame(width: 124).accessibilityIdentifier("photoFilter")
             Picker("相機", selection: $model.cameraFilter) {
                 Text("所有相機").tag("")
                 ForEach(model.cameras, id: \.name) { camera in
                     Text("\(camera.name)（\(camera.count)）").tag(camera.name)
                 }
             }
-            .frame(minWidth: 160, idealWidth: 240, maxWidth: 340).accessibilityIdentifier("cameraFilter")
+            .frame(minWidth: 130, idealWidth: 160, maxWidth: 240).accessibilityIdentifier("cameraFilter")
             Picker("排序", selection: $model.sort) {
                 ForEach(PhotoSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
-            .frame(width: 140)
+            .frame(width: 120)
             Spacer(minLength: 0)
         }
         .controlSize(.small)
@@ -624,7 +659,7 @@ private struct PhotoMainView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .appContentSurface()
         .accessibilityIdentifier("metadataDetails")
         .id(item.id)
     }
@@ -671,7 +706,6 @@ private struct PhotoMainView: View {
         }
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .textBackgroundColor).opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func gpsStatusLabel(_ title: String, symbol: String, color: Color) -> some View {
@@ -770,7 +804,7 @@ private struct PhotoMainView: View {
         .controlSize(.small)
         .padding(.horizontal, 16).padding(.vertical, 10)
         .frame(maxWidth: .infinity, minHeight: 44)
-        .background(.bar)
+        .appGlass(cornerRadius: 14)
         .accessibilityIdentifier("jobReport")
     }
 
@@ -786,6 +820,7 @@ private struct PhotoMainView: View {
                 else { ProgressView("正在重新掃描…").padding(24) }
             }
         }.padding(20).frame(width: 760, height: 560)
+        .background { AppWindowBackdrop() }
     }
 
     private func report(_ summary: JobSummary) -> some View {
@@ -852,7 +887,7 @@ private struct PhotoMainView: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .appContentSurface()
         .accessibilityIdentifier("jobReportDetails")
     }
 
@@ -909,7 +944,7 @@ private struct PhotoMainView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(minHeight: 46)
-        .background(.bar)
+        .appGlass(cornerRadius: 14)
         .accessibilityIdentifier("activityBar")
     }
 

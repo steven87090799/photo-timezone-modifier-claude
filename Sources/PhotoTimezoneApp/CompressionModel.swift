@@ -147,6 +147,8 @@ final class CompressionModel: ObservableObject {
     private let webhook = CompressionWebhook()
     private var batchID = ""
     private var isActive = false
+    private var inactiveCleanup: Task<Void, Never>?
+    private var displayedPreviewKey: String?
     @Published var exportStatus = ""
 
     init(defaults: UserDefaults = .standard) {
@@ -182,13 +184,21 @@ final class CompressionModel: ObservableObject {
     }
 
     func setActive(_ active: Bool) {
+        guard isActive != active else { return }
+        inactiveCleanup?.cancel(); inactiveCleanup = nil
         isActive = active
-        if active { prepareSelectedFormat(); updatePreview() }
+        if active { updatePreview() }
         else {
             previewTask?.cancel()
             previewLoading = false
-            originalPreview = nil; compressedPreview = nil
-            if !isRunning { discardPreviewCache(); host.cancelAll(); host.releaseRuntime() }
+            // Keep only two bounded display thumbnails and one verified
+            // preview file. No encoder or sampling work runs for these caches.
+            // Let navigation render first; rapid tab changes cancel teardown.
+            inactiveCleanup = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled, let self, !self.isActive, !self.isRunning else { return }
+                self.host.cancelAll(); self.host.releaseRuntime()
+            }
         }
     }
 
@@ -223,7 +233,7 @@ final class CompressionModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.title = "加入要壓縮的圖片或資料夾"
         panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
-        panel.begin { [weak self] response in if response == .OK { Task { @MainActor in self?.addInputs(panel.urls) } } }
+        AppFilePanels.present(panel, asSheet: false) { [weak self] response in if response == .OK { Task { @MainActor in self?.addInputs(panel.urls) } } }
     }
 
     func addInputs(_ urls: [URL]) {
@@ -328,16 +338,31 @@ final class CompressionModel: ObservableObject {
         previewTask?.cancel()
         if !isRunning && previewLoading { host.cancelAll() }
         guard isActive else { return }
-        previewLoading = false; previewIsActual = false
+        previewLoading = false
         guard let item = selected else {
             discardPreviewCache()
             originalPreview = nil; compressedPreview = nil; estimate = nil
             return
         }
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
-        let cached = matchingPreviewCache(for: item, format: chosenFormat, quality: chosenQuality)
-        if previewCache != nil && cached == nil { discardPreviewCache() }
+        let key = "\(item.id)|\(chosenFormat.rawValue)|\(chosenQuality)|\(item.result?.url.path ?? "")"
+        let candidate = previewCache
         previewTask = Task {
+            // FileProvider attributes can be slow; validate away from the UI
+            // thread before reusing a file. Batch writes still revalidate too.
+            let cached = await Task.detached { () -> PreviewCache? in
+                guard let candidate, candidate.source.path == item.source.path,
+                      candidate.format == chosenFormat, candidate.quality == chosenQuality,
+                      FileManager.default.fileExists(atPath: candidate.result.url.path) else { return nil }
+                do { try candidate.identity.verify(item.source) } catch { return nil }
+                return candidate
+            }.value
+            guard !Task.isCancelled else { return }
+            if cached != nil, displayedPreviewKey == key,
+               originalPreview != nil, compressedPreview != nil { return }
+            if previewCache != nil && cached == nil { discardPreviewCache() }
+            previewIsActual = false
+            displayedPreviewKey = nil
             let original = await Task.detached { CompressionImages.thumbnail(item.source) }.value
             guard !Task.isCancelled else { return }
             originalPreview = original
@@ -349,6 +374,7 @@ final class CompressionModel: ObservableObject {
                 estimate = result.bytes
                 previewNote = compressedPreview == nil ? "此系統無法預覽輸出格式；檔案仍可儲存。" : "顯示實際壓縮結果"
                 previewLoading = false
+                displayedPreviewKey = key
                 return
             }
             if let cached {
@@ -361,6 +387,7 @@ final class CompressionModel: ObservableObject {
                 estimate = cached.result.bytes
                 previewNote = actualPreview == nil ? "此系統無法預覽輸出格式；檔案仍可儲存。" : "顯示完整影像輸出；開始批次時會重用此結果。"
                 previewLoading = false
+                displayedPreviewKey = key
                 return
             }
             compressedPreview = nil; estimate = nil
@@ -397,6 +424,7 @@ final class CompressionModel: ObservableObject {
                 estimate = result.bytes
                 previewNote = actualPreview == nil ? "此系統無法預覽輸出格式；完整輸出大小已取得。" : "顯示完整影像輸出；開始批次時會重用此結果。"
                 previewLoading = false
+                displayedPreviewKey = key
             } catch {
                 guard !Task.isCancelled else { return }
                 previewNote = "預覽無法完成：\(error.localizedDescription)"; previewLoading = false
@@ -405,19 +433,29 @@ final class CompressionModel: ObservableObject {
     }
 
     func start() {
+        start(retryingFailures: false)
+    }
+
+    func retryFailed() {
+        start(retryingFailures: true)
+    }
+
+    private func start(retryingFailures: Bool) {
         guard canStart else { return }
+        let targetIDs = Set(items.filter { !retryingFailures || $0.state == .failed }.map(\.id))
+        guard !targetIDs.isEmpty else { return }
         let config: CompressionWebhook.Configuration?
         do { config = webhookEnabled ? try CompressionWebhook.Configuration(url: webhookURL, token: webhookToken) : nil }
         catch { notice = error.localizedDescription; return }
         preferences.set(webhookURL, forKey: "nativeCompressionWebhookURL")
         previewTask?.cancel(); host.cancelAll()
         let chosenFormat = format, chosenQuality = Int(quality.rounded())
-        let largestPixels = items.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
+        let largestPixels = items.filter { targetIDs.contains($0.id) }.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
         let concurrency = Self.concurrencyLimit(format: chosenFormat, requested: parallelism,
             pixelCount: largestPixels, physicalMemory: ProcessInfo.processInfo.physicalMemory)
-        let reusablePreview = selected.flatMap { matchingPreviewCache(for: $0, format: chosenFormat, quality: chosenQuality) }
+        let reusablePreview = selected.flatMap { targetIDs.contains($0.id) ? matchingPreviewCache(for: $0, format: chosenFormat, quality: chosenQuality) : nil }
         if previewCache != nil && reusablePreview == nil { discardPreviewCache() }
-        for index in items.indices {
+        for index in items.indices where targetIDs.contains(items[index].id) {
             let reusesPreview = reusablePreview?.source.path == items[index].source.path
             if let result = items[index].result,
                !reusesPreview || result.url != reusablePreview?.result.url {
@@ -433,7 +471,7 @@ final class CompressionModel: ObservableObject {
         }
         // The batch now owns the preview file. Do not delete its temporary directory.
         previewCache = nil
-        let ids = items.filter { $0.state == .pending }.map(\.id)
+        let ids = items.filter { targetIDs.contains($0.id) && $0.state == .pending }.map(\.id)
         webhookStatus = ""; exportStatus = "處理中，尚未儲存"
         isRunning = true; isCancelling = false; batchID = UUID().uuidString
         compressedPreview = nil; estimate = nil; previewLoading = false
@@ -458,10 +496,10 @@ final class CompressionModel: ObservableObject {
                         group.addTask { await self.process(id, format: chosenFormat, quality: chosenQuality, webhook: config) }
                     }
                 }
-                if isCancelling { for index in items.indices where items[index].state == .pending { items[index].state = .cancelled } }
+                if isCancelling { for index in items.indices where targetIDs.contains(items[index].id) && items[index].state == .pending { items[index].state = .cancelled } }
             }
             if let config, !isCancelling {
-                do { try await webhook.summary(configuration: config, batchID: batchID, items: items); webhookStatus = "批次摘要已送出" }
+                do { try await webhook.summary(configuration: config, batchID: batchID, items: items.filter { targetIDs.contains($0.id) }); webhookStatus = "批次摘要已送出" }
                 catch { webhookStatus = "摘要傳送失敗：\(error.localizedDescription)" }
             }
             isRunning = false; isCancelling = false
@@ -539,13 +577,13 @@ final class CompressionModel: ObservableObject {
     func chooseOutputDirectory() {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
         panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
-        panel.begin { [weak self] response in if response == .OK { Task { @MainActor in self?.outputDirectory = panel.url } } }
+        AppFilePanels.present(panel) { [weak self] response in if response == .OK { Task { @MainActor in self?.outputDirectory = panel.url } } }
     }
 
     func saveSelected() {
         guard let item = selected, let result = item.result else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = item.outputName; panel.directoryURL = outputDirectory
-        panel.begin { [weak self] response in
+        AppFilePanels.present(panel) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             Task { @MainActor in
                 guard let self else { return }
@@ -562,7 +600,7 @@ final class CompressionModel: ObservableObject {
             export { try CompressionExports.saveAll(files, in: outputDirectory) }
         } else {
             let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
-            panel.begin { [weak self] response in
+            AppFilePanels.present(panel) { [weak self] response in
                 guard response == .OK, let url = panel.url else { return }
                 Task { @MainActor in self?.outputDirectory = url; self?.saveAll() }
             }
@@ -573,28 +611,11 @@ final class CompressionModel: ObservableObject {
         guard !completed.isEmpty else { return }
         let files = completed.map { ($0.result!.url, $0.outputName) }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "影像壓縮.zip"; panel.directoryURL = outputDirectory
-        panel.begin { [weak self] response in
+        AppFilePanels.present(panel) { [weak self] response in
             guard response == .OK, let target = panel.url else { return }
             Task { @MainActor in
                 guard let self, self.safeDestination(target) else { return }
                 self.export { try CompressionExports.zip(files, to: target) }
-            }
-        }
-    }
-
-    func exportReport() {
-        let header = "來源,輸出檔名,狀態,格式,相片資訊,拍攝時間,時區,GPS,原始大小,輸出大小,容量減少百分比,中繼資料,Webhook,說明\n"
-        func csv(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-        let report = header + items.map { item in
-            [item.source.path, item.outputName, item.state.rawValue, item.format?.rawValue ?? "", item.basicInfo, item.dateInfo, item.timezoneInfo, item.gpsInfo, String(item.measuredSourceBytes),
-             item.result.map { String($0.bytes) } ?? "", item.savings.map { String(format: "%.2f", $0 * 100) } ?? "", item.result?.metadataStatus ?? "", item.webhookStatus ?? "", item.error ?? item.metadataError ?? ""].map(csv).joined(separator: ",")
-        }.joined(separator: "\n")
-        let panel = NSSavePanel(); panel.nameFieldStringValue = "影像壓縮結果.csv"
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            Task { @MainActor in
-                guard let self, self.safeDestination(url) else { return }
-                self.export(successMessage: "已儲存 CSV 報告；圖片須另行儲存") { try Data(report.utf8).write(to: url, options: .atomic) }
             }
         }
     }

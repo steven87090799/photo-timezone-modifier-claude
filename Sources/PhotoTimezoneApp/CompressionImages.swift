@@ -65,33 +65,23 @@ enum CompressionImages {
         return Raster(bytes: output, width: width, height: height, originalProfile: image.originalProfile, frames: image.frames, bitsPerComponent: 8)
     }
 
-    /// No resizing: comparison crops use the same coordinates on both images.
-    static func comparisonCrop(_ url: URL, x: Double, y: Double, size: Int = 1024) -> NSImage? {
+    /// Decode once at native resolution and apply display orientation. Panning
+    /// and moving the divider never decode again. Keep the existing 256 MiB
+    /// per-image decode allowance (8 bytes/pixel), and reject larger sources
+    /// rather than silently downsampling a quality comparison.
+    static func comparisonImage(_ url: URL) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = props[kCGImagePropertyPixelWidth] as? Int,
               let height = props[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0, width <= 20000, height <= 20000,
-              width <= 256 * 1024 * 1024 / 8 / height,
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: max(width, height),
-                kCGImageSourceShouldCacheImmediately: true
-              ] as CFDictionary) else { return nil }
-        let w = min(size, image.width), h = min(size, image.height)
-        let left = Int((Double(image.width - w) * min(1, max(0, x))).rounded())
-        let top = Int((Double(image.height - h) * min(1, max(0, y))).rounded())
-        guard let crop = image.cropping(to: CGRect(x: left, y: top, width: w, height: h)) else { return nil }
-        // CGImage.cropping can retain the entire decoded provider. Copy this
-        // display-only ROI so closing the decode scope releases the full image.
-        guard let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
-            bytesPerRow: w * 4, space: crop.colorSpace?.model == .rgb ? crop.colorSpace! : CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.interpolationQuality = .none
-        context.draw(crop, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let copied = context.makeImage() else { return nil }
-        return NSImage(cgImage: copied, size: NSSize(width: w, height: h))
+              width <= 256 * 1024 * 1024 / 8 / height else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(width, height),
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary)
     }
 
     static func encodeHighDepthPNG(_ url: URL, output: URL) throws -> Raster {

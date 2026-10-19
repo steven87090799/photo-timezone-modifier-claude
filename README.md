@@ -44,7 +44,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## 影像壓縮與中繼資料
 
-壓縮頁採用與相片處理一致的原生 SwiftUI 介面：左側設定、中央批次清單與進度、右側預覽與每張結果。保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存、CSV 報告及選用 Webhook。切換分頁會保留工作狀態；離開壓縮頁且無工作時會釋放引擎。HEIF／HEIC 由 macOS ImageIO 原生編解碼。
+介面採用 macOS 原生 Liquid Glass、靠右的分頁工具列，以及一致的設定、預覽和結果區；系統開啟「降低透明度」時使用實色背景。壓縮頁保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存及選用 Webhook。下方直接顯示成功／失敗和容量變化，可只查看失敗項目、重試失敗或隱藏預覽以放大清單；不再提供 CSV 匯出。切換分頁會保留工作狀態；離開壓縮頁且無工作時會釋放引擎。HEIF／HEIC 由 macOS ImageIO 原生編解碼。JPEG／HEIF 優先完整複製原始 EXIF 區塊並逐位元組驗證，避免光圈與快門的精度換算造成誤判；無可擷取 EXIF 區塊的來源僅容許指定拍攝數值的極小換算誤差，時區、日期、GPS、XMP 仍嚴格核對。
 
 輸出時透過內建 ExifTool 複製並核對一般 EXIF、XMP、IPTC 與 ICC，包括原有時區及 GPS；本頁沒有修改時區或 GPS 的控制。JPEG、PNG、WebP、HEIF 優先保留來源 RGB ICC；AVIF 使用 sRGB 像素並逐張明示色彩轉換；JPEG XL 內嵌來源 ICC，並驗證轉換後色彩特性。容器不支援或無法核對的欄位會列在結果中，不能視為完整保留；ICC 不符而可能造成錯色時拒絕該張輸出。高位元及動畫輸入仍有限制，詳見 [影像壓縮整合說明](docs/COMPRESSION_INTEGRATION.md)。
 
@@ -60,9 +60,9 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 依使用者決定，在 `codex/native-jpegli` 分支將 JPEG 編碼器替換為原生 Jpegli，移除 MozJPEG 的 JavaScript／WASM。輸出仍是普通 `.jpg`，8 位元 YCbCr、漸進式 Huffman JPEG，不使用 XYB 或 JPEG XL。預覽和正式輸出都使用同一編碼器。新安裝預設品質為 86；舊版預設 82 會升至 86，使用者自訂品質值保留。JPEG 品質 100 仍是有損；透明輸入轉白底。
 
-Jpegli 編碼器可在 macOS 和 Windows 建置，普通 JPEG 可由兩平台的一般解碼器開啟；**這個 SwiftUI App 目前仍只支援 macOS**。因此直接替換，不增加依平台選擇的兩套 JPEG 模式。來源 RGB ICC、EXIF、XMP、IPTC 與原時區／GPS 沿用既有保留及驗證。固定來源版本、相容性證據與本機驗證見 [Jpegli 整合紀錄](docs/NATIVE_JPEGLI.md)；原方案比較保留在 [JPEG 方案比較](docs/JPEG_OPTIONS.md)。此分支尚未合併至 main。
+Jpegli 編碼器可在 macOS 和 Windows 建置，普通 JPEG 可由兩平台的一般解碼器開啟；**這個 SwiftUI App 目前仍只支援 macOS**。因此直接替換，不增加依平台選擇的兩套 JPEG 模式。來源 RGB ICC、EXIF、XMP、IPTC 與原時區／GPS 沿用既有保留及驗證。固定來源版本、相容性證據與本機驗證見 [Jpegli 整合紀錄](docs/NATIVE_JPEGLI.md)；原方案比較保留在 [JPEG 方案比較](docs/JPEG_OPTIONS.md)。已透過 PR #12 合併至 main。
 
-「開始壓縮」產生暫存結果，**不會因為選了輸出資料夾就自動儲存**；請按「儲存單張」或「輸出 → 儲存全部」。介面會提示儲存狀態。JPEG XL 品質 100 失敗時明確報錯，不會自動降為品質 99。關閉最後一個視窗會退出程式；仍在寫入時需先停止或等待完成。
+「開始壓縮」產生暫存結果，**不會因為選了輸出資料夾就自動儲存**；請按「儲存單張」或下方「儲存全部」。介面會提示儲存狀態。JPEG XL 品質 100 失敗時明確報錯，不會自動降為品質 99。關閉最後一個視窗會退出程式；仍在寫入時需先停止或等待完成。
 
 ### 3.6.1 修復與實拍校準
 
