@@ -39,4 +39,23 @@ struct CompressionInventoryTests {
         #expect(throws: PhotoError.self) { try CompressionContainerInventory.validate(file) }
         #expect(try Data(contentsOf: source) == original)
     }
+
+    @Test func namedPhotoshopResourceCannotHideBehindAKnownResourceID() throws {
+        let source = root.appendingPathComponent(".build/vendor-exiftool/t/images/Sony.jpg")
+        let original = try Data(contentsOf: source)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("NamedResource-\(UUID()).jpg")
+        defer { try? FileManager.default.removeItem(at: file) }
+        // Known IPTC resource ID, with an independent name that tag copies do
+        // not certify. The opaque name must not vanish during re-encoding.
+        let name = Data([7]) + Data("ARCHIVE".utf8)
+        let resource = Data("8BIM".utf8) + Data([0x04, 0x04]) + name + Data([0, 0, 0, 0])
+        let payload = Data("Photoshop 3.0\0".utf8) + resource
+        let length = payload.count + 2
+        let block = Data([0xff, 0xed, UInt8(length >> 8), UInt8(length & 255)]) + payload
+        let bytes = original.prefix(2) + block + original.dropFirst(2)
+        try bytes.write(to: file)
+        #expect(throws: PhotoError.self) { try CompressionContainerInventory.validate(file) }
+        #expect(try Data(contentsOf: file) == bytes)
+        #expect(try Data(contentsOf: source) == original)
+    }
 }

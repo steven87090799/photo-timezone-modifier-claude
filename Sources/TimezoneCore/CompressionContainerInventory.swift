@@ -134,6 +134,9 @@ enum CompressionContainerInventory {
             }
             let identifier = UInt64(try reader.byte(offset + 4)) << 8 | UInt64(try reader.byte(offset + 5))
             guard supported.contains(identifier) else { throw invalid("Photoshop 資源 \(identifier)") }
+            // A Pascal resource name is separate from its decoded value. The
+            // tag-copy path does not certify that label, even for a known ID.
+            guard try reader.byte(offset + 6) == 0 else { throw invalid("Photoshop 資源名稱") }
             let nameLength = UInt64(try reader.byte(offset + 6)) + 1
             let nameBytes = nameLength + nameLength % 2
             guard nameBytes <= end - offset - 6, end - offset - 6 - nameBytes >= 4 else { throw invalid("Photoshop 資源名稱") }
