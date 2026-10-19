@@ -56,6 +56,10 @@ const void *getColorData(void *opaque, size_t x, size_t y, size_t width,
   auto *tile = new (std::nothrow) uint8_t[stride * height];
   if (tile == nullptr) return nullptr;
   for (size_t row = 0; row < height; ++row) {
+    if (frame->cancelled && frame->cancelled(frame->cancel_context)) {
+      delete[] tile;
+      return nullptr;
+    }
     const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 * bytes;
     uint8_t *destination = tile + row * stride;
     for (size_t column = 0; column < width; ++column) {
@@ -84,6 +88,10 @@ const void *getAlphaData(void *opaque, size_t, size_t x, size_t y,
   auto *tile = new (std::nothrow) uint8_t[width * height * bytes];
   if (tile == nullptr) return nullptr;
   for (size_t row = 0; row < height; ++row) {
+    if (frame->cancelled && frame->cancelled(frame->cancel_context)) {
+      delete[] tile;
+      return nullptr;
+    }
     const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 * bytes + 3 * bytes;
     uint8_t *destination = tile + row * width * bytes;
     for (size_t column = 0; column < width; ++column) {
@@ -231,6 +239,7 @@ extern "C" int pt_jxl_encode_rgba(
       setError(error, error_capacity, "無法建立 JPEG XL 工作執行緒。\n");
       return 1;
     }
+    if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
     std::unique_ptr<JxlEncoder, EncoderDeleter> encoder(JxlEncoderCreate(nullptr));
     if (!encoder || JxlEncoderSetParallelRunner(encoder.get(),
                                                 JxlThreadParallelRunner,
@@ -282,6 +291,7 @@ extern "C" int pt_jxl_encode_rgba(
       setError(error, error_capacity, "JPEG XL 無法設定 sRGB 色彩空間。\n");
       return 1;
     }
+    if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
 
     JxlEncoderFrameSettings *settings =
         JxlEncoderFrameSettingsCreate(encoder.get(), nullptr);
@@ -329,6 +339,7 @@ extern "C" int pt_jxl_encode_rgba(
     input.get_extra_channel_pixel_format = getAlphaFormat;
     input.get_extra_channel_data_at = getAlphaData;
     input.release_buffer = releaseTile;
+    if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
     if (JxlEncoderAddChunkedFrame(settings, JXL_TRUE, input) != JXL_ENC_SUCCESS) {
       if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
       setError(error, error_capacity, "JPEG XL 讀取影像區塊失敗。\n");
