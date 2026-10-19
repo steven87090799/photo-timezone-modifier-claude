@@ -33,6 +33,8 @@
 
 本機驗證環境為 Apple Silicon、macOS 27、Swift 6.4、固定 ExifTool 13.59／libjxl 0.12.0。
 
+測試腳本明確指定 `--no-parallel`，讓不同 Swift Testing suite 依序使用原生編碼器工作池，避免同時展開多組重負載工作干擾取消反應時間。兩秒取消條件及全部功能測試仍會執行；App 的實際並行數由使用者設定與記憶體預算決定。
+
 | 項目 | 結果 |
 | --- | --- |
 | 核心全套 | 143 項通過，包含真實 Sony A7 IV ARW 的時區、GPS、備份與還原 |

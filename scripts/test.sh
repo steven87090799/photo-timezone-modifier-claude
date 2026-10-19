@@ -25,6 +25,13 @@ if [[ " $* " != *" --scratch-path "* && " $* " != *" --scratch-path="* ]]; then
   TEST_ARGS=(--scratch-path "/private/tmp/PhotoTimezone-tests-$UID" "$@")
 fi
 
+# Pass the flag explicitly: Swift Testing otherwise ran independent suites
+# concurrently under SwiftPM's implicit default. Native codec suites each own
+# their worker pools, so isolate them for bounded memory and cancellation timing.
+if [[ " $* " != *" --parallel "* && " $* " != *" --no-parallel "* ]]; then
+  TEST_ARGS+=(--no-parallel)
+fi
+
 TEST_DEVELOPER_DIR="$(xcode-select -p)"
 TEST_PLUGIN="$TEST_DEVELOPER_DIR/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib"
 
