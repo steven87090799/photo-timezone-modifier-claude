@@ -62,7 +62,10 @@ public struct PhotoEngine: Sendable {
             }
             let store = try TransactionStore(directory: (logDirectory ?? support).appendingPathComponent("Transactions"))
             let pending = try store.unfinished()
-            let blocked = Set(pending.flatMap { [$0.source.path, $0.target.path] })
+            let blocked = Set(pending.flatMap { record in
+                [record.source.path, record.target.path] + record.sidecarTargets.map(\.path) +
+                    Array((record.sidecarBackups ?? [:]).keys)
+            })
             journal = try Journal(directory: logDirectory ?? support.appendingPathComponent("Logs"), operation: operation.label)
             onEvent(.phase("掃描檔案與資料夾…"))
             items = FileDiscovery.collect(inputs: inputs, recursive: recursive, cancellation: cancellation,
@@ -70,10 +73,15 @@ public struct PhotoEngine: Sendable {
             onEvent(.discovered(items))
             var sidecarOwners: [String: Set<String>] = [:]
             switch operation {
-            case .write, .writeCopy:
+            case .write, .writeCopy, .restore:
                 for photo in items where photo.status == .pending {
-                    for sidecar in (try? SidecarSupport.find(beside: photo.url, index: sidecarIndex)) ?? []
-                    where sidecar.pathExtension.lowercased() == "xmp" {
+                    var related = (try? SidecarSupport.find(beside: photo.url, index: sidecarIndex)) ?? []
+                    if case .restore = operation {
+                        let backup = URL(fileURLWithPath: photo.url.path + "_original")
+                        let originals = (try? store.canonicalSidecarBackups(backup, source: photo.url)) ?? [:]
+                        related += originals.keys.map { URL(fileURLWithPath: $0) }
+                    }
+                    for sidecar in related where sidecar.pathExtension.lowercased() == "xmp" {
                         sidecarOwners[sidecar.path, default: []].insert(photo.url.path)
                     }
                 }
@@ -111,7 +119,9 @@ public struct PhotoEngine: Sendable {
                                     }
                                 }
                             }
-                            if case .inspect = operation {} else if blocked.contains(item.url.path) {
+                            let relatedPaths = [item.url.path] + (try SidecarSupport.find(beside: item.url, index: sidecarIndex)).map(\.path)
+                            let recoveryBlocked = relatedPaths.contains { blocked.contains($0) }
+                            if case .inspect = operation {} else if recoveryBlocked {
                                 item.publicationUnconfirmed = true
                                 throw PhotoError("Unfinished transaction requires review; automatic retry is blocked. See \(store.active.path)")
                             }
@@ -162,7 +172,7 @@ public struct PhotoEngine: Sendable {
                                 try identity.verify(item.url)
                                 item.metadata = diagnosed
                                 item.sourceIdentity = identity
-                                item.publicationUnconfirmed = blocked.contains(item.url.path)
+                                item.publicationUnconfirmed = recoveryBlocked
                                 item.status = .ready
                                 item.detail = metadata.missingOffsets ? "尚有 EXIF 時區欄位缺漏。" : "三個 EXIF 時區欄位已齊。"
                                 if item.publicationUnconfirmed { item.detail += "\nUnfinished transaction requires manual review; do not retry automatically." }
@@ -265,7 +275,10 @@ public struct PhotoEngine: Sendable {
             ("OffsetTimeDigitized", before.offsetDigitized), ("OffsetTime", before.offsetTime)
         ]
         let requested = allFields.filter { (mode == .replaceAll || $0.1 == nil) && $0.1 != offset.value }
-        let assignments = requested.map { ($0.0, offset.value) }
+        var assignments = requested.map { ($0.0, offset.value) }
+        if !requested.isEmpty, let schema = try MetadataVerifier.offsetSchemaUpgrade(originalSnapshot) {
+            assignments.append(("ExifVersion", schema))
+        }
         let sidecars = try SidecarSupport.find(beside: item.url, index: sidecarIndex)
         var notices: [String] = []
         let sidecarReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
@@ -310,6 +323,10 @@ public struct PhotoEngine: Sendable {
         let candidateSnapshot = try tool.snapshot(stage, cancellation: cancellation)
         notices += try MetadataVerifier.verify(before: originalSnapshot, after: candidateSnapshot,
                                                assignments: assignments, options: options)
+        try ImagePayloadVerifier.verify(source: item.url, candidate: stage, before: originalSnapshot,
+            after: candidateSnapshot, tool: tool, cancellation: cancellation)
+        try MetadataStructureVerifier.verify(source: item.url, candidate: stage, tool: tool,
+            cancellation: cancellation)
         var after = candidateSnapshot.metadata
         notices += TimeValidation.issues(after)
         for read in sidecarReads { notices += read.issues(for: after) }
@@ -368,8 +385,12 @@ public struct PhotoEngine: Sendable {
                 let temp = backup.deletingLastPathComponent().appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
                 defer { try? fm.removeItem(at: temp) }
                 try SafeFileTransaction.copyAndSync(item.url, to: temp)
+                guard try SafeFileTransaction.contentsAreIdentical(item.url, temp) else {
+                    throw PhotoError("原始照片備份內容驗證失敗；來源未修改。")
+                }
                 try sourceIdentity.verify(item.url)
                 try SafeFileTransaction.publishExclusive(temp, to: backup)
+                try SafeFileTransaction.fullSyncFile(backup)
                 if backup.standardizedFileURL.path == item.url.standardizedFileURL.path + "_original" {
                     manifest.canonicalBackupIdentity = try FileIdentity.read(backup)
                 }
@@ -509,6 +530,10 @@ public struct PhotoEngine: Sendable {
         var notices = try MetadataVerifier.verifyGPSAddition(
             before: originalSnapshot, after: candidateSnapshot, location: location, options: options
         )
+        try ImagePayloadVerifier.verify(source: item.url, candidate: stage, before: originalSnapshot,
+            after: candidateSnapshot, tool: tool, cancellation: cancellation)
+        try MetadataStructureVerifier.verify(source: item.url, candidate: stage, tool: tool,
+            cancellation: cancellation)
         var after = candidateSnapshot.metadata
         after.sidecarGPSDetected = before.sidecarGPSDetected
         after.gpsSafetyUncertain = before.gpsSafetyUncertain
@@ -594,8 +619,12 @@ public struct PhotoEngine: Sendable {
                     .appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
                 defer { try? fm.removeItem(at: temp) }
                 try SafeFileTransaction.copyAndSync(item.url, to: temp)
+                guard try SafeFileTransaction.contentsAreIdentical(item.url, temp) else {
+                    throw PhotoError("原始照片備份內容驗證失敗；來源未修改。")
+                }
                 try sourceIdentity.verify(item.url)
                 try SafeFileTransaction.publishExclusive(temp, to: backup)
+                try SafeFileTransaction.fullSyncFile(backup)
                 if backup.standardizedFileURL.path == item.url.standardizedFileURL.path + "_original" {
                     manifest.canonicalBackupIdentity = try FileIdentity.read(backup)
                 }
@@ -659,73 +688,7 @@ public struct PhotoEngine: Sendable {
 
     private func restore(item: inout PhotoItem, tool: ExifTool, store: TransactionStore,
                          cancellation: CancellationToken) throws {
-        let fm = FileManager.default
-        let backup = URL(fileURLWithPath: item.url.path + "_original")
-        guard fm.fileExists(atPath: backup.path) else {
-            item.status = .skipped; item.detail = "No _original backup; nothing changed."; return
-        }
-        try store.verifyCanonicalOriginalBackup(backup, source: item.url)
-        let backupIdentity = try FileIdentity.read(backup)
-        let before = try tool.snapshot(backup, cancellation: cancellation, strictOffsets: false)
-        let currentIdentity = fm.fileExists(atPath: item.url.path) ? try FileIdentity.read(item.url) : nil
-        if let currentIdentity, currentIdentity.links > 1 { throw PhotoError("Restore would break hard links; use an independent copy.") }
-        try FileSafety.ensureWriteCapacity(item.url, fileSize: max(backupIdentity.size, currentIdentity?.size ?? 0),
-                                          copies: 3, sourceMustBeWritable: false)
-        let stage = SafeFileTransaction.temporaryPhoto(beside: item.url)
-        defer { try? fm.removeItem(at: stage) }
-        try SafeFileTransaction.copyAndSync(backup, to: stage)
-        guard try SafeFileTransaction.contentsAreIdentical(backup, stage) else {
-            throw PhotoError("Restore candidate bytes differ from the backup; no original was changed.")
-        }
-        let candidate = try tool.snapshot(stage, cancellation: cancellation, strictOffsets: false)
-        try backupIdentity.verify(backup)
-        try currentIdentity?.verify(item.url)
-        if cancellation.isCancelled { throw CancellationError() }
-        let currentCopy = currentIdentity.map { _ in URL(fileURLWithPath: item.url.path + ".before-restore-\(UUID().uuidString).backup") }
-        let parent = item.url.deletingLastPathComponent().resolvingSymlinksInPath()
-        let parentIdentity = try DirectoryIdentity.read(parent)
-        var manifest = TransactionManifest(version: 2, id: UUID(), source: backup, target: item.url,
-            candidate: stage, backup: currentCopy ?? backup, sourceIdentity: backupIdentity,
-            targetIdentityBefore: currentIdentity,
-            candidateIdentity: try FileIdentity.read(stage), originalDates: before.metadata.dateTags,
-            oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [], phase: .prepared,
-            detail: "Whole-file restore, not an offset-only undo. Candidate verified byte-for-byte against the canonical backup.")
-        item.transactionID = manifest.id; item.backupURL = currentCopy ?? backup
-        try store.save(manifest)
-        var published = false
-        do {
-            if let currentCopy {
-                let temp = currentCopy.deletingLastPathComponent().appendingPathComponent(".before-restore-\(UUID().uuidString)")
-                defer { try? fm.removeItem(at: temp) }
-                try SafeFileTransaction.copyAndSync(item.url, to: temp)
-                try currentIdentity?.verify(item.url)
-                try SafeFileTransaction.publishExclusive(temp, to: currentCopy)
-            }
-            try backupIdentity.verify(backup); try currentIdentity?.verify(item.url)
-            try parentIdentity.verify(parent)
-            do {
-                if currentIdentity == nil { try SafeFileTransaction.publishExclusive(stage, to: item.url) }
-                else { try SafeFileTransaction.replace(stage, at: item.url) }
-                published = true
-            } catch let error as PublicationError { published = true; throw error }
-            item.metadata = candidate.metadata; item.outputURL = item.url
-            manifest.phase = .committed
-            try store.finish(manifest)
-        } catch {
-            if published {
-                item.publicationUnconfirmed = true; item.outputURL = item.url
-                item.metadata = candidate.metadata
-                manifest.phase = .publicationUnconfirmed
-                manifest.detail = "Restore was published; durability confirmation incomplete. \(error.localizedDescription)"
-                try? store.save(manifest)
-                throw PhotoError(manifest.detail + " Do not retry automatically; backups retained.")
-            }
-            manifest.phase = .aborted; manifest.detail = error.localizedDescription
-            try? store.finish(manifest)
-            throw error
-        }
-        item.status = .success
-        item.detail = "Whole-file restore completed; backup and previous version retained. Restore candidate verified byte-for-byte against the canonical backup."
+        try BundleRestore.restore(item: &item, tool: tool, store: store, cancellation: cancellation)
     }
 
 }

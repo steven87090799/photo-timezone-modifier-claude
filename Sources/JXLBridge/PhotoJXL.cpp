@@ -7,6 +7,7 @@
 #include <lcms2.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -250,9 +251,10 @@ extern "C" int pt_jxl_encode_rgba(
     info.alpha_bits = bits_per_sample;
     info.alpha_exponent_bits = 0;
     info.alpha_premultiplied = JXL_FALSE;
-    // In lossless mode libjxl requires pixel samples to remain in the declared
-    // profile; lossy mode uses its internal perceptual color space instead.
-    info.uses_original_profile = quality == 100 ? JXL_TRUE : JXL_FALSE;
+    // Keep the original profile for every quality. Allowing XYB here makes
+    // libjxl reconstruct a colorimetrically similar ICC and lose non-rendering
+    // profile metadata. RGB encoding retains the complete original ICC bytes.
+    info.uses_original_profile = JXL_TRUE;
     info.orientation = JXL_ORIENT_IDENTITY;
     if (JxlEncoderSetBasicInfo(encoder.get(), &info) != JXL_ENC_SUCCESS) {
       setError(error, error_capacity, "JPEG XL 無法設定影像尺寸。\n");
@@ -386,7 +388,8 @@ extern "C" int pt_jxl_profile_matches(const uint8_t *jxl, size_t jxl_size,
                                       size_t icc_profile_size,
                                       double maximum_xyz_difference) {
   if (jxl == nullptr || jxl_size == 0 || icc_profile == nullptr ||
-      icc_profile_size == 0 || maximum_xyz_difference <= 0.0) {
+      icc_profile_size == 0 || !std::isfinite(maximum_xyz_difference) ||
+      maximum_xyz_difference < 0.0) {
     return 0;
   }
   std::unique_ptr<JxlDecoder, DecoderDeleter> decoder(JxlDecoderCreate(nullptr));
@@ -414,6 +417,11 @@ extern "C" int pt_jxl_profile_matches(const uint8_t *jxl, size_t jxl_size,
               decoded_profile.data(), decoded_profile.size()) !=
           JXL_DEC_SUCCESS) {
         return 0;
+      }
+      if (maximum_xyz_difference == 0.0) {
+        return icc_profile_size == decoded_profile.size() &&
+                       std::memcmp(icc_profile, decoded_profile.data(), icc_profile_size) == 0
+                   ? 1 : 0;
       }
       return profilesAreColorimetricallyEquivalent(
                  icc_profile, icc_profile_size, decoded_profile.data(),

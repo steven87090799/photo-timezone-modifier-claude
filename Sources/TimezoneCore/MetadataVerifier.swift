@@ -4,6 +4,19 @@ import CoreFoundation
 /// Metadata-only verification chosen by the user. No photo, preview, thumbnail,
 /// or MakerNotes digest is calculated. Unknown binary payloads are NOT certified.
 enum MetadataVerifier {
+    /// OffsetTime* were added in EXIF 2.31. Keep newer schemas and upgrade
+    /// older/missing declarations only when actually writing an offset.
+    static func offsetSchemaUpgrade(_ before: ExifTool.Snapshot) throws -> String? {
+        let values = before.embeddedTags.filter { canonicalCopyKey($0.key) == "ExifIFD:ExifVersion" }
+        if values.isEmpty { return "0231" }
+        guard values.count == 1, let raw = values.first?.value,
+              let version = try JSONSerialization.jsonObject(with: Data(raw.utf8), options: [.fragmentsAllowed]) as? String,
+              version.utf8.count == 4, version.utf8.allSatisfy({ (48...57).contains($0) }),
+              let number = Int(version) else {
+            throw PhotoError("EXIF 版本欄位無效或重複，無法安全新增時區欄位；原檔保持原狀。")
+        }
+        return number < 231 ? "0231" : nil
+    }
     /// ExifTool's -a -G1:4 assigns Copy1/Copy2 to duplicate tags. Those
     /// instances remain distinct readback values and must all match a write.
     static func canonicalCopyKey(_ key: String) -> String {
@@ -163,9 +176,9 @@ enum MetadataVerifier {
             }
             if expected.isEmpty {
                 guard actualValues.isEmpty else { throw PhotoError("目標欄位未清除：\(key)。") }
-            } else if key.hasPrefix("ExifIFD:OffsetTime") {
+            } else if key.hasPrefix("ExifIFD:OffsetTime") || key == "ExifIFD:ExifVersion" {
                 guard !actualValues.isEmpty, actualValues.allSatisfy({ $0 == expected }) else {
-                    throw PhotoError("EXIF 時區讀回值不符：\(key)。")
+                    throw PhotoError("EXIF 欄位讀回值不符：\(key)。")
                 }
             } else if key.hasPrefix("XMP") &&
                 ["DateTimeOriginal", "CreateDate", "ModifyDate", "DateCreated"]

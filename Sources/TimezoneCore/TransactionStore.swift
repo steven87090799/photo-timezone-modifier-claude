@@ -25,6 +25,9 @@ struct TransactionManifest: Codable {
     /// Durable original-sidecar backups for an integrated multi-file write.
     /// Optional so recovery can decode records created by older versions.
     var sidecarBackups: [String: URL]? = nil
+    /// Identity pins for the durable sidecar backups, keyed by original path.
+    /// A nil map denotes a legacy record that cannot certify bundle restoration.
+    var sidecarBackupIdentities: [String: FileIdentity]? = nil
     let originalDates: [String: String]
     let oldOffsets: [String: String]
     let newOffsets: [String: String]
@@ -74,6 +77,11 @@ final class TransactionStore {
             try SafeFileTransaction.replace(temp, at: destination)
         } else {
             try SafeFileTransaction.publishExclusive(temp, to: destination)
+        }
+        // In-place operations may cross the publication boundary only after
+        // both their backups and durable journal reached the storage device.
+        if manifest.backup != nil && (manifest.phase != .prepared || !manifest.publishedSidecars.isEmpty) {
+            try SafeFileTransaction.fullSyncFile(destination)
         }
         rememberProvenance(manifest)
     }
@@ -137,6 +145,44 @@ final class TransactionStore {
                 return nil
             }
         })
+    }
+
+    /// Resolve the sidecars that belonged to the FIRST photo backup. Later
+    /// before-write backups must never replace that original bundle baseline.
+    func canonicalSidecarBackups(_ backup: URL, source: URL) throws -> [String: (url: URL, identity: FileIdentity)] {
+        try verifyCanonicalOriginalBackup(backup, source: source)
+        let identity = try FileIdentity.read(backup)
+        let matches = try (records(in: active) + records(in: history)).filter {
+            $0.source.standardizedFileURL == source.standardizedFileURL &&
+            $0.backup?.standardizedFileURL == backup.standardizedFileURL &&
+            $0.canonicalBackupIdentity == identity
+        }
+        guard matches.count <= 1 else {
+            throw PhotoError("原始照片備份對應多筆交易；無法安全判定伴隨檔的原始版本。")
+        }
+        guard let record = matches.first else {
+            // Legacy photo-only transactions did not change sidecars.
+            return [:]
+        }
+        let backups = record.sidecarBackups ?? [:]
+        guard backups.isEmpty || record.sidecarBackupIdentities != nil else {
+            throw PhotoError("舊版交易缺少 sidecar 備份身分；無法保證照片與 XMP 完整還原，請保留備份並人工檢查。")
+        }
+        var result: [String: (url: URL, identity: FileIdentity)] = [:]
+        for (path, url) in backups {
+            let sidecar = URL(fileURLWithPath: path)
+            let associatedNames = [source.lastPathComponent.lowercased(), source.deletingPathExtension().lastPathComponent.lowercased()]
+            guard ["xmp", "on1", "acr"].contains(sidecar.pathExtension.lowercased()),
+                  associatedNames.contains(sidecar.deletingPathExtension().lastPathComponent.lowercased()),
+                  sidecar.deletingLastPathComponent().standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL,
+                  url.deletingLastPathComponent().standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL,
+                  let pinned = record.sidecarBackupIdentities?[path] else {
+                throw PhotoError("Sidecar 備份資料不完整或位於其他資料夾；未還原。")
+            }
+            try pinned.verify(url)
+            result[path] = (url, pinned)
+        }
+        return result
     }
 
     private func rememberProvenance(_ record: TransactionManifest) {

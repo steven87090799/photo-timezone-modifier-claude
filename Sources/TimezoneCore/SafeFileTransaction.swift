@@ -114,6 +114,28 @@ enum SafeFileTransaction {
         }
     }
 
+    /// Strong barrier for original-version backups and the transaction record
+    /// authorizing an in-place replacement. General staging/copy work continues
+    /// to use fsync; unsupported storage must fail before replacing an original.
+    static func fullSyncFile(_ url: URL) throws {
+        _ = try FileIdentity.read(url)
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw PhotoError("無法開啟備份或交易紀錄進行完整磁碟同步：\(url.lastPathComponent)") }
+        defer { close(fd) }
+        var result: Int32
+        repeat {
+            #if canImport(Darwin)
+            result = fcntl(fd, F_FULLFSYNC, 0)
+            #else
+            result = fsync(fd)
+            #endif
+        } while result != 0 && errno == EINTR
+        guard result == 0 else {
+            let reason = String(cString: strerror(errno))
+            throw PhotoError("儲存裝置無法確認備份或交易紀錄已完整寫入媒體（\(reason)）：\(url.lastPathComponent)。已保留備份；請檢查交易紀錄，並改用獨立副本目的地。")
+        }
+    }
+
     static func syncDirectory(_ directory: URL) throws {
         let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fd >= 0 else { throw PhotoError("無法開啟目的資料夾進行同步。") }

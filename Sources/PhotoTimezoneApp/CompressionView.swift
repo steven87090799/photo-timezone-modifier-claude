@@ -292,7 +292,8 @@ struct CompressionView: View {
                 HStack(alignment: .top) { Text(format.rawValue).font(.callout.weight(.semibold)).frame(width: 70, alignment: .leading); Text(format.hint).font(.callout).foregroundStyle(.secondary) }
             }
             Divider()
-            Text("EXIF、ICC、XMP 與 IPTC 在容器支援時複製並驗證；每張結果會說明未保留的欄位。JPEG、PNG、WebP、HEIF、JPEG XL 優先保留 RGB 色彩描述檔；AVIF 轉為 sRGB。16 位元整數來源在 PNG／JPEG XL 品質 100 保留精度；其他格式會降至 8 位元並在結果提醒。浮點或更高精度的無損輸出會停止。動畫僅處理第一幀。")
+            Text("EXIF、XMP、IPTC、相機資料及 ICC 複製後核對；無法保存的欄位或不支援的格式會停止輸出，並列出原因。有外部 XMP／修圖伴隨檔時，請先由原軟體匯出已嵌入中繼資料的圖片。RAW、動畫、多頁、HDR／深度輔助資料及無法保存的色彩或精度不會自動轉成不完整版本。16 位元 RGB 整數來源請選 PNG 或品質 100 的 JPEG XL。")
+            Text("PNG 與品質 100 的 JPEG XL 會在完成後核對實際像素及透明通道；這是支援的解碼像素無損，不能還原原始檔的封裝。JPEG、WebP、AVIF、HEIF 與其他品質的 JPEG XL 是有損衍生圖；JPEG 也會把透明背景轉白。長期保存請同時保留原始照片及獨立備份。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("處理在本機完成；開啟 Webhook 後才會傳送影像。此頁不提供修改時區或 GPS 的控制。")
                 .font(.callout).foregroundStyle(.secondary)

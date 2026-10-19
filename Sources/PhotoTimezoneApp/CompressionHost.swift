@@ -210,7 +210,11 @@ final class CompressionLocalServer {
                 let size = Int(query.first { $0.name == "size" }?.value ?? "0") ?? 0
                 let preserve = query.first { $0.name == "profile" }?.value == "original"
                 do {
-                    let raster = try imageQueue.sync { try CompressionImages.raster(file, maxPixel: min(max(size, 0), 1600), preserveOriginal: preserve) }
+                    // Full PNG outputs must keep the integer samples, including
+                    // RGB hidden behind alpha=0. Rendering through a CGContext
+                    // premultiplies alpha and irreversibly rounds those values.
+                    let losslessPNG = size == 0 && registered(String(path.dropFirst(15)), output: true)?.pathExtension.lowercased() == "png"
+                    let raster = try imageQueue.sync { try CompressionImages.raster(file, maxPixel: min(max(size, 0), 1600), preserveOriginal: preserve, preserveDepth: losslessPNG) }
                     respond(client, status: 200, type: "application/octet-stream", body: raster.bytes,
                         headers: ["X-Image-Width": String(raster.width), "X-Image-Height": String(raster.height),
                                   "X-Profile-Mode": raster.originalProfile ? "original" : "srgb", "X-Frame-Count": String(raster.frames)])

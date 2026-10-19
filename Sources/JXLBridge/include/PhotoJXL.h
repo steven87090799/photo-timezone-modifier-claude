@@ -16,6 +16,7 @@ int pt_jxl_encode_rgba(const uint8_t *rgba, size_t rgba_size,
                        pt_jxl_cancel_callback is_cancelled, void *cancel_context,
                        uint8_t **output, size_t *output_size,
                        char *error, size_t error_capacity);
+/* A zero tolerance requires byte-identical original ICC data. */
 int pt_jxl_profile_matches(const uint8_t *jxl, size_t jxl_size,
                            const uint8_t *icc_profile, size_t icc_profile_size,
                            double maximum_xyz_difference);
