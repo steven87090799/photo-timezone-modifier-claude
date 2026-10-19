@@ -71,8 +71,10 @@ final class SidecarIndex {
         for url in (candidates[stem] ?? []) + (candidates[fullName] ?? []) {
             // Matching symlinks, directories and unreadable entries make GPS
             // absence unknown; never discard them before FileIdentity checks.
-            let identity = try FileIdentity.read(url)
-            guard seenFiles.insert("\(identity.device):\(identity.inode)").inserted else { continue }
+            _ = try FileIdentity.read(url)
+            // Different supported sidecar names remain distinct assets even
+            // when the original names happen to be hard links to one inode.
+            guard seenFiles.insert(url.standardizedFileURL.path).inserted else { continue }
             result.append(url)
         }
         return result.sorted { $0.path < $1.path }

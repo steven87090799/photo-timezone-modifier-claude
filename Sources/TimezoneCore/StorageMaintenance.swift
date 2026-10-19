@@ -208,7 +208,15 @@ public enum StorageMaintenance {
 
     private static func isOwnedCandidateName(_ name: String) -> Bool {
         if name.hasPrefix(".sidecar-") {
-            return UUID(uuidString: String(name.dropFirst(".sidecar-".count))) != nil
+            let remainder = String(name.dropFirst(".sidecar-".count))
+            // Older copy jobs used an extensionless sidecar candidate. The
+            // integrated writer retains the sidecar extension for ExifTool.
+            let components = remainder.split(separator: ".", omittingEmptySubsequences: false)
+            guard components.count == 1 ||
+                    (components.count == 2 && ["xmp", "on1", "acr"].contains(components[1].lowercased())) else {
+                return false
+            }
+            return UUID(uuidString: String(components[0])) != nil
         }
         guard name.hasPrefix(".photo-timezone-") else { return false }
         let remainder = String(name.dropFirst(".photo-timezone-".count))

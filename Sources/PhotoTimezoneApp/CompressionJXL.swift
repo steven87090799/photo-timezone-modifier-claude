@@ -72,7 +72,7 @@ enum CompressionJXL {
             expected.withUnsafeBytes { profile in
                 pt_jxl_profile_matches(jxl.bindMemory(to: UInt8.self).baseAddress,
                     jxl.count, profile.bindMemory(to: UInt8.self).baseAddress,
-                    profile.count, 0.001) == 1
+                    profile.count, 0.0) == 1
             }
         }
     }

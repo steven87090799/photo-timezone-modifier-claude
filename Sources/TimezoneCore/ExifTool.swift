@@ -231,10 +231,10 @@ final class ExifTool {
         // these explicit image-layout tags, as bounded JSON text, so the
         // verifier can still validate pointer count and file bounds without
         // hashing or reading the image payload.
-        let expandableLayoutPointers: Set<String> = [
-            "SubIFD:StripOffsets", "SubIFD:TileOffsets"
+        let expandableLayoutFields: Set<String> = [
+            "StripOffsets", "StripByteCounts", "TileOffsets", "TileByteCounts"
         ]
-        for key in expandableLayoutPointers {
+        for key in result.keys.sorted() where expandableLayoutFields.contains(String(key.split(separator: ":").last ?? "")) {
             guard let canonical = result[key], Self.isBinarySummary(canonical) else { continue }
             result[key] = try expandedLayoutPointer(
                 key, file: file, cancellation: cancellation

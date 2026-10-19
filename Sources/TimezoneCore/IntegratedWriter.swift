@@ -92,8 +92,11 @@ enum IntegratedWriter {
                 existingXMPDocument: true)
             sidecarPlans.append((read, changes))
         }
-        let photoChanges = exifAssignments.map { ("ExifIFD:\($0.0)", $0.1) }
+        var photoChanges = exifAssignments.map { ("ExifIFD:\($0.0)", $0.1) }
             + photoXMPAssignments + photoGPSAssignments
+        if !exifAssignments.isEmpty, let schema = try MetadataVerifier.offsetSchemaUpgrade(original) {
+            photoChanges.append(("ExifIFD:ExifVersion", schema))
+        }
         let anySidecarChange = sidecarPlans.contains { !$0.changes.isEmpty }
         let timezoneResult = changeTimezone
             ? (exifAssignments.isEmpty && photoXMPAssignments.allSatisfy { !dateFields.contains(tagName($0.0)) }
@@ -130,6 +133,10 @@ enum IntegratedWriter {
         let afterSnapshot = try tool.snapshot(stage, cancellation: cancellation)
         try MetadataVerifier.verifyIntegrated(before: original, after: afterSnapshot,
             assignments: photoChanges, gps: gpsAction?.coordinate, options: options)
+        try ImagePayloadVerifier.verify(source: source, candidate: stage, before: original,
+            after: afterSnapshot, tool: tool, cancellation: cancellation)
+        let structureWarnings = try MetadataStructureVerifier.verify(source: source, candidate: stage, tool: tool,
+            cancellation: cancellation)
         try FileSafety.preserveAndVerifyFileAttributes(from: source, to: stage)
         try SafeFileTransaction.syncFile(stage)
 
@@ -146,6 +153,9 @@ enum IntegratedWriter {
             let identity: FileIdentity
             if let read { identity = read.read.identity }
             else { identity = try FileIdentity.read(sidecar) }
+            if plan == nil && identity.links > 1 {
+                throw PhotoError("伴隨檔有硬連結；請使用副本模式，以免其他連結保留不同版本的 XMP。")
+            }
             try FileSafety.ensureWriteCapacity(output, fileSize: identity.size,
                 copies: plan == nil ? 3 : 2, sourceMustBeWritable: plan == nil)
             let temporary = output.deletingLastPathComponent()
@@ -188,7 +198,7 @@ enum IntegratedWriter {
             }
         } else { photoBackup = nil }
 
-        var manifest = TransactionManifest(version: 3, id: UUID(), source: source, target: target,
+        var manifest = TransactionManifest(version: 4, id: UUID(), source: source, target: target,
             candidate: stage, backup: photoBackup, sourceIdentity: originalIdentity,
             targetIdentityBefore: plan == nil ? originalIdentity : nil,
             candidateIdentity: try FileIdentity.read(stage),
@@ -203,19 +213,25 @@ enum IntegratedWriter {
         manifest.sidecarBackups = Dictionary(uniqueKeysWithValues: candidates.compactMap { candidate in
             candidate.backup.map { (candidate.source.path, $0) }
         })
+        manifest.sidecarBackupIdentities = [:]
         item.transactionID = manifest.id
         item.backupURL = photoBackup
         try store.save(manifest)
         var published: [URL] = []
+        var durableBackupIdentities: [String: FileIdentity] = [:]
         do {
             if let photoBackup {
                 try durableBackup(source, to: photoBackup, expected: originalIdentity)
+                durableBackupIdentities[photoBackup.path] = try FileIdentity.read(photoBackup)
                 if photoBackup.path == source.path + "_original" {
                     manifest.canonicalBackupIdentity = try FileIdentity.read(photoBackup)
                 }
                 for candidate in candidates {
                     if let backup = candidate.backup {
                         try durableBackup(candidate.source, to: backup, expected: candidate.identity)
+                        let pinned = try FileIdentity.read(backup)
+                        manifest.sidecarBackupIdentities?[candidate.source.path] = pinned
+                        durableBackupIdentities[backup.path] = pinned
                     }
                 }
                 manifest.phase = .backupDurable
@@ -281,9 +297,15 @@ enum IntegratedWriter {
                         manifest.sidecarCandidateIdentities?[candidate.stage.path].map { (candidate.target.path, $0) }
                     })
                 let rollback = rollbackPublished(published, candidates: candidates,
-                    target: target, photoBackup: photoBackup, plan: plan, expected: expectedPublished)
+                    target: target, photoBackup: photoBackup, plan: plan, expected: expectedPublished,
+                    backupIdentities: durableBackupIdentities)
+                if rollback.complete {
+                    item.metadata = before
+                    item.outputMetadata = nil
+                    item.outputURL = nil
+                }
                 manifest.phase = .publicationUnconfirmed
-                manifest.detail = "發佈失敗：\(error.localizedDescription)。\(rollback)"
+                manifest.detail = "發佈失敗：\(error.localizedDescription)。\(rollback.detail)"
                 item.publicationUnconfirmed = true
                 try? store.save(manifest)
                 throw PhotoError("時區：失敗；GPS：失敗。\(manifest.detail) 交易：\(manifest.id)")
@@ -295,6 +317,11 @@ enum IntegratedWriter {
         }
         item.status = .success
         item.detail = "時區：\(timezoneResult)。GPS：\(gpsResult)。照片與對應 XMP 已驗證。"
+        if !structureWarnings.isEmpty {
+            item.detail += "\n來源已有 \(structureWarnings.count) 項 EXIF／容器結構診斷，輸出未新增；請保留原件。"
+            item.metadata?.compatibilityIssues += structureWarnings
+            item.outputMetadata?.compatibilityIssues += structureWarnings
+        }
         if plan != nil {
             item.detail += "\n\(photoChanges.isEmpty && !anySidecarChange ? "原樣輸出" : "副本輸出")：\(target.path)"
         }
@@ -438,13 +465,18 @@ enum IntegratedWriter {
         let temporary = backup.deletingLastPathComponent().appendingPathComponent(".photo-timezone-backup-\(UUID().uuidString).backup")
         defer { try? FileManager.default.removeItem(at: temporary) }
         try SafeFileTransaction.copyAndSync(source, to: temporary)
+        guard try SafeFileTransaction.contentsAreIdentical(source, temporary) else {
+            throw PhotoError("原始備份與照片或伴隨檔內容不同；未覆寫來源。")
+        }
         try expected.verify(source)
         try SafeFileTransaction.publishExclusive(temporary, to: backup)
+        try SafeFileTransaction.fullSyncFile(backup)
     }
 
     private static func rollbackPublished(_ published: [URL], candidates: [SidecarCandidate],
                                           target: URL, photoBackup: URL?, plan: DestinationPlan?,
-                                          expected: [String: FileIdentity]) -> String {
+                                          expected: [String: FileIdentity],
+                                          backupIdentities: [String: FileIdentity]) -> (detail: String, complete: Bool) {
         var errors: [String] = []
         for file in published.reversed() where FileManager.default.fileExists(atPath: file.path) {
             do {
@@ -452,19 +484,30 @@ enum IntegratedWriter {
                 try verifyPublished(pinned, at: file)
                 if plan == nil {
                     let backup = file.path == target.path ? photoBackup : candidates.first { $0.target.path == file.path }?.backup
-                    guard let backup else { throw PhotoError("缺少備份") }
+                    guard let backup, let backupIdentity = backupIdentities[backup.path] else {
+                        throw PhotoError("缺少已確認身分的備份")
+                    }
+                    try backupIdentity.verify(backup)
                     let stage = SafeFileTransaction.temporaryPhoto(beside: file)
                     defer { try? FileManager.default.removeItem(at: stage) }
                     try SafeFileTransaction.copyAndSync(backup, to: stage)
+                    guard try SafeFileTransaction.contentsAreIdentical(backup, stage) else {
+                        throw PhotoError("回復候選檔與備份內容不同")
+                    }
+                    try backupIdentity.verify(backup)
+                    try verifyPublished(pinned, at: file)
                     try SafeFileTransaction.replace(stage, at: file)
+                    guard try SafeFileTransaction.contentsAreIdentical(backup, file) else {
+                        throw PhotoError("回復後的檔案與備份內容不同")
+                    }
                 } else {
                     try FileManager.default.removeItem(at: file)
                     try SafeFileTransaction.syncDirectory(file.deletingLastPathComponent())
                 }
             } catch { errors.append("\(file.lastPathComponent)：\(error.localizedDescription)") }
         }
-        return errors.isEmpty ? "已嘗試回復全部已發佈檔案；請依交易紀錄確認。" :
-            "自動回復未完成：\(errors.joined(separator: "; "))。請保留備份並人工檢查。"
+        return errors.isEmpty ? ("已回復全部已發佈檔案；請依交易紀錄確認。", true) :
+            ("自動回復未完成：\(errors.joined(separator: "; "))。請保留備份並人工檢查。", false)
     }
 
     private static func verifyPublished(_ candidate: FileIdentity, at path: URL) throws {

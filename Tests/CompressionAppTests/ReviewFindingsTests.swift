@@ -7,6 +7,29 @@ import Testing
 @testable import PhotoTimezoneApp
 @testable import TimezoneCore
 
+private final class JXLCancellationProbe: @unchecked Sendable {
+    let token = CancellationToken()
+    private let lock = NSLock()
+    private var requested: TimeInterval?
+    func cancel() {
+        lock.lock(); requested = ProcessInfo.processInfo.systemUptime; lock.unlock()
+        token.cancel()
+    }
+    var requestedAt: TimeInterval? {
+        lock.lock(); defer { lock.unlock() }; return requested
+    }
+}
+
+private final class JXLCancellationCounter {
+    private let lock = NSLock()
+    private var polls = 0
+    func shouldCancel() -> Int32 {
+        lock.lock(); defer { lock.unlock() }
+        polls += 1
+        return polls >= 32 ? 1 : 0
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct ReviewFindingsTests {
@@ -107,8 +130,9 @@ struct ReviewFindingsTests {
                 rgba[index+3] = 255
             }
         }
-        let token = CancellationToken()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { token.cancel() }
+        let probe = JXLCancellationProbe()
+        let token = probe.token
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { probe.cancel() }
         var output: UnsafeMutablePointer<UInt8>?
         var size = 0
         var error = [CChar](repeating: 0, count: 512)
@@ -120,10 +144,30 @@ struct ReviewFindingsTests {
                 }, Unmanaged.passUnretained(token).toOpaque(), &output, &size, &error, error.count)
         }
         defer { pt_jxl_free(output) }
-        let elapsed = ProcessInfo.processInfo.systemUptime - started
-        print("REVIEW JXL cancellation: requested at 0.15s, returned at \(elapsed)s, status=\(status)")
+        let finished = ProcessInfo.processInfo.systemUptime
+        let requested = try #require(probe.requestedAt)
+        let latency = finished - requested
+        print("REVIEW JXL cancellation: signal_at=\(requested - started)s, returned_at=\(finished - started)s, latency=\(latency)s, status=\(status)")
         #expect(status == 2)
-        #expect(elapsed < 2.0, "An in-flight cancellation should be checked while libjxl consumes chunks")
+        #expect(output == nil && size == 0)
+        #expect(latency < 2.0, "Measure response from the actual cancellation signal, not a queued timer's planned deadline")
+    }
+
+    @Test nonisolated func cancellationIsPolledWithinPixelRowsAndNeverReturnsAnOutput() {
+        let pixels = Data(repeating: 127, count: 512 * 512 * 4)
+        let counter = JXLCancellationCounter()
+        var output: UnsafeMutablePointer<UInt8>?
+        var size = 0
+        var error = [CChar](repeating: 0, count: 512)
+        let status = pixels.withUnsafeBytes { rgba in
+            pt_jxl_encode_rgba(rgba.bindMemory(to: UInt8.self).baseAddress, rgba.count,
+                512, 512, 86, 3, 8, nil, 0, { context in
+                    Unmanaged<JXLCancellationCounter>.fromOpaque(context!).takeUnretainedValue().shouldCancel()
+                }, Unmanaged.passUnretained(counter).toOpaque(), &output, &size, &error, error.count)
+        }
+        defer { pt_jxl_free(output) }
+        #expect(status == 2)
+        #expect(output == nil && size == 0)
     }
     @Test func pngEffortAndSavingsUseActualValues() {
         #expect(CompressionModel.pngEffort(82) == 4)

@@ -12,6 +12,7 @@ struct CompressionEngineResult {
     let height: Int
     let metadataStatus: String
     let frames: Int
+    var outputIdentity: FileIdentity? = nil
 }
 
 @MainActor
@@ -32,7 +33,8 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     override init() {
         workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoTimezoneCompression-\(UUID().uuidString)", isDirectory: true)
         super.init()
-        do { try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: false) }
+        do { try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: false,
+                                                     attributes: [.posixPermissions: 0o700]) }
         catch { self.error = error.localizedDescription }
     }
 
@@ -124,16 +126,25 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
         defer { cancellations.removeValue(forKey: id); if releaseRequested { releaseRuntime() } else { scheduleIdleRelease() } }
         do {
             try Task.checkCancellation()
-            let sourceBytes = try await Task.detached(priority: .userInitiated) {
+            let sourceIdentity = try await Task.detached(priority: .userInitiated) {
                 let pinned = try FileIdentity.read(source)
                 guard pinned.size <= 256 * 1024 * 1024 else { throw self.failure("來源檔案超過 256 MiB。") }
+                if !preview { try CompressionPhotoReader.requireEmbeddedMetadataOnly(source) }
                 try FileManager.default.copyItem(at: source, to: stagedSource)
+                _ = try FileIdentity.read(stagedSource)
+                guard FileManager.default.contentsEqual(atPath: source.path, andPath: stagedSource.path) else {
+                    throw self.failure("來源暫存副本的位元組核對失敗；已停止輸出。")
+                }
                 try pinned.verify(source)
-                return pinned.size
+                return pinned
             }.value
+            let sourceBytes = sourceIdentity.size
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
-            let depth = await Task.detached { CompressionImages.sourceDepth(stagedSource) }.value
+            let depth = try await Task.detached {
+                if preview { return CompressionImages.sourceDepth(stagedSource) }
+                return try CompressionValidation.sourceDepth(stagedSource, format: format, quality: quality)
+            }.value
             let developmentTool = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
                 .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/vendor-exiftool/exiftool")
             let tool = (try? EngineResources.exiftoolURL()) ?? developmentTool
@@ -200,15 +211,15 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                             CompressionJXL.profileMatches(file, expected: expected)
                         } : nil, preservePhotoEXIF: format == .jpeg || format == .heif)
                 }.value
-                if format == .heif {
-                    try await Task.detached(priority: .userInitiated) {
-                        guard let decoded = CGImageSourceCreateWithURL(output as CFURL, nil),
-                              let image = CGImageSourceCreateImageAtIndex(decoded, 0, nil),
-                              image.width == width, image.height == height else {
-                            throw PhotoError("HEIF 中繼資料寫入後無法正確解碼，未接受此輸出。")
-                        }
-                    }.value
-                }
+                try await Task.detached(priority: .userInitiated) {
+                    try CompressionValidation.verifyOutput(output, width: width, height: height)
+                    if format == .png || (format == .jxl && quality == 100) {
+                        try CompressionValidation.verifyLosslessOutput(source: stagedSource, output: output)
+                    }
+                    try FileExport.preserveConvertedImageAttributes(from: source, to: output)
+                    try sourceIdentity.verify(source)
+                    try CompressionPhotoReader.requireEmbeddedMetadataOnly(source)
+                }.value
                 if let actualQuality = result["quality"] as? Int, actualQuality != quality {
                     metadata += "；品質 \(quality) 編碼失敗，已以品質 \(actualQuality) 重試（非無損）"
                 }
@@ -223,7 +234,8 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             guard size > 0 else { throw failure("壓縮輸出為空。") }
             if Int64(size) > sourceBytes { metadata += "；輸出比來源大，可降低品質或選擇其他格式" }
             return CompressionEngineResult(url: output, bytes: Int64(size), sourceBytes: sourceBytes, width: width,
-                height: height, metadataStatus: metadata, frames: result["frames"] as? Int ?? 1)
+                height: height, metadataStatus: metadata, frames: result["frames"] as? Int ?? 1,
+                outputIdentity: try FileIdentity.read(output))
         } catch {
             try? FileManager.default.removeItem(at: folder)
             if cancellation.isCancelled || Task.isCancelled { throw CancellationError() }

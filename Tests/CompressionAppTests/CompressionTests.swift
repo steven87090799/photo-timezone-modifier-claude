@@ -12,14 +12,14 @@ struct CompressionTests {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent(".build/vendor-exiftool/exiftool")
     }
-    private func fixture(in folder: URL, type: String = "public.jpeg", name: String = "source.jpg", orientation: Int = 1) throws -> URL {
+    private func fixture(in folder: URL, type: String = "public.jpeg", name: String = "source.jpg", orientation: Int = 1, sRGB: Bool = false) throws -> URL {
         let width = 128, height = 96
         var pixels = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height { for x in 0..<width {
             let i = (y * width + x) * 4
             pixels[i] = UInt8(x * 2); pixels[i+1] = UInt8(y * 2); pixels[i+2] = UInt8((x+y) % 256)
         }}
-        let space = CGColorSpace(name: CGColorSpace.displayP3)!
+        let space = CGColorSpace(name: sRGB ? CGColorSpace.sRGB : CGColorSpace.displayP3)!
         let provider = CGDataProvider(data: Data(pixels) as CFData)!
         let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
             bytesPerRow: width * 4, space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
@@ -36,6 +36,9 @@ struct CompressionTests {
         let result = try tool.execute(["-overwrite_original", "-DateTimeOriginal=2026:01:02 03:04:05", "-OffsetTimeOriginal=+08:00",
             "-GPSLatitude=25.033", "-GPSLatitudeRef=N", "-GPSLongitude=121.5654", "-GPSLongitudeRef=E", "-XMP<=\(xmp.path)", file.path])
         #expect(result.status == 0)
+        // This packet is only a fixture-construction input. A real matching
+        // sidecar has separate metadata and correctly blocks archival export.
+        try FileManager.default.removeItem(at: xmp)
         return file
     }
 
@@ -116,6 +119,13 @@ struct CompressionTests {
         let before = try tool.snapshot(source, strictOffsets: false, forCompression: true)
         for format in CompressionFormat.allCases {
             print("Testing compression format: \(format.rawValue)")
+            if format == .avif {
+                do {
+                    _ = try await host.perform(source: source, format: format, quality: 82, preview: false)
+                    Issue.record("AVIF must reject replacing the source Display P3 ICC profile with sRGB")
+                } catch { #expect(error.localizedDescription.contains("ICC")) }
+                continue
+            }
             let result = try await host.perform(source: source, format: format, quality: 82, preview: false)
             let after = try tool.snapshot(result.url, strictOffsets: false, forCompression: true)
             #expect(after.metadata.dateTimeOriginal == before.metadata.dateTimeOriginal)
@@ -163,7 +173,12 @@ struct CompressionTests {
                                                 preview: false, cancellation: CancellationToken())
         #expect(encoded.originalProfile)
         #expect(!sourceICC.isEmpty && CompressionJXL.profileMatches(output, expected: sourceICC),
-                "Native JXL codestream must retain the source profile's color behavior")
+                "Native JXL codestream must retain every source ICC byte")
+        var differentCreator = sourceICC
+        #expect(differentCreator.count >= 84)
+        differentCreator.replaceSubrange(80..<84, with: Data("ARCH".utf8))
+        #expect(!CompressionJXL.profileMatches(output, expected: differentCreator),
+                "A profile with identical rendering but different non-rendering metadata must not match")
         _ = try CompressionMetadataTransfer.preserve(source: source, output: output,
             width: encoded.width, height: encoded.height,
             profile: CompressionImages.colorSpace(source, preserveOriginal: true).copyICCData() as Data?,
@@ -214,7 +229,16 @@ struct CompressionTests {
         let host = CompressionHost(); defer { host.shutdown() }
         try await ready(host)
         for (type, name) in [("public.png", "source.png"), ("public.heic", "source.heic"), ("public.tiff", "source.tiff")] {
-            let file = try fixture(in: folder, type: type, name: name)
+            if type == "public.png" {
+                let extended = try fixture(in: folder, type: type, name: "extended-color.png")
+                let original = try Data(contentsOf: extended)
+                do {
+                    _ = try await host.perform(source: extended, format: .jpeg, quality: 82, preview: false)
+                    Issue.record("PNG cICP must not silently disappear in JPEG")
+                } catch { #expect(error.localizedDescription.contains("cICP")) }
+                #expect(try Data(contentsOf: extended) == original)
+            }
+            let file = try fixture(in: folder, type: type, name: name, sRGB: type == "public.png")
             let result = try await host.perform(source: file, format: .jpeg, quality: 82, preview: false)
             #expect(result.bytes > 0)
             if type != "public.tiff" { #expect(throws: PhotoError.self) { _ = try ExifTool(url: toolURL()).snapshot(file) } }
@@ -292,6 +316,49 @@ struct CompressionTests {
         model.setActive(false)
     }
 
+    @Test func cachedFullPreviewRechecksOutputAndNewSidecarsBeforeBatchReuse() async throws {
+        for addSidecar in [true, false] {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("PreviewRevalidation-\(UUID())")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let source = try fixture(in: folder)
+            let sourceBytes = try Data(contentsOf: source)
+            let suite = "PreviewRevalidation-\(UUID())"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let model = CompressionModel(defaults: defaults)
+            defer { model.host.shutdown() }
+            model.setActive(true)
+            model.addInputs([source])
+            for _ in 0..<600 where model.items.isEmpty || model.previewLoading || model.estimate == nil {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            #expect(model.previewIsActual)
+            let folders = try FileManager.default.contentsOfDirectory(at: model.host.workDirectory, includingPropertiesForKeys: nil)
+            let previousOutput = try #require(folders.first).appendingPathComponent("output.jpg")
+            if addSidecar {
+                try Data("new external edits".utf8).write(to: folder.appendingPathComponent("source.xmp"))
+            } else {
+                try Data("replaced cached result".utf8).write(to: previousOutput)
+            }
+            model.start()
+            for _ in 0..<600 where model.isRunning { try await Task.sleep(nanoseconds: 10_000_000) }
+            if addSidecar {
+                #expect(model.items.first?.state == .failed)
+                #expect(model.items.first?.result == nil)
+                #expect(model.items.first?.error?.contains("伴隨檔") == true)
+            } else {
+                let result = try #require(model.items.first?.result)
+                #expect(model.items.first?.state == .success)
+                #expect(result.url != previousOutput)
+                try result.outputIdentity?.verify(result.url)
+            }
+            #expect(try Data(contentsOf: source) == sourceBytes)
+            model.setActive(false)
+            model.clear()
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_COMPRESSION_JPEG"] != nil))
     func realJPEGKeepsON1AndSource() async throws {
         let source = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_COMPRESSION_JPEG"]))
@@ -358,17 +425,24 @@ struct CompressionTests {
                 continue
             }
             let started = Date()
+            if [.webp, .avif, .heif, .jxl].contains(format) {
+                do {
+                    _ = try await host.perform(source: timezoneGPSJPEG, format: format, quality: 82, preview: false)
+                    Issue.record("\(format) must reject an archival conversion that cannot retain IPTC-IIM or ICC")
+                } catch {
+                    #expect(error.localizedDescription.contains("IPTC") || error.localizedDescription.contains("ICC"), "\(format): \(error)")
+                }
+                formats.append(["format": format.rawValue, "rejected": true,
+                                "metadataStatus": "此格式無法完整保留來源 IPTC-IIM／ICC，已拒絕輸出"])
+                continue
+            }
             let result = try await host.perform(source: timezoneGPSJPEG, format: format, quality: 82, preview: false)
             let after = try tool.snapshot(result.url, strictOffsets: false, forCompression: true)
             #expect(after.metadata.dateTimeOriginal == before.metadata.dateTimeOriginal, "\(format): capture date")
             #expect(after.metadata.offsetOriginal == before.metadata.offsetOriginal, "\(format): timezone offset")
             #expect(after.metadata.gpsLatitude == before.metadata.gpsLatitude, "\(format): GPS latitude")
             #expect(after.metadata.gpsLongitude == before.metadata.gpsLongitude, "\(format): GPS longitude")
-            if [.webp, .avif, .heif, .jxl].contains(format) {
-                #expect(result.metadataStatus.contains("IPTC-IIM"), "\(format): missing IPTC must be disclosed")
-            } else {
-                #expect(!result.metadataStatus.contains("未保留"), "\(format): \(result.metadataStatus)")
-            }
+            #expect(!result.metadataStatus.contains("未保留"), "\(format): \(result.metadataStatus)")
             for (key, value) in before.embeddedTags where key.hasPrefix("XMP") && !key.hasSuffix(":XMPToolkit") {
                 #expect(after.embeddedTags.contains {
                     MetadataVerifier.canonicalCopyKey($0.key) == MetadataVerifier.canonicalCopyKey(key) && $0.value == value

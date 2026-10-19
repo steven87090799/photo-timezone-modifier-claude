@@ -7,6 +7,15 @@ public final class CompressionPhotoReader {
     public init(exiftoolURL: URL? = nil) throws {
         tool = ExifTool(url: try exiftoolURL ?? EngineResources.exiftoolURL(), persistent: true)
     }
+
+    /// Compression cannot reconstruct proprietary editing sidecars or infer
+    /// whether embedded metadata is newer. Refuse to silently omit the bundle.
+    public static func requireEmbeddedMetadataOnly(_ source: URL) throws {
+        let sidecars = try SidecarSupport.find(beside: source)
+        guard sidecars.isEmpty else {
+            throw PhotoError("來源旁有外部中繼資料或修圖檔（\(sidecars.map(\.lastPathComponent).joined(separator: "、"))）。為避免遺失，請先由原修圖軟體匯出已嵌入中繼資料的圖片，再進行壓縮；來源與伴隨檔保持原狀。")
+        }
+    }
     public func read(_ source: URL) throws -> PhotoMetadata {
         let identity = try FileIdentity.read(source)
         let snapshot = try tool.snapshot(source, strictOffsets: false, forCompression: true)

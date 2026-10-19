@@ -57,6 +57,27 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         try tool.validateVersion()
     }
 
+    @Test func testTimezoneUpgradesOldExifSchemaWithoutDowngradingNewerVersions() async throws {
+        for version in ["0220", "0231", "0300"] {
+            let photo = try makeSeededPhoto("schema-\(version).jpg")
+            let seeded = try tool.execute(["-overwrite_original", "-ExifIFD:ExifVersion=\(version)", photo.path])
+            expectEqual(seeded.status, 0)
+            let original = try Data(contentsOf: photo)
+            let dates = try tool.snapshot(photo).metadata.dateTags
+            _ = try assertJob(await run([photo], operation: .write(
+                offset: UTCOffset(minutes: 345), mode: .replaceAll,
+                options: WriteOptions(sonyCompatibility: true)
+            )), succeeded: 1)
+            let updated = try tool.snapshot(photo)
+            let expectedVersion = version == "0220" ? "0231" : version
+            expectEqual(updated.embeddedTags["ExifIFD:ExifVersion"], "\"\(expectedVersion)\"")
+            expectEqual(updated.metadata.dateTags, dates)
+            assertOffsets(updated.metadata, original: "+05:45", digitized: "+05:45", time: "+05:45")
+            _ = try assertJob(await run([photo], operation: .restore), succeeded: 1)
+            expectEqual(try Data(contentsOf: photo), original)
+        }
+    }
+
     @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW_FIXTURE"] != nil))
     func testRealSonyA7IVARWTimezoneGPSBackupAndRestore() async throws {
         guard let path = ProcessInfo.processInfo.environment["PHOTO_TIMEZONE_REAL_ARW_FIXTURE"] else { return }
@@ -758,6 +779,10 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             for name in ["OffsetTimeOriginal", "OffsetTimeDigitized", "OffsetTime"] {
                 expected["ExifIFD:\(name)"] = changed["ExifIFD:\(name)"]
             }
+            if expected["ExifIFD:ExifVersion"] == nil {
+                // A newly declared OffsetTime requires at least EXIF 2.31.
+                expected["ExifIFD:ExifVersion"] = "\"0231\""
+            }
             if index == 1 { expected["IFD0:StripOffsets"] = changed["IFD0:StripOffsets"] }
             expectEqual(changed, expected)
             expectTrue(items[index].detail.contains(copies[index].path))
@@ -1450,6 +1475,32 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectTrue(rows[0].publicationUnconfirmed)
         expectEqual(try Data(contentsOf: photo), publishedBytes)
         expectTrue(FileManager.default.fileExists(atPath: backup.path))
+    }
+
+    @Test func testPendingSharedSidecarBlocksOtherPhotoAndMarksInspection() async throws {
+        let first = try makeSeededPhoto("shared-recovery.jpg")
+        let second = try makeSeededPhoto("shared-recovery.tiff", format: .tiff)
+        let sidecar = try makeFile("shared-recovery.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:DateTimeOriginal="2021-04-05T06:07:08+09:00"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let store = try TransactionStore(directory: logDirectory.appendingPathComponent("Transactions"))
+        let identity = try FileIdentity.read(first)
+        let manifest = TransactionManifest(version: 4, id: UUID(), source: first, target: first,
+            candidate: SafeFileTransaction.temporaryPhoto(beside: first), backup: nil,
+            sourceIdentity: identity, targetIdentityBefore: identity, candidateIdentity: nil,
+            originalDates: [:], oldOffsets: [:], newOffsets: [:], sidecarTargets: [sidecar],
+            publishedSidecars: [sidecar], phase: .publicationUnconfirmed, detail: "Incomplete photo/XMP publication")
+        try store.save(manifest)
+        let secondBytes = try Data(contentsOf: second)
+        let sidecarBytes = try Data(contentsOf: sidecar)
+        let inspected = try assertJob(await run([second], operation: .inspect), succeeded: 1)
+        expectTrue(inspected[0].publicationUnconfirmed)
+        let rows = try assertJob(await run([second], operation: .write(
+            offset: UTCOffset(minutes: 480), mode: .replaceAll)), failed: 1)
+        expectTrue(rows[0].publicationUnconfirmed)
+        expectEqual(try Data(contentsOf: second), secondBytes)
+        expectEqual(try Data(contentsOf: sidecar), sidecarBytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: second).path))
     }
 
     @Test func testHardlinksAreDeduplicatedAndOriginalReplacementRejected() async throws {

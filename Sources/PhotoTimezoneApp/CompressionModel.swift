@@ -24,7 +24,7 @@ enum CompressionFormat: String, CaseIterable, Identifiable {
         case .jpeg: return "一般 .jpg；原生 Jpegli 漸進式壓縮，macOS／Windows 均可開啟。品質 100 仍為有損，透明區域轉白底。"
         case .png: return "PNG 無損編碼與透明圖片；8 位元滑桿調整壓縮努力度，16 位元來源使用 macOS 原生編碼保留精度。"
         case .webp: return "網站圖片；保留透明通道。"
-        case .avif: return "較小的照片檔案；編碼較慢，像素使用 sRGB。"
+        case .avif: return "較小的照片檔案；編碼較慢，像素使用 sRGB。來源有 ICC 而無法原樣保留時會停止輸出。"
         case .heif: return "macOS 原生 HEVC 編碼；適合 Apple 裝置。"
         case .jxl: return "原生 libjxl 編碼；品質 100 保留支援的 8／16 位元整數 RGB 像素。無法保證無損的來源會停止輸出。高解析照片會自動降低並行數。"
         }
@@ -84,7 +84,7 @@ struct CompressionItem: Identifiable {
             if let altitude = metadata.gpsAltitude { parts.append("高度 \(altitude) m\(metadata.gpsAltitudeRef == "1" ? "（海平面以下）" : "")") }
         } else if metadata.hasEmbeddedEXIFGPS { parts.append("部分 EXIF GPS") }
         if metadata.embeddedXMPGPSDetected { parts.append("內嵌 XMP GPS") }
-        if metadata.sidecarGPSDetected { parts.append("旁邊 XMP 有 GPS（未嵌入輸出）") }
+        if metadata.sidecarGPSDetected { parts.append("旁邊 XMP 有 GPS，需先由原軟體整合後匯出") }
         if metadata.gpsSafetyUncertain { parts.append("XMP GPS 無法可靠確認") }
         return parts.isEmpty ? "未偵測到 GPS" : parts.joined(separator: " · ")
     }
@@ -102,12 +102,21 @@ final class CompressionModel: ObservableObject {
     @Published var format: CompressionFormat { didSet {
         let defaults = preferences
         defaults.set(quality, forKey: "nativeCompressionQuality." + oldValue.fileExtension)
-        quality = defaults.object(forKey: "nativeCompressionQuality." + format.fileExtension) as? Double ?? format.recommendedQuality
+        quality = Self.validQuality(defaults.object(forKey: "nativeCompressionQuality." + format.fileExtension) as? Double,
+                                    fallback: format.recommendedQuality)
         defaults.set(format.rawValue, forKey: "nativeCompressionFormat")
         if isActive { prepareSelectedFormat() }
         updatePreview()
     } }
-    @Published var quality: Double { didSet { preferences.set(quality, forKey: "nativeCompressionQuality"); preferences.set(quality, forKey: "nativeCompressionQuality." + format.fileExtension); updatePreview() } }
+    @Published var quality: Double { didSet {
+        let normalized = Self.validQuality(quality, fallback: format.recommendedQuality)
+        // Published invokes this observer again when assigning the property.
+        // Only assign a changed value so normalization cannot recurse forever.
+        if quality != normalized { quality = normalized; return }
+        preferences.set(quality, forKey: "nativeCompressionQuality")
+        preferences.set(quality, forKey: "nativeCompressionQuality." + format.fileExtension)
+        updatePreview()
+    } }
     @Published var parallelism: Int { didSet { preferences.set(parallelism, forKey: "nativeCompressionParallelism") } }
     @Published var recursive = false
     @Published var isRunning = false
@@ -160,8 +169,9 @@ final class CompressionModel: ObservableObject {
         let initialQuality = initialFormat == .jpeg ? Self.qualityForCurrentJPEGEncoder(
             savedQuality: savedQuality,
             encoderVersion: defaults.string(forKey: "nativeCompressionJPEGEncoder")
-        ) : min(100, max(1, savedQuality ?? initialFormat.recommendedQuality))
-        let chosenQuality = defaults.object(forKey: "nativeCompressionQuality." + initialFormat.fileExtension) as? Double ?? initialQuality
+        ) : Self.validQuality(savedQuality, fallback: initialFormat.recommendedQuality)
+        let chosenQuality = Self.validQuality(defaults.object(forKey: "nativeCompressionQuality." + initialFormat.fileExtension) as? Double,
+                                              fallback: initialQuality)
         quality = chosenQuality
         defaults.set(chosenQuality, forKey: "nativeCompressionQuality")
         defaults.set(chosenQuality, forKey: "nativeCompressionQuality." + initialFormat.fileExtension)
@@ -181,6 +191,11 @@ final class CompressionModel: ObservableObject {
             return 86
         }
         return clamped
+    }
+
+    static func validQuality(_ saved: Double?, fallback: Double) -> Double {
+        guard let saved, saved.isFinite else { return fallback }
+        return min(100, max(1, saved))
     }
 
     func setActive(_ active: Bool) {
@@ -526,7 +541,11 @@ final class CompressionModel: ObservableObject {
         guard let previewCache, previewCache.source.path == item.source.path,
               previewCache.format == format, previewCache.quality == quality,
               FileManager.default.fileExists(atPath: previewCache.result.url.path) else { return nil }
-        do { try previewCache.identity.verify(item.source) } catch { return nil }
+        do {
+            try previewCache.identity.verify(item.source)
+            try previewCache.result.outputIdentity?.verify(previewCache.result.url)
+            try CompressionPhotoReader.requireEmbeddedMetadataOnly(item.source)
+        } catch { return nil }
         return previewCache
     }
 
@@ -588,7 +607,10 @@ final class CompressionModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 guard self.safeDestination(url) else { return }
-                self.export { try CompressionExports.saveFile(result.url, to: url) }
+                self.export {
+                    try result.outputIdentity?.verify(result.url)
+                    try CompressionExports.saveFile(result.url, to: url)
+                }
             }
         }
     }
@@ -596,8 +618,11 @@ final class CompressionModel: ObservableObject {
     func saveAll() {
         guard !completed.isEmpty else { return }
         if let outputDirectory {
-            let files = completed.map { ($0.result!.url, $0.outputName) }
-            export { try CompressionExports.saveAll(files, in: outputDirectory) }
+            let outputs = completed.map { ($0.result!, $0.outputName) }
+            export {
+                for (result, _) in outputs { try result.outputIdentity?.verify(result.url) }
+                try CompressionExports.saveAll(outputs.map { ($0.0.url, $0.1) }, in: outputDirectory)
+            }
         } else {
             let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
             AppFilePanels.present(panel) { [weak self] response in
@@ -609,13 +634,16 @@ final class CompressionModel: ObservableObject {
 
     func saveZIP() {
         guard !completed.isEmpty else { return }
-        let files = completed.map { ($0.result!.url, $0.outputName) }
+        let outputs = completed.map { ($0.result!, $0.outputName) }
         let panel = NSSavePanel(); panel.nameFieldStringValue = "影像壓縮.zip"; panel.directoryURL = outputDirectory
         AppFilePanels.present(panel) { [weak self] response in
             guard response == .OK, let target = panel.url else { return }
             Task { @MainActor in
                 guard let self, self.safeDestination(target) else { return }
-                self.export { try CompressionExports.zip(files, to: target) }
+                self.export {
+                    for (result, _) in outputs { try result.outputIdentity?.verify(result.url) }
+                    try CompressionExports.zip(outputs.map { ($0.0.url, $0.1) }, to: target)
+                }
             }
         }
     }
@@ -653,18 +681,19 @@ final class CompressionModel: ObservableObject {
 
 enum CompressionExports {
     static func saveFile(_ source: URL, to target: URL) throws {
-        try Data(contentsOf: source, options: .mappedIfSafe).write(to: target, options: .atomic)
+        try FileExport.copyExclusive(source, to: target)
     }
     static func saveAll(_ files: [(URL, String)], in folder: URL) throws {
         var names = Set<String>()
-        for (_, name) in files {
+        for (source, name) in files {
+            _ = try FileIdentity.read(source)
             guard name == URL(fileURLWithPath: name).lastPathComponent, name != ".", name != ".." else { throw PhotoError("輸出檔名無效：\(name)") }
             let key = name.precomposedStringWithCanonicalMapping.lowercased()
             guard names.insert(key).inserted else { throw PhotoError("有重複檔名：\(name)。為保留原檔名，請分批輸出至不同資料夾。") }
             guard !FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path) else { throw PhotoError("輸出位置已有同名檔案：\(name)。請選擇空資料夾；不會自動改名或覆蓋。") }
         }
         for (source, name) in files {
-            try FileManager.default.copyItem(at: source, to: folder.appendingPathComponent(name))
+            try saveFile(source, to: folder.appendingPathComponent(name))
         }
     }
     static func zip(_ files: [(URL, String)], to target: URL) throws {
@@ -676,12 +705,22 @@ enum CompressionExports {
         try saveAll(files, in: images)
         let archive = staging.appendingPathComponent("output.zip")
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-c", "-k", "--norsrc", images.path, archive.path]
+        process.arguments = ["-c", "-k", "--rsrc", "--extattr", "--sequesterRsrc", images.path, archive.path]
+        var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "DITTONORSRC")
+        process.environment = environment
         process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
         try ChildProcessRegistry.shared.launch(process)
         defer { ChildProcessRegistry.shared.finished(process) }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { throw NSError(domain: "Compression", code: 1, userInfo: [NSLocalizedDescriptionKey: "ZIP 打包失敗。"]) }
+        let verify = Process(); verify.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        verify.arguments = ["-tq", archive.path]
+        verify.standardOutput = FileHandle.nullDevice; verify.standardError = FileHandle.nullDevice
+        try ChildProcessRegistry.shared.launch(verify)
+        defer { ChildProcessRegistry.shared.finished(verify) }
+        verify.waitUntilExit()
+        guard verify.terminationStatus == 0 else { throw PhotoError("ZIP 完整性驗證失敗；未建立輸出。") }
         try saveFile(archive, to: target)
     }
 }

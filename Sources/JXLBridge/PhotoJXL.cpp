@@ -7,6 +7,7 @@
 #include <lcms2.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -55,6 +56,10 @@ const void *getColorData(void *opaque, size_t x, size_t y, size_t width,
   auto *tile = new (std::nothrow) uint8_t[stride * height];
   if (tile == nullptr) return nullptr;
   for (size_t row = 0; row < height; ++row) {
+    if (frame->cancelled && frame->cancelled(frame->cancel_context)) {
+      delete[] tile;
+      return nullptr;
+    }
     const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 * bytes;
     uint8_t *destination = tile + row * stride;
     for (size_t column = 0; column < width; ++column) {
@@ -83,6 +88,10 @@ const void *getAlphaData(void *opaque, size_t, size_t x, size_t y,
   auto *tile = new (std::nothrow) uint8_t[width * height * bytes];
   if (tile == nullptr) return nullptr;
   for (size_t row = 0; row < height; ++row) {
+    if (frame->cancelled && frame->cancelled(frame->cancel_context)) {
+      delete[] tile;
+      return nullptr;
+    }
     const uint8_t *source = frame->rgba + ((y + row) * frame->width + x) * 4 * bytes + 3 * bytes;
     uint8_t *destination = tile + row * width * bytes;
     for (size_t column = 0; column < width; ++column) {
@@ -230,6 +239,7 @@ extern "C" int pt_jxl_encode_rgba(
       setError(error, error_capacity, "無法建立 JPEG XL 工作執行緒。\n");
       return 1;
     }
+    if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
     std::unique_ptr<JxlEncoder, EncoderDeleter> encoder(JxlEncoderCreate(nullptr));
     if (!encoder || JxlEncoderSetParallelRunner(encoder.get(),
                                                 JxlThreadParallelRunner,
@@ -250,9 +260,10 @@ extern "C" int pt_jxl_encode_rgba(
     info.alpha_bits = bits_per_sample;
     info.alpha_exponent_bits = 0;
     info.alpha_premultiplied = JXL_FALSE;
-    // In lossless mode libjxl requires pixel samples to remain in the declared
-    // profile; lossy mode uses its internal perceptual color space instead.
-    info.uses_original_profile = quality == 100 ? JXL_TRUE : JXL_FALSE;
+    // Keep the original profile for every quality. Allowing XYB here makes
+    // libjxl reconstruct a colorimetrically similar ICC and lose non-rendering
+    // profile metadata. RGB encoding retains the complete original ICC bytes.
+    info.uses_original_profile = JXL_TRUE;
     info.orientation = JXL_ORIENT_IDENTITY;
     if (JxlEncoderSetBasicInfo(encoder.get(), &info) != JXL_ENC_SUCCESS) {
       setError(error, error_capacity, "JPEG XL 無法設定影像尺寸。\n");
@@ -280,6 +291,7 @@ extern "C" int pt_jxl_encode_rgba(
       setError(error, error_capacity, "JPEG XL 無法設定 sRGB 色彩空間。\n");
       return 1;
     }
+    if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
 
     JxlEncoderFrameSettings *settings =
         JxlEncoderFrameSettingsCreate(encoder.get(), nullptr);
@@ -327,6 +339,7 @@ extern "C" int pt_jxl_encode_rgba(
     input.get_extra_channel_pixel_format = getAlphaFormat;
     input.get_extra_channel_data_at = getAlphaData;
     input.release_buffer = releaseTile;
+    if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
     if (JxlEncoderAddChunkedFrame(settings, JXL_TRUE, input) != JXL_ENC_SUCCESS) {
       if (is_cancelled != nullptr && is_cancelled(cancel_context)) return 2;
       setError(error, error_capacity, "JPEG XL 讀取影像區塊失敗。\n");
@@ -386,7 +399,8 @@ extern "C" int pt_jxl_profile_matches(const uint8_t *jxl, size_t jxl_size,
                                       size_t icc_profile_size,
                                       double maximum_xyz_difference) {
   if (jxl == nullptr || jxl_size == 0 || icc_profile == nullptr ||
-      icc_profile_size == 0 || maximum_xyz_difference <= 0.0) {
+      icc_profile_size == 0 || !std::isfinite(maximum_xyz_difference) ||
+      maximum_xyz_difference < 0.0) {
     return 0;
   }
   std::unique_ptr<JxlDecoder, DecoderDeleter> decoder(JxlDecoderCreate(nullptr));
@@ -414,6 +428,11 @@ extern "C" int pt_jxl_profile_matches(const uint8_t *jxl, size_t jxl_size,
               decoded_profile.data(), decoded_profile.size()) !=
           JXL_DEC_SUCCESS) {
         return 0;
+      }
+      if (maximum_xyz_difference == 0.0) {
+        return icc_profile_size == decoded_profile.size() &&
+                       std::memcmp(icc_profile, decoded_profile.data(), icc_profile_size) == 0
+                   ? 1 : 0;
       }
       return profilesAreColorimetricallyEquivalent(
                  icc_profile, icc_profile_size, decoded_profile.data(),
