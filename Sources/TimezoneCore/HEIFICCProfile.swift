@@ -1,6 +1,6 @@
 import Foundation
 
-/// Prepare the single colour property in a freshly encoded ImageIO HEIF for
+/// Prepare the single colour property in a freshly encoded HEIF or AVIF for
 /// ExifTool's ICC block writer. ExifTool can replace prof/rICC, but silently
 /// leaves a pre-existing nclx property unchanged when asked to add ICC.
 /// Only the four-byte property discriminator is changed here. ExifTool then
@@ -88,6 +88,6 @@ enum HEIFICCProfile {
         String(decoding: data[start..<(start + 4)], as: UTF8.self)
     }
     private static func invalidContainer() -> PhotoError {
-        PhotoError("HEIF 色彩容器無法安全更新；未接受此輸出。")
+        PhotoError("HEIF／AVIF 色彩容器無法安全更新；未接受此輸出。")
     }
 }

@@ -59,6 +59,7 @@ struct CompressionItem: Identifiable {
         return source.deletingPathExtension().lastPathComponent + "." + format.fileExtension
     }
     var measuredSourceBytes: Int64 { result?.sourceBytes ?? originalBytes }
+    var isRAW: Bool { CompressionRAW.accepts(source) }
     var savings: Double? { result.flatMap { CompressionModel.savings(source: measuredSourceBytes, output: $0.bytes) } }
     var basicInfo: String {
         var parts = ["\(width) × \(height)"]
@@ -118,6 +119,10 @@ final class CompressionModel: ObservableObject {
         updatePreview()
     } }
     @Published var parallelism: Int { didSet { preferences.set(parallelism, forKey: "nativeCompressionParallelism") } }
+    @Published var rawDecoder: RAWDecoder { didSet {
+        preferences.set(rawDecoder.rawValue, forKey: "nativeCompressionRAWDecoder")
+        updatePreview()
+    } }
     @Published var recursive = false
     @Published var isRunning = false
     @Published var isCancelling = false
@@ -147,6 +152,7 @@ final class CompressionModel: ObservableObject {
         let identity: FileIdentity
         let format: CompressionFormat
         let quality: Int
+        let rawDecoder: RAWDecoder
         let result: CompressionEngineResult
         let elapsed: TimeInterval
     }
@@ -164,6 +170,7 @@ final class CompressionModel: ObservableObject {
         preferences = defaults
         let initialFormat = CompressionFormat(rawValue: defaults.string(forKey: "nativeCompressionFormat") ?? "") ?? .jpeg
         format = initialFormat
+        rawDecoder = RAWDecoder(rawValue: defaults.string(forKey: "nativeCompressionRAWDecoder") ?? "") ?? .version9
         let savedQuality: Double? = defaults.object(forKey: "nativeCompressionQuality") == nil
             ? nil : defaults.double(forKey: "nativeCompressionQuality")
         let initialQuality = initialFormat == .jpeg ? Self.qualityForCurrentJPEGEncoder(
@@ -230,8 +237,14 @@ final class CompressionModel: ObservableObject {
     var selected: CompressionItem? { items.first { $0.id == selection } }
     var comparisonOutput: URL? {
         guard let item = selected else { return nil }
-        if let result = item.result, item.format == format, item.quality == Int(quality.rounded()) { return result.url }
+        if let result = item.result, item.format == format, item.quality == Int(quality.rounded()),
+           result.rawDecoder == nil || result.rawDecoder == rawDecoder { return result.url }
         return matchingPreviewCache(for: item, format: format, quality: Int(quality.rounded()))?.result.url
+    }
+    var comparisonSource: URL? {
+        guard let item = selected, let output = comparisonOutput else { return nil }
+        if item.result?.url == output { return item.result?.developedSource ?? item.source }
+        return previewCache?.result.developedSource ?? item.source
     }
     var completed: [CompressionItem] { items.filter { $0.result != nil && $0.state == .success } }
     var doneCount: Int { items.filter { [.success, .failed, .cancelled].contains($0.state) }.count }
@@ -266,7 +279,7 @@ final class CompressionModel: ObservableObject {
                 let reader = try? CompressionPhotoReader(exiftoolURL: (try? EngineResources.exiftoolURL()) ?? developmentTool)
                 func append(_ url: URL) {
                     let source = url.standardizedFileURL
-                    guard extensions.contains(source.pathExtension.lowercased()), paths.insert(source.path).inserted,
+                    guard (extensions.contains(source.pathExtension.lowercased()) || CompressionRAW.accepts(source)), paths.insert(source.path).inserted,
                           let values = try? source.resourceValues(forKeys: Set(keys + [.fileSizeKey])),
                           values.isRegularFile == true, values.isSymbolicLink != true else { return }
                     let size = Int64(values.fileSize ?? 0)
@@ -359,15 +372,15 @@ final class CompressionModel: ObservableObject {
             originalPreview = nil; compressedPreview = nil; estimate = nil
             return
         }
-        let chosenFormat = format, chosenQuality = Int(quality.rounded())
-        let key = "\(item.id)|\(chosenFormat.rawValue)|\(chosenQuality)|\(item.result?.url.path ?? "")"
+        let chosenFormat = format, chosenQuality = Int(quality.rounded()), chosenDecoder = rawDecoder
+        let key = "\(item.id)|\(chosenFormat.rawValue)|\(chosenQuality)|\(chosenDecoder.rawValue)|\(item.result?.url.path ?? "")"
         let candidate = previewCache
         previewTask = Task {
             // FileProvider attributes can be slow; validate away from the UI
             // thread before reusing a file. Batch writes still revalidate too.
             let cached = await Task.detached { () -> PreviewCache? in
                 guard let candidate, candidate.source.path == item.source.path,
-                      candidate.format == chosenFormat, candidate.quality == chosenQuality,
+                      candidate.format == chosenFormat, candidate.quality == chosenQuality, candidate.rawDecoder == chosenDecoder,
                       FileManager.default.fileExists(atPath: candidate.result.url.path) else { return nil }
                 do { try candidate.identity.verify(item.source) } catch { return nil }
                 return candidate
@@ -378,10 +391,16 @@ final class CompressionModel: ObservableObject {
             if previewCache != nil && cached == nil { discardPreviewCache() }
             previewIsActual = false
             displayedPreviewKey = nil
-            let original = await Task.detached { CompressionImages.thumbnail(item.source) }.value
+            let original = await Task.detached { item.isRAW ? nil : CompressionImages.thumbnail(item.source) }.value
             guard !Task.isCancelled else { return }
             originalPreview = original
-            if let result = item.result, item.state == .success, item.format == chosenFormat, item.quality == chosenQuality {
+            if let result = item.result, item.state == .success, item.format == chosenFormat, item.quality == chosenQuality,
+               result.rawDecoder == nil || result.rawDecoder == chosenDecoder {
+                if let developed = result.developedSource {
+                    let image = await Task.detached { CompressionImages.thumbnail(developed) }.value
+                    guard !Task.isCancelled else { return }
+                    originalPreview = image
+                }
                 let actualPreview = await Task.detached { CompressionImages.thumbnail(result.url) }.value
                 guard !Task.isCancelled else { return }
                 compressedPreview = actualPreview
@@ -393,6 +412,11 @@ final class CompressionModel: ObservableObject {
                 return
             }
             if let cached {
+                if let developed = cached.result.developedSource {
+                    let image = await Task.detached { CompressionImages.thumbnail(developed) }.value
+                    guard !Task.isCancelled else { return }
+                    originalPreview = image
+                }
                 let actualPreview = await Task.detached {
                     CompressionImages.thumbnail(cached.result.url)
                 }.value
@@ -421,18 +445,23 @@ final class CompressionModel: ObservableObject {
                 try Task.checkCancellation()
                 let identity = try await Task.detached { try FileIdentity.read(item.source) }.value
                 let started = Date()
-                let result = try await host.perform(source: item.source, format: chosenFormat, quality: chosenQuality, preview: false)
+                let result = try await host.perform(source: item.source, format: chosenFormat, quality: chosenQuality, preview: false, rawDecoder: chosenDecoder)
                 generated = result
                 try Task.checkCancellation()
                 try identity.verify(item.source)
                 guard isActive, selection == item.id, format == chosenFormat,
-                      Int(quality.rounded()) == chosenQuality else { return }
+                      Int(quality.rounded()) == chosenQuality, rawDecoder == chosenDecoder else { return }
                 let actualPreview = await Task.detached {
                     CompressionImages.thumbnail(result.url)
                 }.value
                 try Task.checkCancellation()
+                if let developed = result.developedSource {
+                    let image = await Task.detached { CompressionImages.thumbnail(developed) }.value
+                    guard !Task.isCancelled else { return }
+                    originalPreview = image
+                }
                 previewCache = PreviewCache(source: item.source, identity: identity, format: chosenFormat,
-                    quality: chosenQuality, result: result, elapsed: Date().timeIntervalSince(started))
+                    quality: chosenQuality, rawDecoder: chosenDecoder, result: result, elapsed: Date().timeIntervalSince(started))
                 retained = true
                 compressedPreview = actualPreview
                 previewIsActual = true
@@ -464,9 +493,10 @@ final class CompressionModel: ObservableObject {
         catch { notice = error.localizedDescription; return }
         preferences.set(webhookURL, forKey: "nativeCompressionWebhookURL")
         previewTask?.cancel(); host.cancelAll()
-        let chosenFormat = format, chosenQuality = Int(quality.rounded())
+        let chosenFormat = format, chosenQuality = Int(quality.rounded()), chosenDecoder = rawDecoder
         let largestPixels = items.filter { targetIDs.contains($0.id) }.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
-        let concurrency = Self.concurrencyLimit(format: chosenFormat, requested: parallelism,
+        let containsRAW = items.contains { targetIDs.contains($0.id) && $0.isRAW }
+        let concurrency = Self.concurrencyLimit(format: chosenFormat, requested: containsRAW ? 1 : parallelism,
             pixelCount: largestPixels, physicalMemory: ProcessInfo.processInfo.physicalMemory)
         let reusablePreview = selected.flatMap { targetIDs.contains($0.id) ? matchingPreviewCache(for: $0, format: chosenFormat, quality: chosenQuality) : nil }
         if previewCache != nil && reusablePreview == nil { discardPreviewCache() }
@@ -503,12 +533,12 @@ final class CompressionModel: ObservableObject {
                 var next = 0
                 for _ in 0..<min(concurrency, ids.count) {
                     let id = ids[next]; next += 1
-                    group.addTask { await self.process(id, format: chosenFormat, quality: chosenQuality, webhook: config) }
+                    group.addTask { await self.process(id, format: chosenFormat, quality: chosenQuality, rawDecoder: chosenDecoder, webhook: config) }
                 }
                 while await group.next() != nil {
                     if next < ids.count && !isCancelling {
                         let id = ids[next]; next += 1
-                        group.addTask { await self.process(id, format: chosenFormat, quality: chosenQuality, webhook: config) }
+                        group.addTask { await self.process(id, format: chosenFormat, quality: chosenQuality, rawDecoder: chosenDecoder, webhook: config) }
                     }
                 }
                 if isCancelling { for index in items.indices where targetIDs.contains(items[index].id) && items[index].state == .pending { items[index].state = .cancelled } }
@@ -539,7 +569,7 @@ final class CompressionModel: ObservableObject {
     private func matchingPreviewCache(for item: CompressionItem, format: CompressionFormat,
                                       quality: Int) -> PreviewCache? {
         guard let previewCache, previewCache.source.path == item.source.path,
-              previewCache.format == format, previewCache.quality == quality,
+              previewCache.format == format, previewCache.quality == quality, previewCache.rawDecoder == rawDecoder,
               FileManager.default.fileExists(atPath: previewCache.result.url.path) else { return nil }
         do {
             try previewCache.identity.verify(item.source)
@@ -556,12 +586,12 @@ final class CompressionModel: ObservableObject {
         Task.detached { try? FileManager.default.removeItem(at: directory) }
     }
 
-    private func process(_ id: UUID, format: CompressionFormat, quality: Int, webhook config: CompressionWebhook.Configuration?) async {
+    private func process(_ id: UUID, format: CompressionFormat, quality: Int, rawDecoder: RAWDecoder, webhook config: CompressionWebhook.Configuration?) async {
         guard let index = items.firstIndex(where: { $0.id == id }), !isCancelling else { return }
         let source = items[index].source, started = Date()
         items[index].state = .running
         do {
-            let result = try await host.perform(source: source, format: format, quality: quality, preview: false) { [weak self] pct, phase in
+            let result = try await host.perform(source: source, format: format, quality: quality, preview: false, rawDecoder: rawDecoder) { [weak self] pct, phase in
                 guard let self, let index = self.items.firstIndex(where: { $0.id == id }) else { return }
                 self.items[index].progress = pct; self.items[index].phase = Self.phaseLabel(phase)
             }

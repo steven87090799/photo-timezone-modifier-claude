@@ -7,7 +7,7 @@ struct CompressionComparison: View {
     @ObservedObject var model: CompressionModel
     @Environment(\.displayScale) private var displayScale
     @StateObject private var state = ComparisonImages()
-    private var request: String { "\(model.selected?.source.path ?? "")|\(model.comparisonOutput?.path ?? "")" }
+    private var request: String { "\(model.comparisonSource?.path ?? "")|\(model.comparisonOutput?.path ?? "")" }
     private var zoom: Binding<Double> {
         Binding(get: { log2(max(0.03125, model.comparisonScale)) },
                 set: { model.comparisonScale = pow(2, $0) })
@@ -37,7 +37,7 @@ struct CompressionComparison: View {
                             .accessibilityLabel("原始與輸出影像；拖曳照片或使用滾輪移動檢視位置")
                         divider(in: geometry.size)
                         HStack {
-                            Text("原始照片").padding(10).glassEffect()
+                            Text(model.selected?.isRAW == true ? "RAW 顯影後" : "原始照片").padding(10).glassEffect()
                             Spacer()
                             Text(model.previewIsActual ? "實際輸出" : "壓縮預覽")
                                 .padding(10).glassEffect()
@@ -65,7 +65,7 @@ struct CompressionComparison: View {
         .task(id: request) {
             state.original = nil; state.output = nil; state.loading = true
             defer { if !Task.isCancelled { state.loading = false } }
-            guard let source = model.selected?.source, let target = model.comparisonOutput else {
+            guard let source = model.comparisonSource, let target = model.comparisonOutput else {
                 state.error = "請先等待壓縮預覽或實際輸出產生。"; return
             }
             let pair = await Task.detached(priority: .userInitiated) {

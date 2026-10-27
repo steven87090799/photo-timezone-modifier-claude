@@ -64,7 +64,7 @@ public enum CompressionMetadataTransfer {
         let expectedICC = preservesPNGsRGB ? nil : originalProfile && !originalICC.isEmpty ? originalICC : profile
         let profileURL = output.deletingLastPathComponent().appendingPathComponent("output-profile.icc")
         defer { try? FileManager.default.removeItem(at: profileURL) }
-        var arguments = ["-overwrite_original", "-TagsFromFile", source.path,
+        var arguments = ["-overwrite_original", "-n", "-TagsFromFile", source.path,
             "-EXIF:all", "-MakerNotes", "-XMP", "-IPTC", "-ThumbnailImage", "-PreviewImage", "-Comment"]
         if protectedBlocks["IPTC"]?.isEmpty == true { arguments.removeAll { $0 == "-IPTC" } }
         if output.pathExtension.lowercased() == "jpg",
@@ -108,7 +108,7 @@ public enum CompressionMetadataTransfer {
         }
         if let expectedICC, !expectedICC.isEmpty, !isJXL {
             try expectedICC.write(to: profileURL, options: .atomic)
-            if output.pathExtension.lowercased() == "heic" {
+            if ["heic", "avif"].contains(output.pathExtension.lowercased()) {
                 try HEIFICCProfile.prepareForWrite(output)
             }
             arguments.append("-ICC_Profile<=\(profileURL.path)")
@@ -294,8 +294,8 @@ public enum CompressionMetadataTransfer {
                 "ThumbnailOffset", "ThumbnailLength", "Compression", "PhotometricInterpretation",
                 "BitsPerSample", "SamplesPerPixel", "RowsPerStrip", "StripOffsets", "StripByteCounts",
                 "TileOffsets", "TileByteCounts", "PlanarConfiguration", "YCbCrSubSampling", "YCbCrPositioning",
-                "FillOrder", "SampleFormat", "ExtraSamples"]
-            if !preservePhotoEXIF { layout.formUnion(["Orientation", "ExifImageWidth", "ExifImageHeight"]) }
+                "FillOrder", "SampleFormat", "ExtraSamples", "Predictor"]
+            if !preservePhotoEXIF { layout.formUnion(["Orientation", "ExifImageWidth", "ExifImageHeight", "ComponentsConfiguration"]) }
             return !layout.contains(tag)
         }
         let layout: [String: Set<String>] = [

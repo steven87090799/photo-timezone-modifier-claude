@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 enum CompressionImages {
     struct Raster {
@@ -13,9 +14,11 @@ enum CompressionImages {
     }
 
     static func thumbnail(_ url: URL, size: Int = 1200, profile: CGColorSpace? = nil) -> NSImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let isRAW = (CGImageSourceGetType(source) as String?).flatMap(UTType.init)?.conforms(to: .rawImage) == true
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: !isRAW,
+                kCGImageSourceCreateThumbnailFromImageIfAbsent: !isRAW,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: size,
                 kCGImageSourceShouldCacheImmediately: true
