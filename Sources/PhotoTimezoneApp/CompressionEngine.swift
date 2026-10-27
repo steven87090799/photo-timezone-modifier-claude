@@ -13,6 +13,8 @@ struct CompressionEngineResult {
     let metadataStatus: String
     let frames: Int
     var outputIdentity: FileIdentity? = nil
+    var developedSource: URL? = nil
+    var rawDecoder: RAWDecoder? = nil
 }
 
 @MainActor
@@ -73,12 +75,12 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
         } else if type == "error" { error = body["message"] as? String ?? "壓縮引擎無法啟動。" }
     }
 
-    func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool,
+    func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool, rawDecoder: RAWDecoder = .version9,
                  onProgress: @escaping (Double, String) -> Void = { _, _ in }) async throws -> CompressionEngineResult {
         let cancellation = CancellationToken()
         return try await withTaskCancellationHandler {
             try await perform(source: source, format: format, quality: quality, preview: preview,
-                              cancellation: cancellation, onProgress: onProgress)
+                              rawDecoder: rawDecoder, cancellation: cancellation, onProgress: onProgress)
         } onCancel: { cancellation.cancel() }
     }
 
@@ -113,6 +115,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     }
 
     private func perform(source: URL, format: CompressionFormat, quality: Int, preview: Bool,
+                         rawDecoder: RAWDecoder,
                          cancellation: CancellationToken,
                          onProgress: @escaping (Double, String) -> Void) async throws -> CompressionEngineResult {
         idleTask?.cancel(); idleTask = nil
@@ -120,7 +123,8 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
         let id = UUID().uuidString
         let folder = workDirectory.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
-        let stagedSource = folder.appendingPathComponent("source." + source.pathExtension)
+        let stagedInput = folder.appendingPathComponent("source." + source.pathExtension)
+        var stagedSource = stagedInput
         let output = folder.appendingPathComponent("output." + format.fileExtension)
         cancellations[id] = cancellation
         defer { cancellations.removeValue(forKey: id); if releaseRequested { releaseRuntime() } else { scheduleIdleRelease() } }
@@ -130,9 +134,9 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                 let pinned = try FileIdentity.read(source)
                 guard pinned.size <= 256 * 1024 * 1024 else { throw self.failure("來源檔案超過 256 MiB。") }
                 if !preview { try CompressionPhotoReader.requireEmbeddedMetadataOnly(source) }
-                try FileManager.default.copyItem(at: source, to: stagedSource)
-                _ = try FileIdentity.read(stagedSource)
-                guard FileManager.default.contentsEqual(atPath: source.path, andPath: stagedSource.path) else {
+                try FileManager.default.copyItem(at: source, to: stagedInput)
+                _ = try FileIdentity.read(stagedInput)
+                guard FileManager.default.contentsEqual(atPath: source.path, andPath: stagedInput.path) else {
                     throw self.failure("來源暫存副本的位元組核對失敗；已停止輸出。")
                 }
                 try pinned.verify(source)
@@ -141,13 +145,34 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             let sourceBytes = sourceIdentity.size
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
-            let depth = try await Task.detached {
-                if preview { return CompressionImages.sourceDepth(stagedSource) }
-                return try CompressionValidation.sourceDepth(stagedSource, format: format, quality: quality)
-            }.value
             let developmentTool = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
                 .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(".build/vendor-exiftool/exiftool")
             let tool = (try? EngineResources.exiftoolURL()) ?? developmentTool
+            let isRAW = await Task.detached { CompressionRAW.isRAW(stagedInput) }.value
+            if !isRAW && CompressionRAW.accepts(stagedInput) {
+                throw PhotoError("macOS 無法辨識這張 RAW；相機型號或 RAW 壓縮模式可能尚未支援。")
+            }
+            if isRAW {
+                onProgress(15, "\(rawDecoder.rawValue) 顯影中")
+                let developed = folder.appendingPathComponent("developed.tiff")
+                try await Task.detached(priority: .userInitiated) {
+                    let rawOrientation = try RAWMetadataTransfer.orientation(stagedInput, exiftoolURL: tool, cancellation: cancellation)
+                    let size = try CompressionRAW.develop(source: stagedInput, output: developed, decoder: rawDecoder,
+                        sixteenBit: !preview && (format == .png || (format == .jxl && quality == 100)),
+                        cancellation: cancellation, maxPixel: preview ? 900 : 0, orientation: rawOrientation)
+                    if !preview {
+                        try RAWMetadataTransfer.prepare(source: stagedInput, developed: developed,
+                            width: size.width, height: size.height, exiftoolURL: tool, cancellation: cancellation)
+                    }
+                }.value
+                stagedSource = developed
+            }
+            // All later stages read this immutable RGB source, including lossless verification.
+            let encodingSource = stagedSource
+            let depth = try await Task.detached {
+                if preview { return CompressionImages.sourceDepth(encodingSource) }
+                return try CompressionValidation.sourceDepth(encodingSource, format: format, quality: quality)
+            }.value
             let orientation: Int
             if !preview && (format == .jpeg || format == .heif) {
                 orientation = try await Task.detached { try CompressionMetadataTransfer.exifOrientation(stagedSource, exiftoolURL: tool) }.value
@@ -201,7 +226,9 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             var metadata = "預覽使用縮小影像；大小估算供參考"
             if !preview {
                 onProgress(95, "保留並驗證中繼資料")
-                let preserve = result["profileMode"] as? String == "original"
+                // RAW was explicitly developed in sRGB, including the AVIF
+                // encoder's sRGB path. Its generated ICC therefore matches.
+                let preserve = isRAW || result["profileMode"] as? String == "original"
                 let icc = CompressionImages.colorSpace(stagedSource, preserveOriginal: preserve).copyICCData() as Data?
                 metadata = try await Task.detached(priority: .userInitiated) {
                     try CompressionMetadataTransfer.preserve(source: stagedSource, output: output,
@@ -229,13 +256,21 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             }
             if highDepthPNG { metadata += "；16 位元 PNG 使用 macOS 原生無損編碼，努力度由系統決定" }
             if let frames = result["frames"] as? Int, frames > 1 { metadata += "；動畫或多頁影像僅輸出第一幀" }
-            try? FileManager.default.removeItem(at: stagedSource)
+            if isRAW {
+                let transfer = preview ? "縮小預覽，未複製中繼資料" : "標準拍攝資訊已核對；RAW 私有資料與修圖設定保留在原件"
+                metadata = "\(rawDecoder.rawValue) 顯影為 \(depth) 位元 sRGB；\(transfer)；" + metadata
+                if format == .png || (format == .jxl && quality == 100) {
+                    metadata += "；無損僅指顯影後 RGB 像素，不能取代 RAW"
+                }
+            } else { try? FileManager.default.removeItem(at: stagedSource) }
+            if isRAW { try? FileManager.default.removeItem(at: stagedInput) }
             let size = try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
             guard size > 0 else { throw failure("壓縮輸出為空。") }
             if Int64(size) > sourceBytes { metadata += "；輸出比來源大，可降低品質或選擇其他格式" }
             return CompressionEngineResult(url: output, bytes: Int64(size), sourceBytes: sourceBytes, width: width,
                 height: height, metadataStatus: metadata, frames: result["frames"] as? Int ?? 1,
-                outputIdentity: try FileIdentity.read(output))
+                outputIdentity: try FileIdentity.read(output), developedSource: isRAW ? stagedSource : nil,
+                rawDecoder: isRAW ? rawDecoder : nil)
         } catch {
             try? FileManager.default.removeItem(at: folder)
             if cancellation.isCancelled || Task.isCancelled { throw CancellationError() }

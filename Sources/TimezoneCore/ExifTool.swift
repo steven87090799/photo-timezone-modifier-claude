@@ -477,7 +477,10 @@ final class ExifTool {
             "image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence", "image/jxl", "image/gif"]
         // ExifTool may describe the same format as "Extended WEBP" after EXIF
         // is inserted. MIME is stable; timezone editing keeps its strict gate.
-        let supported = forCompression ? compressionMIMEs.contains(metadata.mimeType ?? "") : ["JPEG", "TIFF", "ARW"].contains(metadata.fileType ?? "")
+        // Reading RAW for development does not expand the timezone/GPS writer's
+        // accepted formats. Actual RAW decode support is checked by CIRAWFilter.
+        let readableRAW = RAWMetadataTransfer.extensions.contains((metadata.fileType ?? "").lowercased())
+        let supported = forCompression ? (compressionMIMEs.contains(metadata.mimeType ?? "") || readableRAW) : ["JPEG", "TIFF", "ARW"].contains(metadata.fileType ?? "")
         guard supported else {
             throw PhotoError(forCompression ? "壓縮中繼資料格式不支援：\(metadata.fileType ?? "未知")。" : "實際檔案格式不是支援的 JPEG／TIFF／ARW，已略過寫入。")
         }

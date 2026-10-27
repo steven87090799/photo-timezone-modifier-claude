@@ -67,6 +67,13 @@ struct CompressionView: View {
                     }
                     .accessibilityIdentifier("compressionFormatPicker")
                     .help(model.format.hint)
+                    Picker("RAW 顯影", selection: $model.rawDecoder) {
+                        ForEach(RAWDecoder.allCases) { decoder in Text(decoder.rawValue).tag(decoder) }
+                    }
+                    .accessibilityIdentifier("compressionRAWDecoderPicker")
+                    .help("只套用至 RAW；不支援所選版本的照片會報錯，不會自動切換。")
+                    Text("RAW 先顯影為 sRGB 再轉成所選格式；PNG 與品質 100 的 JPEG XL 使用 16 位元，其他格式使用 8 位元。保留 RAW 原件，不套用 Lightroom 修圖設定。")
+                        .font(.caption).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(model.format == .png ? "壓縮努力度" : "品質")
@@ -222,7 +229,7 @@ struct CompressionView: View {
                     Text(item.source.lastPathComponent).font(.headline).textSelection(.enabled).lineLimit(3)
                     Text("\(item.width) × \(item.height) · \(CompressionModel.bytes(item.measuredSourceBytes))").font(.caption).foregroundStyle(.secondary)
                     HStack(spacing: 10) {
-                        imagePanel(model.originalPreview, title: "原始影像")
+                        imagePanel(model.originalPreview, title: model.selected?.isRAW == true ? "\(model.rawDecoder.rawValue) 顯影" : "原始影像")
                         imagePanel(model.compressedPreview, title: model.previewIsActual ? "實際輸出" : "壓縮預覽")
                     }
                     if model.previewLoading { HStack { ProgressView().controlSize(.small); Text("產生完整壓縮預覽…").font(.caption) } }
@@ -292,7 +299,7 @@ struct CompressionView: View {
                 HStack(alignment: .top) { Text(format.rawValue).font(.callout.weight(.semibold)).frame(width: 70, alignment: .leading); Text(format.hint).font(.callout).foregroundStyle(.secondary) }
             }
             Divider()
-            Text("EXIF、XMP、IPTC、相機資料及 ICC 複製後核對；無法保存的欄位或不支援的格式會停止輸出，並列出原因。有外部 XMP／修圖伴隨檔時，請先由原軟體匯出已嵌入中繼資料的圖片。RAW、動畫、多頁、HDR／深度輔助資料及無法保存的色彩或精度不會自動轉成不完整版本。16 位元 RGB 整數來源請選 PNG 或品質 100 的 JPEG XL。")
+            Text("一般圖片的 EXIF、XMP、IPTC、相機資料及 ICC 複製後核對；無法保存時停止輸出。有外部 XMP／修圖伴隨檔時，請先由原軟體整合後匯出。RAW 使用選定的 Apple RAW 8／9 顯影，複製並核對標準拍攝資訊、時區與 GPS；RAW 私有資料及修圖設定留在原件。動畫、多頁、HDR／深度輔助資料不會自動轉成不完整版本。")
             Text("PNG 與品質 100 的 JPEG XL 會在完成後核對實際像素及透明通道；這是支援的解碼像素無損，不能還原原始檔的封裝。JPEG、WebP、AVIF、HEIF 與其他品質的 JPEG XL 是有損衍生圖；JPEG 也會把透明背景轉白。長期保存請同時保留原始照片及獨立備份。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("處理在本機完成；開啟 Webhook 後才會傳送影像。此頁不提供修改時區或 GPS 的控制。")
