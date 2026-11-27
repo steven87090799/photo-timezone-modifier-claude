@@ -6,10 +6,6 @@ let nativeJpegliLib = URL(fileURLWithPath: #filePath).deletingLastPathComponent(
     .appendingPathComponent(".build/vendor-jpegli/lib").path
 let nativeJxlPrefix = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
     .appendingPathComponent(".build/vendor-jxl").path
-let nativeHighwayPrefix = "/opt/homebrew/opt/highway"
-let nativeBrotliPrefix = "/opt/homebrew/opt/brotli"
-let nativeLCMSPrefix = "/opt/homebrew/opt/little-cms2"
-
 // Shipping and validation baseline: Apple Silicon running macOS 27 or later.
 let package = Package(
     name: "PhotoTimezone",
@@ -24,16 +20,16 @@ let package = Package(
             .unsafeFlags(["-L", nativeJpegliLib, "-lPhotoJpegli", "-ljpegli-static", "-lhwy"]),
             .linkedLibrary("c++")
         ]),
-        .target(name: "JXLBridge", path: "Sources/JXLBridge", publicHeadersPath: "include",
-            cxxSettings: [.unsafeFlags(["-I", "\(nativeJxlPrefix)/include",
-                                       "-I", "\(nativeLCMSPrefix)/include"])],
+        .target(name: "JXLBridge", publicHeadersPath: "include",
+            cxxSettings: [.unsafeFlags(["-I", "\(nativeJxlPrefix)/include"])],
             linkerSettings: [.unsafeFlags([
-                "-L", "\(nativeJxlPrefix)/lib", "-L", "\(nativeHighwayPrefix)/lib",
-                "-L", "\(nativeBrotliPrefix)/lib", "-L", "\(nativeLCMSPrefix)/lib",
-                "-ljxl_threads", "-ljxl", "-lhwy", "-lbrotlienc", "-lbrotlidec",
-                "-lbrotlicommon", "-ljxl_cms", "-llcms2"
+                "-L", "\(nativeJxlPrefix)/lib", "-ljxl_threads", "-ljxl", "-ljxl_cms", "\(nativeJxlPrefix)/lib/liblcms2.a",
+                "-Xlinker", "-rpath", "-Xlinker", "\(nativeJxlPrefix)/lib"
             ]), .linkedLibrary("c++")]),
-        .executableTarget(name: "PhotoTimezoneApp", dependencies: ["TimezoneCore", "JpegliBridge", "JXLBridge"]),
+        .target(name: "WebPBridge", publicHeadersPath: "include",
+            cSettings: [.unsafeFlags(["-I", "\(nativeJxlPrefix)/include"])],
+            linkerSettings: [.unsafeFlags(["\(nativeJxlPrefix)/lib/libwebp.a", "\(nativeJxlPrefix)/lib/libsharpyuv.a"])]),
+        .executableTarget(name: "PhotoTimezoneApp", dependencies: ["TimezoneCore", "JpegliBridge", "JXLBridge", "WebPBridge"]),
         .testTarget(name: "TimezoneCoreTests", dependencies: ["TimezoneCore"]),
         .testTarget(name: "CompressionAppTests", dependencies: ["PhotoTimezoneApp", "TimezoneCore"])
     ],

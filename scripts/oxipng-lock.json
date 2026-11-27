@@ -1,0 +1,26 @@
+{
+  "name": "@jsquash/oxipng",
+  "version": "2.3.0",
+  "source": "https://registry.npmjs.org/@jsquash/oxipng/-/oxipng-2.3.0.tgz",
+  "sha512": "690f30884a7aced95331773e44cb7f086f1cad4de61070d4fa1f89624222e9cb4c86587cf8bb63e57c1015f06ecb3298ae9f0dc5a156f340e9f36e1baa3afecc",
+  "licenses": [
+    "Apache-2.0",
+    "MIT"
+  ],
+  "artifacts": {
+    "OXIPNG_LICENSE": "8c3690b09c168f196446cf5904332023bbc15eb92b6a7cee470ac829e6a65d20",
+    "OXIPNG_MIT_LICENSE": "1bc9688d785fa50345f803824ddde000bdabedda9d1803dc41a1fedd81f784fc",
+    "oxipng.js": "a57a4d517806d8aa8747062658cd80d0b35c63fcb032fb9555b0563db879e272",
+    "oxipng_bindings.js": "ac29a688c0311c09a809e33d06c9702e84c9242169f81a04589d69a8ad6a782b",
+    "squoosh_oxipng_bg.wasm": "5ea3e53c0b4fc1b4e8d1511d35b89329d9376bec75a9c4d3c054774487e5f9a3"
+  },
+  "versionsObservedInWasm": {
+    "oxipng": "9.1.1",
+    "libdeflater": "1.20.0",
+    "bitvec": "1.0.1",
+    "dlmalloc": "0.2.6",
+    "hashbrown": "0.14.5",
+    "indexmap": "2.2.6",
+    "wyz": "0.5.1"
+  }
+}

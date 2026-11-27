@@ -282,7 +282,7 @@ public struct PhotoError: LocalizedError, Sendable {
 }
 
 public enum EngineResources {
-    public static let version = "13.59"
+    public static let version = "13.64"
     public static func exiftoolURL(in bundle: Bundle = .main) throws -> URL {
         guard let resources = bundle.resourceURL else { throw PhotoError("找不到 App 資源。") }
         let url = resources.appendingPathComponent("ExifTool/exiftool")

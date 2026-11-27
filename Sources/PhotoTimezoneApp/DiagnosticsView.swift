@@ -12,6 +12,7 @@ final class DiagnosticsStorageState: ObservableObject {
     @Published var storageBusy = false
     @Published var confirmAdminCleanup = false
     @Published var confirmCandidateCleanup = false
+    @Published var candidatesForReview: [StorageCandidate] = []
 }
 
 struct DiagnosticsView: View {
@@ -120,10 +121,10 @@ struct DiagnosticsView: View {
                         Button("重新計算") { refreshStorage() }.disabled(state.storageBusy || model.isRunning)
                         Button("清除 Logs／可移除交易記錄") { state.confirmAdminCleanup = true }
                             .disabled(state.storageBusy || model.isRunning)
-                        Button("清理孤立暫存候選") { state.confirmCandidateCleanup = true }
+                        Button("檢查可清理暫存檔…") { reviewOrphanCandidates() }
                             .disabled(state.storageBusy || model.isRunning || model.items.isEmpty)
                     }
-                    Text("照片 _original、before-write、before-restore 備份只統計，不會由這裡自動刪除。交易來源證明也會保留。孤立候選清理只處理目前相片資料夾中、未被 active transaction 引用的 PhotoTimezone UUID 暫存檔。")
+                    Text("保留照片備份與交易來源證明。可清理的暫存檔會先列出，並以既有交易紀錄核對檔案身分。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
 
@@ -149,12 +150,25 @@ struct DiagnosticsView: View {
         } message: {
             Text("不會刪除照片備份，也不會刪除用來證明 _original 來源的必要交易記錄。")
         }
-        .confirmationDialog("清理未被交易引用的暫存候選？",
-                            isPresented: $state.confirmCandidateCleanup, titleVisibility: .visible) {
-            Button("清理暫存候選", role: .destructive) { cleanOrphanCandidates() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("只會處理目前相片所在資料夾中的 PhotoTimezone UUID 暫存候選；照片與備份不會刪除。")
+        .sheet(isPresented: $state.confirmCandidateCleanup) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("可清理的暫存檔").font(.headline)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(state.candidatesForReview) { candidate in
+                            Text(candidate.url.path).textSelection(.enabled)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Spacer()
+                    Button("取消") { state.confirmCandidateCleanup = false }.keyboardShortcut(.cancelAction)
+                    Button("清理 \(state.candidatesForReview.count) 個暫存檔", role: .destructive) {
+                        state.confirmCandidateCleanup = false
+                        cleanOrphanCandidates(approved: state.candidatesForReview)
+                    }
+                }
+            }.padding(24).frame(width: 640, height: 360)
         }
         .accessibilityIdentifier("diagnosticsPage")
     }
@@ -226,14 +240,30 @@ struct DiagnosticsView: View {
         }
     }
 
-    private func cleanOrphanCandidates() {
+    private func reviewOrphanCandidates() {
+        guard !state.storageBusy, !model.isRunning else { return }
+        let urls = model.items.map(\.url)
+        state.storageBusy = true
+        Task { @MainActor in
+            defer { state.storageBusy = false }
+            do {
+                state.candidatesForReview = try await Task.detached(priority: .utility) {
+                    try StorageMaintenance.orphanCandidates(photoURLs: urls)
+                }.value
+                if state.candidatesForReview.isEmpty { state.storageMessage = "沒有可證明身分的孤立暫存檔。" }
+                else { state.confirmCandidateCleanup = true }
+            } catch { state.storageMessage = error.localizedDescription }
+        }
+    }
+
+    private func cleanOrphanCandidates(approved: [StorageCandidate]) {
         guard !state.storageBusy, !model.isRunning else { return }
         let urls = model.items.map(\.url)
         state.storageBusy = true
         Task { @MainActor in
             do {
                 let result = try await Task.detached(priority: .utility) {
-                    try StorageMaintenance.cleanOrphanCandidates(photoURLs: urls)
+                    try StorageMaintenance.cleanOrphanCandidates(photoURLs: urls, approved: approved)
                 }.value
                 state.storageMessage = "\(result.message) 已移除 \(result.removedFiles) 個／\(formatBytes(result.removedBytes))。"
             } catch {

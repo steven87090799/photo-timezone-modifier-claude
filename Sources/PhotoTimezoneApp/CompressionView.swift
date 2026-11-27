@@ -8,8 +8,8 @@ struct CompressionView: View {
     enum Panel { case settings, workspace }
     var panel: Panel = .workspace
     private var locked: Bool { model.isRunning || model.isImporting || model.isExporting }
-    private var failures: Int { model.items.filter { $0.state == .failed }.count }
-    private var visibleItems: [CompressionItem] { viewState.failuresOnly ? model.items.filter { $0.state == .failed } : model.items }
+    private var failures: Int { model.items.filter(\.canRetry).count }
+    private var visibleItems: [CompressionItem] { viewState.failuresOnly ? model.items.filter(\.canRetry) : model.items }
 
     var body: some View {
         Group {
@@ -62,7 +62,7 @@ struct CompressionView: View {
                     Picker("格式", selection: $model.format) {
                         ForEach(CompressionFormat.allCases) { format in
                             Text(format.rawValue).tag(format)
-                                .disabled(format == .heif && !CompressionHost.supportsHEIF)
+                                .disabled(format != .png && !model.host.isAvailable(format))
                         }
                     }
                     .accessibilityIdentifier("compressionFormatPicker")
@@ -128,7 +128,9 @@ struct CompressionView: View {
             .formStyle(.grouped).scrollContentBackground(.hidden).disabled(locked)
             VStack(alignment: .leading, spacing: 8) {
                 if let error = model.host.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-                else if model.format == .heif && !CompressionHost.supportsHEIF { Text("此 Mac 無法編碼 HEIF。").font(.caption) }
+                else if model.format != .png && !model.host.isAvailable(model.format) {
+                    Text("此 Mac 無法編碼 \(model.format.rawValue)。").font(.caption)
+                }
                 if model.isRunning {
                     Button(action: model.cancel) {
                         Label(model.isCancelling ? "正在停止…" : "停止壓縮", systemImage: "stop.fill").frame(maxWidth: .infinity)
@@ -287,7 +289,7 @@ struct CompressionView: View {
             TextField("https://example.com/webhook", text: $model.webhookURL).textFieldStyle(.roundedBorder)
             SecureField("Bearer Token（選填，僅此工作階段）", text: $model.webhookToken).textFieldStyle(.roundedBorder)
             HStack { Button("測試連線", action: model.testWebhook); Text(model.webhookStatus).font(.caption).foregroundStyle(.secondary) }
-            Text("傳送 multipart 的 file 與 metadata，及 JSON 批次摘要。檔案傳送失敗會重試兩次，結果另行記錄，已完成的壓縮檔仍可儲存。")
+            Text("網址及權杖在離開 App 後清除。傳送的成品可能含 GPS、相機序號等照片中繼資料。暫時傳送失敗時最多再試兩次，接收端可用 Idempotency-Key 避免重複處理。")
                 .font(.callout).foregroundStyle(.secondary)
         }.padding(24).frame(width: 540).background { AppWindowBackdrop() }.disabled(model.isRunning)
     }

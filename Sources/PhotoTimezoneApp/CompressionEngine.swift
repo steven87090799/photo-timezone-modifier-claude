@@ -31,6 +31,14 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     private var releaseRequested = false
     private var progress: [String: (Double, String) -> Void] = [:]
     private var cancellations: [String: CancellationToken] = [:]
+    private var temporaryBytesInFlight: Int64 = 0
+    private var retainedResults: [URL: Int64] = [:]
+    private var retainedBytes: Int64 = 0
+    private struct WebJob {
+        let completion: CheckedContinuation<Any, Error>
+        let timeout: Task<Void, Never>
+    }
+    private var webJobs: [String: WebJob] = [:]
 
     override init() {
         workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoTimezoneCompression-\(UUID().uuidString)", isDirectory: true)
@@ -58,13 +66,16 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             let root = bundled.flatMap { FileManager.default.fileExists(atPath: $0.appendingPathComponent("engine.html").path) ? $0 : nil } ?? source
             let server = try CompressionLocalServer(root: root, preferredPort: 0)
             self.server = server
-            view.load(URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/engine.html")!))
+            view.load(URLRequest(url: URL(string: server.origin + "/engine.html")!))
             loaded = true
         } catch { self.error = error.localizedDescription }
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
+        let origin = message.frameInfo.securityOrigin
+        guard message.webView === webView, message.frameInfo.isMainFrame,
+              let server, origin.protocol == "http", origin.host == "127.0.0.1", origin.port == Int(server.port),
+              let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         if type == "ready" {
             formats = Set(body["formats"] as? [String] ?? [])
             isReady = !formats.isEmpty
@@ -85,13 +96,23 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     }
 
     func isAvailable(_ format: CompressionFormat) -> Bool {
-        format == .jpeg || format == .jxl || (format == .heif && Self.supportsHEIF) || (isReady && formats.contains(format.mime))
+        switch format {
+        case .heif: return Self.supportsHEIF
+        case .avif: return Self.supportsAVIF
+        case .png: return isReady && formats.contains(format.mime)
+        default: return true
+        }
     }
 
-    static let supportsHEIF = (CGImageDestinationCopyTypeIdentifiers() as? [String])?.contains("public.heic") == true
+    private static let imageIOFormats = Set(CGImageDestinationCopyTypeIdentifiers() as? [String] ?? [])
+    static let supportsHEIF = imageIOFormats.contains("public.heic")
+    static let supportsAVIF = imageIOFormats.contains("public.avif")
 
     func prepare(_ format: CompressionFormat) async throws {
-        if format == .jpeg || format == .jxl || format == .heif { return }
+        if format != .png {
+            guard isAvailable(format) else { throw failure("此 Mac 不支援 \(format.rawValue) 編碼。") }
+            return
+        }
         idleTask?.cancel(); idleTask = nil
         loadIfNeeded()
         for _ in 0..<600 {
@@ -119,7 +140,21 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                          cancellation: CancellationToken,
                          onProgress: @escaping (Double, String) -> Void) async throws -> CompressionEngineResult {
         idleTask?.cancel(); idleTask = nil
-        guard format != .heif || Self.supportsHEIF else { throw failure("此 Mac 不支援 HEIF 編碼。") }
+        if format != .png { try await prepare(format) }
+        let sizeHint = try FileIdentity.read(source).size
+        guard sizeHint <= CompressionImages.maximumFileBytes else { throw failure("來源檔案超過 256 MiB。") }
+        // Reserve output, metadata rewrite and, for RAW, the developed TIFF.
+        let reserve = sizeHint + CompressionImages.maximumFileBytes * (CompressionRAW.accepts(source) ? 4 : 2)
+        if retainedBytes + temporaryBytesInFlight + reserve > 8 * 1024 * 1024 * 1024 {
+            retainedResults = retainedResults.filter { FileManager.default.fileExists(atPath: $0.key.path) }
+            retainedBytes = retainedResults.values.reduce(0, +)
+        }
+        guard retainedBytes + temporaryBytesInFlight + reserve <= 8 * 1024 * 1024 * 1024 else {
+            throw failure("壓縮暫存已達 8 GiB，請先儲存並清除部分成品。")
+        }
+        try CompressionImages.requireTemporaryCapacity(workDirectory, bytes: temporaryBytesInFlight + reserve, copies: 1)
+        temporaryBytesInFlight += reserve
+        defer { temporaryBytesInFlight -= reserve }
         let id = UUID().uuidString
         let folder = workDirectory.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -132,7 +167,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             try Task.checkCancellation()
             let sourceIdentity = try await Task.detached(priority: .userInitiated) {
                 let pinned = try FileIdentity.read(source)
-                guard pinned.size <= 256 * 1024 * 1024 else { throw self.failure("來源檔案超過 256 MiB。") }
+                guard pinned.size == sizeHint else { throw self.failure("來源檔案在暫存前已變動。") }
                 if !preview { try CompressionPhotoReader.requireEmbeddedMetadataOnly(source) }
                 try FileManager.default.copyItem(at: source, to: stagedInput)
                 _ = try FileIdentity.read(stagedInput)
@@ -170,7 +205,7 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
             // All later stages read this immutable RGB source, including lossless verification.
             let encodingSource = stagedSource
             let depth = try await Task.detached {
-                if preview { return CompressionImages.sourceDepth(encodingSource) }
+                if preview { return try CompressionImages.sourceDepth(encodingSource) }
                 return try CompressionValidation.sourceDepth(encodingSource, format: format, quality: quality)
             }.value
             let orientation: Int
@@ -178,13 +213,13 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                 orientation = try await Task.detached { try CompressionMetadataTransfer.exifOrientation(stagedSource, exiftoolURL: tool) }.value
             } else { orientation = 1 }
             let highDepthPNG = format == .png && depth > 8 && !preview
-            if ![CompressionFormat.jpeg, .jxl, .heif].contains(format) && !highDepthPNG {
+            if format == .png && !highDepthPNG {
                 try await prepare(format)
                 guard isAvailable(format) else { throw failure("所選格式的編碼器無法使用。") }
             }
             let result: [String: Any]
-            if format == .heif || highDepthPNG {
-                onProgress(60, format == .heif ? "macOS HEIF 編碼中" : "16 位元 PNG 編碼中")
+            if [.heif, .webp, .avif].contains(format) || highDepthPNG {
+                onProgress(60, highDepthPNG ? "16 位元 PNG 編碼中" : "\(format.rawValue) 原生編碼中")
                 let native = try await Task.detached(priority: .userInitiated) {
                     try CompressionNative.encode(source: stagedSource, output: output, format: format,
                         quality: quality, preview: preview, cancellation: cancellation, orientation: orientation)
@@ -207,22 +242,24 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                           "profileMode": native.originalProfile ? "original" : "srgb"]
             } else {
                 guard let webView, let server else { throw failure("所選格式的編碼器尚未就緒。") }
-                server.register(id: id, source: stagedSource, output: output)
+                if cancellation.isCancelled { throw CancellationError() }
+                server.register(id: id, source: stagedSource, output: output, format: format, preview: preview,
+                                cancellation: cancellation)
                 progress[id] = onProgress
                 defer { server.unregister(id); progress.removeValue(forKey: id) }
-                let options: [String: Any] = ["id": id, "name": source.lastPathComponent,
-                    "format": format.mime, "quality": quality, "preview": preview,
-                    "preserveProfile": format.preservesRGBProfile]
-                let raw = try await webView.callAsyncJavaScript("return await window.compressionEngine.perform(options);",
-                    arguments: ["options": options], in: nil, contentWorld: .page)
+                let options: [String: Any] = ["id": id, "format": format.mime, "quality": quality, "preview": preview]
+                let raw = try await runWebJob(id: id, view: webView, options: options, credential: server.credential,
+                                              preview: preview, cancellation: cancellation)
                 guard let decoded = raw as? [String: Any] else { throw failure("壓縮引擎沒有回傳完整結果。") }
                 result = decoded
             }
             try Task.checkCancellation()
             if cancellation.isCancelled { throw CancellationError() }
             guard let width = result["width"] as? Int,
-                  let height = result["height"] as? Int,
-                  FileManager.default.fileExists(atPath: output.path) else { throw failure("壓縮引擎沒有回傳完整結果。") }
+                  let height = result["height"] as? Int, let encoded = try? FileIdentity.read(output),
+                  (1...CompressionImages.maximumFileBytes).contains(encoded.size) else {
+                throw failure("壓縮結果不完整或超過 256 MiB。")
+            }
             var metadata = "預覽使用縮小影像；大小估算供參考"
             if !preview {
                 onProgress(95, "保留並驗證中繼資料")
@@ -264,12 +301,16 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
                 }
             } else { try? FileManager.default.removeItem(at: stagedSource) }
             if isRAW { try? FileManager.default.removeItem(at: stagedInput) }
-            let size = try output.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard size > 0 else { throw failure("壓縮輸出為空。") }
-            if Int64(size) > sourceBytes { metadata += "；輸出比來源大，可降低品質或選擇其他格式" }
-            return CompressionEngineResult(url: output, bytes: Int64(size), sourceBytes: sourceBytes, width: width,
+            let identity = try FileIdentity.read(output)
+            let size = identity.size
+            guard (1...CompressionImages.maximumFileBytes).contains(size) else { throw failure("壓縮輸出為空或超過 256 MiB。") }
+            let stored = isRAW ? try size + FileIdentity.read(stagedSource).size : size
+            retainedResults[output] = stored
+            retainedBytes += stored
+            if size > sourceBytes { metadata += "；輸出比來源大，可降低品質或選擇其他格式" }
+            return CompressionEngineResult(url: output, bytes: size, sourceBytes: sourceBytes, width: width,
                 height: height, metadataStatus: metadata, frames: result["frames"] as? Int ?? 1,
-                outputIdentity: try FileIdentity.read(output), developedSource: isRAW ? stagedSource : nil,
+                outputIdentity: identity, developedSource: isRAW ? stagedSource : nil,
                 rawDecoder: isRAW ? rawDecoder : nil)
         } catch {
             try? FileManager.default.removeItem(at: folder)
@@ -278,9 +319,51 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
         }
     }
 
+    private func runWebJob(id: String, view: WKWebView, options: [String: Any], credential: String,
+                           preview: Bool, cancellation: CancellationToken) async throws -> Any {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Any, Error>) in
+                guard !Task.isCancelled, !cancellation.isCancelled else {
+                    completion.resume(throwing: CancellationError())
+                    return
+                }
+                // WebKit completion may arrive after cancellation or never arrive after a crash.
+                let timeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(preview ? 280 : 790)) }
+                    catch { return }
+                    guard let self else { return }
+                    self.interruptWebJob(id, error: self.failure("壓縮引擎未在期限內回應。"))
+                }
+                webJobs[id] = WebJob(completion: completion, timeout: timeout)
+                view.callAsyncJavaScript("return await window.compressionEngine.perform(options, credential);",
+                    arguments: ["options": options, "credential": credential], in: nil, in: .page) { [weak self] result in
+                    self?.finishWebJob(id, result: result)
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+            Task { @MainActor [weak self] in self?.interruptWebJob(id, error: CancellationError()) }
+        }
+    }
+
+    private func finishWebJob(_ id: String, result: Result<Any, Error>) {
+        guard let job = webJobs.removeValue(forKey: id) else { return }
+        job.timeout.cancel()
+        job.completion.resume(with: result)
+    }
+
+    private func interruptWebJob(_ id: String, error: Error) {
+        guard webJobs[id] != nil else { return }
+        server?.unregister(id)
+        webView?.callAsyncJavaScript("window.compressionEngine?.cancel(id); return null;",
+                                    arguments: ["id": id], in: nil, in: .page, completionHandler: nil)
+        finishWebJob(id, result: .failure(error))
+    }
+
     func cancelAll() {
         cancellations.values.forEach { $0.cancel() }
         webView?.evaluateJavaScript("window.compressionEngine?.cancelAll()")
+        for id in Array(webJobs.keys) { finishWebJob(id, result: .failure(CancellationError())) }
     }
 
     func releaseRuntime() {
@@ -303,15 +386,24 @@ final class CompressionHost: NSObject, ObservableObject, WKNavigationDelegate, W
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        isReady = false; loaded = false; error = "壓縮引擎已中止；清空後重新開啟程式可再試。"
+        guard webView === self.webView else { return }
+        isReady = false; loaded = false
+        let message = "壓縮引擎已中止；清空後重新開啟程式可再試。"
+        error = message
+        server?.stop()
+        for id in Array(webJobs.keys) { finishWebJob(id, result: .failure(failure(message))) }
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { self.error = error.localizedDescription }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        let url = action.request.url
-        decisionHandler(url?.host == "127.0.0.1" && url?.port == server.map { Int($0.port) } ? .allow : .cancel)
+        guard action.targetFrame?.isMainFrame == true, let server,
+              action.request.url?.absoluteString == server.origin + "/engine.html" else {
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
     }
 
     nonisolated private func failure(_ message: String) -> NSError {

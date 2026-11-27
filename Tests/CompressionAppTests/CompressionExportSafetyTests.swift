@@ -92,6 +92,54 @@ struct CompressionExportSafetyTests {
         }
     }
 
+    @Test func resumesAfterSecondPublicationFails() throws {
+        try withFolder { folder in
+            let sourceA = folder.appendingPathComponent("sourceA")
+            let sourceB = folder.appendingPathComponent("sourceB")
+            let output = folder.appendingPathComponent("exports", isDirectory: true)
+            let first = output.appendingPathComponent("a.jpg")
+            let second = output.appendingPathComponent("b.jpg")
+            try Data("first result".utf8).write(to: sourceA)
+            try Data("second result".utf8).write(to: sourceB)
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+            let plan = [CompressionExports.Output(source: sourceA, name: "a.jpg"),
+                        CompressionExports.Output(source: sourceB, name: "b.jpg")]
+            var receipts: [URL: CompressionExports.Receipt] = [:]
+            do {
+                try CompressionExports.saveAll(plan, in: output) { source, destination, identity in
+                    if source == sourceB { throw PhotoError("simulated full disk") }
+                    return try CompressionExports.saveFile(source, to: destination, expected: identity)
+                }
+                Issue.record("The second publication should fail")
+            } catch let partial as CompressionExports.PartialSave {
+                receipts = partial.receipts
+                #expect(partial.remaining == ["b.jpg"])
+                #expect(receipts.count == 1)
+            }
+            let saved = try FileIdentity.read(first)
+            #expect(!FileManager.default.fileExists(atPath: second.path))
+            #expect(try CompressionExports.saveAll(plan, in: output, resuming: receipts).count == 2)
+            try saved.verify(first)
+            #expect(try Data(contentsOf: second) == Data(contentsOf: sourceB))
+
+            try Data("another file".utf8).write(to: first, options: .atomic)
+            #expect(throws: PhotoError.self) {
+                try CompressionExports.saveAll(plan, in: output, resuming: receipts)
+            }
+            #expect(try Data(contentsOf: first) == Data("another file".utf8))
+        }
+    }
+
+    @Test func zipProcessDeadlineTerminatesItsChild() throws {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["30"]
+        #expect(throws: PhotoError.self) {
+            try CompressionExports.runZIPProcess(child, timeout: 0.1, failure: "test failure")
+        }
+        #expect(!child.isRunning)
+    }
+
     @Test func zipRetainsBytesAndExtendedAttributesAndRefusesOverwrite() throws {
         try withFolder { folder in
             let source = folder.appendingPathComponent("result.jpg")

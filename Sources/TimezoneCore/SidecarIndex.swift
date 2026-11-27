@@ -42,6 +42,7 @@ final class SidecarIndex {
     private struct CachedDirectory {
         let stamp: DirectoryStamp
         let sidecars: [String: [URL]]
+        let entries: [URL]
     }
 
     private let capacity: Int
@@ -54,18 +55,9 @@ final class SidecarIndex {
     }
 
     func find(beside photo: URL) throws -> [URL] {
-        let directory = photo.deletingLastPathComponent().standardizedFileURL
-        let stamp = try DirectoryStamp.read(directory)
-        let candidates: [String: [URL]]
-        if let cached = cache[directory.path], cached.stamp == stamp {
-            candidates = cached.sidecars
-            touch(directory.path)
-        } else {
-            candidates = try refresh(directory)
-        }
-
-        let stem = photo.deletingPathExtension().lastPathComponent.lowercased()
-        let fullName = photo.lastPathComponent.lowercased()
+        let candidates = try contents(beside: photo).sidecars
+        let stem = Self.key(photo.deletingPathExtension().lastPathComponent)
+        let fullName = Self.key(photo.lastPathComponent)
         var result: [URL] = []
         var seenFiles = Set<String>()
         for url in (candidates[stem] ?? []) + (candidates[fullName] ?? []) {
@@ -80,7 +72,41 @@ final class SidecarIndex {
         return result.sorted { $0.path < $1.path }
     }
 
-    private func refresh(_ directory: URL) throws -> [String: [URL]] {
+    func requireExclusiveXMP(_ sidecars: [URL], beside photo: URL) throws {
+        let xmpNames = Set(sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
+            .map { Self.key($0.deletingPathExtension().lastPathComponent) })
+        guard !xmpNames.isEmpty else { return }
+        let entries = try contents(beside: photo).entries
+        for entry in entries where !entry.hasDirectoryPath {
+            // A missing photo with a canonical backup can still own an XMP.
+            let candidate = entry.path.hasSuffix("_original")
+                ? URL(fileURLWithPath: String(entry.path.dropLast("_original".count))) : entry
+            guard FileDiscovery.extensions.contains(candidate.pathExtension.lowercased()),
+                  !candidate.standardizedFileURL.path.utf8.elementsEqual(photo.standardizedFileURL.path.utf8) else { continue }
+            if xmpNames.contains(Self.key(candidate.lastPathComponent)) ||
+                xmpNames.contains(Self.key(candidate.deletingPathExtension().lastPathComponent)) {
+                if let current = try? FileIdentity.read(photo), let other = try? FileIdentity.read(candidate),
+                   current.links == 1, current.device == other.device, current.inode == other.inode { continue }
+                throw PhotoError("多張照片共用同一個 XMP sidecar，無法判定歸屬：\(candidate.lastPathComponent)。未寫入。")
+            }
+        }
+    }
+
+    static func key(_ name: String) -> String {
+        name.precomposedStringWithCanonicalMapping.lowercased().precomposedStringWithCanonicalMapping
+    }
+
+    private func contents(beside photo: URL) throws -> CachedDirectory {
+        let directory = photo.deletingLastPathComponent().standardizedFileURL
+        let stamp = try DirectoryStamp.read(directory)
+        if let cached = cache[directory.path], cached.stamp == stamp {
+            touch(directory.path)
+            return cached
+        }
+        return try refresh(directory)
+    }
+
+    private func refresh(_ directory: URL) throws -> CachedDirectory {
         let fm = FileManager.default
         for _ in 0..<2 {
             let before = try DirectoryStamp.read(directory)
@@ -91,15 +117,16 @@ final class SidecarIndex {
             )
             var sidecars: [String: [URL]] = [:]
             for url in urls where Self.extensions.contains(url.pathExtension.lowercased()) {
-                let base = url.deletingPathExtension().lastPathComponent.lowercased()
+                let base = Self.key(url.deletingPathExtension().lastPathComponent)
                 sidecars[base, default: []].append(url.standardizedFileURL)
             }
             let after = try DirectoryStamp.read(directory)
             guard before == after else { continue }
-            cache[directory.path] = CachedDirectory(stamp: after, sidecars: sidecars)
+            let result = CachedDirectory(stamp: after, sidecars: sidecars, entries: urls)
+            cache[directory.path] = result
             touch(directory.path)
             trim()
-            return sidecars
+            return result
         }
         throw PhotoError("Sidecar directory changed while it was being indexed. Rescan before retrying.")
     }

@@ -9,6 +9,7 @@ public struct RecoveryEntry: Identifiable, Sendable {
     public let detail: String
     public let phase: TransactionPhase
     public let targetIdentity: FileIdentity?
+    public let canAcknowledge: Bool
 }
 
 public enum TransactionRecovery {
@@ -27,10 +28,16 @@ public enum TransactionRecovery {
     public static func pending() throws -> [RecoveryEntry] {
         let lock = try JobLock(url: support().appendingPathComponent("job.lock"))
         defer { lock.release() }
-        return try TransactionStore(directory: directory()).unfinished().map { record in
+        let store = try TransactionStore(directory: directory())
+        let pending = try store.unfinished().map { record in
             RecoveryEntry(id: record.id, source: record.source, target: record.target,
                 backup: record.backup, sidecars: record.sidecarTargets,
-                detail: record.detail, phase: record.phase, targetIdentity: try? FileIdentity.read(record.target))
+                detail: record.detail, phase: record.phase, targetIdentity: try? FileIdentity.read(record.target),
+                canAcknowledge: true)
+        }
+        return pending + store.issues.map { issue in
+            RecoveryEntry(id: UUID(), source: issue.url, target: issue.url, backup: nil, sidecars: [],
+                detail: issue.detail, phase: .publicationUnconfirmed, targetIdentity: nil, canAcknowledge: false)
         }
     }
 
@@ -41,7 +48,8 @@ public enum TransactionRecovery {
         let lock = try JobLock(url: support().appendingPathComponent("job.lock"))
         defer { lock.release() }
         let store = try TransactionStore(directory: directory())
-        guard var record = try store.unfinished().first(where: { $0.id == entry.id }),
+        guard entry.canAcknowledge,
+              var record = try store.unfinished(reconcile: false).first(where: { $0.id == entry.id }),
               record.target == entry.target else { throw PhotoError("Recovery record changed; refresh the review list.") }
         let identity = try? FileIdentity.read(record.target)
         guard identity == entry.targetIdentity else { throw PhotoError("Target changed since review; inspect it again before acknowledging.") }

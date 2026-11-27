@@ -32,7 +32,7 @@ if [[ " $* " != *" --parallel "* && " $* " != *" --no-parallel "* ]]; then
   TEST_ARGS+=(--no-parallel)
 fi
 
-TEST_DEVELOPER_DIR="$(xcode-select -p)"
+TEST_DEVELOPER_DIR="${DEVELOPER_DIR:-$(xcode-select -p)}"
 TEST_PLUGIN="$TEST_DEVELOPER_DIR/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib"
 
 if [[ -f "$TEST_PLUGIN" ]]; then

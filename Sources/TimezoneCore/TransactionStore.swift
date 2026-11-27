@@ -6,7 +6,7 @@ public enum TransactionPhase: String, Codable, Sendable, Hashable {
 
 /// Small durable manifest, written BEFORE changing an original. Offsets and
 /// original date fields enable review without another whole-file read/hash.
-struct TransactionManifest: Codable {
+struct TransactionManifest: Codable, Equatable {
     let version: Int
     let id: UUID
     let source: URL
@@ -37,108 +37,194 @@ struct TransactionManifest: Codable {
     var detail: String
 }
 
+
 final class TransactionStore {
-    private struct Provenance {
-        let id: UUID
-        let backupIdentity: FileIdentity?
-        let sourceIdentity: FileIdentity
-        let phase: TransactionPhase
+    struct RecordIssue {
+        let url: URL
+        let detail: String
+        let blocksWrites: Bool
     }
 
+    struct CanonicalBundle {
+        let sidecars: [String: (url: URL, identity: FileIdentity)]
+        let legacyGPSOnly: Bool
+    }
+
+    private static let manifestLimit = 1024 * 1024
+    private static let terminalPhases: Set<TransactionPhase> = [.committed, .aborted, .reviewed]
     let active: URL
     let history: URL
-    private var provenanceBySource: [String: [Provenance]] = [:]
+    private(set) var issues: [RecordIssue] = []
+    private var activeRecords: [UUID: TransactionManifest] = [:]
+    private var archivedIDs: Set<UUID> = []
+    private var provenance: [String: [UUID: TransactionManifest]] = [:]
+    private let syncAfterArchive: (URL) throws -> Void
     private let encoder: JSONEncoder = {
-        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; return e
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
     }()
 
-    init(directory: URL) throws {
+    var hasUnreadableActive: Bool { issues.contains(where: \.blocksWrites) }
+
+    init(directory: URL, syncAfterArchive: @escaping (URL) throws -> Void = SafeFileTransaction.syncDirectory) throws {
         active = directory.appendingPathComponent("active", isDirectory: true)
         history = directory.appendingPathComponent("history", isDirectory: true)
+        self.syncAfterArchive = syncAfterArchive
         for dir in [active, history] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                    attributes: [.posixPermissions: 0o700])
         }
-        for record in try records(in: active) + records(in: history) {
-            rememberProvenance(record)
+        // Prefer active state when recovering records duplicated by older versions.
+        try load(history, activeRecords: false)
+        try load(active, activeRecords: true)
+    }
+
+    private func load(_ directory: URL, activeRecords isActive: Bool) throws {
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil,
+                                                                 options: [.skipsHiddenFiles])
+        for file in files where file.pathExtension == "json" {
+            do {
+                let record = try decode(file)
+                if isActive {
+                    self.activeRecords[record.id] = record
+                } else {
+                    guard Self.terminalPhases.contains(record.phase) else {
+                        throw PhotoError("Archived recovery record has a non-final state.")
+                    }
+                    archivedIDs.insert(record.id)
+                }
+                rememberProvenance(record)
+            } catch {
+                // Preserve unreadable bytes, which may be the only backup evidence.
+                issues.append(RecordIssue(url: file, detail: error.localizedDescription, blocksWrites: isActive))
+            }
         }
     }
 
     func save(_ manifest: TransactionManifest) throws {
-        let destination = active.appendingPathComponent("\(manifest.id.uuidString).json")
+        let bytes = try encoder.encode(manifest)
+        guard bytes.count <= Self.manifestLimit else {
+            throw PhotoError("交易紀錄超過 1 MiB。這筆紀錄無法安全保存。")
+        }
+        let destination = manifestURL(manifest.id, in: active)
         let temp = active.appendingPathComponent(".\(UUID().uuidString).tmp")
         defer { try? FileManager.default.removeItem(at: temp) }
-        guard FileManager.default.createFile(atPath: temp.path, contents: try encoder.encode(manifest),
+        guard FileManager.default.createFile(atPath: temp.path, contents: bytes,
                                             attributes: [.posixPermissions: 0o600]) else {
             throw PhotoError("Cannot persist transaction intent; no new original will be modified.")
         }
-        try SafeFileTransaction.syncFile(temp)
+        if manifest.backup != nil && (manifest.phase != .prepared || !manifest.publishedSidecars.isEmpty) {
+            try SafeFileTransaction.fullSyncFile(temp)
+        } else {
+            try SafeFileTransaction.syncFile(temp)
+        }
         if FileManager.default.fileExists(atPath: destination.path) {
             try SafeFileTransaction.replace(temp, at: destination)
         } else {
             try SafeFileTransaction.publishExclusive(temp, to: destination)
         }
-        // In-place operations may cross the publication boundary only after
-        // both their backups and durable journal reached the storage device.
-        if manifest.backup != nil && (manifest.phase != .prepared || !manifest.publishedSidecars.isEmpty) {
-            try SafeFileTransaction.fullSyncFile(destination)
-        }
+        activeRecords[manifest.id] = manifest
         rememberProvenance(manifest)
     }
 
     func finish(_ manifest: TransactionManifest) throws {
-        try save(manifest)
-        let file = active.appendingPathComponent("\(manifest.id.uuidString).json")
-        let target = history.appendingPathComponent(file.lastPathComponent)
-        if FileManager.default.fileExists(atPath: target.path) {
-            throw PhotoError("Transaction history collision; active recovery record was retained.")
+        guard Self.terminalPhases.contains(manifest.phase) else {
+            throw PhotoError("Only a final transaction can be archived.")
         }
-        try SafeFileTransaction.publishExclusive(file, to: target)
-        try SafeFileTransaction.syncDirectory(active)
+        if activeRecords[manifest.id] == nil, archivedIDs.contains(manifest.id) {
+            guard try decode(manifestURL(manifest.id, in: history)) == manifest else {
+                throw PhotoError("A different transaction state has already been archived.")
+            }
+            return
+        }
+        // A durable final record in active already commits the transaction.
+        // Archival can be retried; its errors must never roll back that commit.
+        try save(manifest)
+        archive(manifest)
     }
 
-    /// The canonical _original is trusted only when a durable transaction from
-    /// this app references the exact source/backup pair. New records additionally
-    /// pin the backup FileIdentity so a replaced file is never accepted.
+    private func archive(_ record: TransactionManifest) {
+        let source = manifestURL(record.id, in: active)
+        let destination = manifestURL(record.id, in: history)
+        let fm = FileManager.default
+        do {
+            if fm.fileExists(atPath: destination.path) {
+                let old = try decode(destination)
+                if old == record {
+                    try SafeFileTransaction.syncDirectory(history)
+                    try fm.removeItem(at: source)
+                } else {
+                    // Upgrade an older interrupted archival without discarding its history.
+                    guard old.source == record.source, old.target == record.target,
+                          old.sourceIdentity == record.sourceIdentity, old.candidate == record.candidate else {
+                        throw PhotoError("Transaction history conflicts with the active record; both were kept.")
+                    }
+                    let prior = history.appendingPathComponent(".prior-\(record.id)-\(UUID().uuidString).json")
+                    try SafeFileTransaction.copyAndSync(destination, to: prior)
+                    try SafeFileTransaction.syncDirectory(history)
+                    try SafeFileTransaction.replace(source, at: destination)
+                }
+            } else {
+                try SafeFileTransaction.publishExclusive(source, to: destination)
+            }
+            markArchived(record)
+            try syncAfterArchive(active)
+        } catch {
+            // The rename can succeed before directory synchronization throws.
+            if !fm.fileExists(atPath: source.path), (try? decode(destination)) == record {
+                markArchived(record)
+            }
+            issues.append(RecordIssue(url: fm.fileExists(atPath: source.path) ? source : destination,
+                                      detail: "交易已保存。歷史歸檔仍待確認。\(error.localizedDescription)",
+                                      blocksWrites: false))
+        }
+    }
+
+    private func markArchived(_ record: TransactionManifest) {
+        activeRecords.removeValue(forKey: record.id)
+        archivedIDs.insert(record.id)
+    }
+
     func verifyCanonicalOriginalBackup(_ backup: URL, source: URL) throws {
+        _ = try canonicalRecord(backup, source: source)
+    }
+
+    private func canonicalRecord(_ backup: URL, source: URL) throws -> TransactionManifest {
         let backup = backup.standardizedFileURL
         let source = source.standardizedFileURL
         guard backup.path == source.path + "_original" else {
             throw PhotoError("Backup is not the canonical _original path for this photo.")
         }
         let current = try FileIdentity.read(backup)
-        let records = provenanceBySource[source.path] ?? []
-        let sawReference = !records.isEmpty
-        for record in records {
-            if let pinned = record.backupIdentity {
-                let durablePhases: Set<TransactionPhase> = [
-                    .backupDurable, .published, .committed, .aborted, .publicationUnconfirmed, .reviewed
-                ]
-                if durablePhases.contains(record.phase), pinned == current { return }
-                continue
+        let records = provenance[source.path] ?? [:]
+        let matches = records.values.filter { record in
+            if let pinned = record.canonicalBackupIdentity {
+                return record.phase != .prepared && pinned == current
             }
-
-            // Compatibility for backups made by versions that already had
-            // durable committed transaction manifests but not the identity pin.
-            let legacyPhases: Set<TransactionPhase> = [.committed, .publicationUnconfirmed, .reviewed]
-            guard legacyPhases.contains(record.phase) else { continue }
-            if current.size == record.sourceIdentity.size,
-               current.modifiedSeconds == record.sourceIdentity.modifiedSeconds,
-               current.modifiedNanoseconds == record.sourceIdentity.modifiedNanoseconds,
-               current.mode & 0o7777 == record.sourceIdentity.mode & 0o7777 {
-                return
+            // Legacy committed records pinned attributes instead of backup inode.
+            return [.committed, .publicationUnconfirmed, .reviewed].contains(record.phase)
+                && current.size == record.sourceIdentity.size
+                && current.modifiedSeconds == record.sourceIdentity.modifiedSeconds
+                && current.modifiedNanoseconds == record.sourceIdentity.modifiedNanoseconds
+                && current.mode & 0o7777 == record.sourceIdentity.mode & 0o7777
+        }
+        guard matches.count <= 1 else {
+            throw PhotoError("原始照片備份對應多筆交易，無法安全判定原始版本。")
+        }
+        guard let record = matches.first else {
+            if !records.isEmpty {
+                throw PhotoError("The _original backup no longer matches its recorded identity. Automatic restore/write is blocked.")
             }
+            throw PhotoError("Existing _original has no trusted PhotoTimezone provenance. It will not be used or overwritten automatically.")
         }
-        if sawReference {
-            throw PhotoError("The _original backup no longer matches the backup identity recorded by this app. Automatic restore/write is blocked.")
-        }
-        throw PhotoError("Existing _original has no trusted PhotoTimezone provenance. It will not be used or overwritten automatically; move/rename it or use copy mode.")
+        return record
     }
 
-    func canonicalProvenanceRecordIDs() throws -> Set<UUID> {
-        Set(provenanceBySource.values.flatMap { records in
-            records.compactMap { record in
-                if record.backupIdentity != nil ||
+    func canonicalProvenanceRecordIDs() -> Set<UUID> {
+        Set(provenance.values.flatMap { records in
+            records.values.compactMap { record in
+                if record.canonicalBackupIdentity != nil ||
                    [.committed, .publicationUnconfirmed, .reviewed].contains(record.phase) {
                     return record.id
                 }
@@ -147,158 +233,146 @@ final class TransactionStore {
         })
     }
 
-    /// Resolve the sidecars that belonged to the FIRST photo backup. Later
-    /// before-write backups must never replace that original bundle baseline.
-    func canonicalSidecarBackups(_ backup: URL, source: URL) throws -> [String: (url: URL, identity: FileIdentity)] {
-        try verifyCanonicalOriginalBackup(backup, source: source)
-        let identity = try FileIdentity.read(backup)
-        let matches = try (records(in: active) + records(in: history)).filter {
-            $0.source.standardizedFileURL == source.standardizedFileURL &&
-            $0.backup?.standardizedFileURL == backup.standardizedFileURL &&
-            $0.canonicalBackupIdentity == identity
-        }
-        guard matches.count <= 1 else {
-            throw PhotoError("原始照片備份對應多筆交易；無法安全判定伴隨檔的原始版本。")
-        }
-        guard let record = matches.first else {
-            // Legacy photo-only transactions did not change sidecars.
-            return [:]
-        }
+    func isKnownHistory(_ id: UUID) -> Bool { archivedIDs.contains(id) }
+
+    /// Resolve only the record that holds the canonical photo backup.
+    func canonicalBundle(_ backup: URL, source: URL) throws -> CanonicalBundle {
+        let record = try canonicalRecord(backup, source: source)
         let backups = record.sidecarBackups ?? [:]
         guard backups.isEmpty || record.sidecarBackupIdentities != nil else {
-            throw PhotoError("舊版交易缺少 sidecar 備份身分；無法保證照片與 XMP 完整還原，請保留備份並人工檢查。")
+            throw PhotoError("舊版交易缺少 XMP 備份身分，未還原。請保留備份並人工核對。")
         }
+        let legacyGPSOnly = record.version == 2 && backups.isEmpty && record.sidecarTargets.isEmpty
+            && record.detail.hasPrefix("GPS-only metadata addition")
+        let names = [source.lastPathComponent, source.deletingPathExtension().lastPathComponent].map(SidecarIndex.key)
         var result: [String: (url: URL, identity: FileIdentity)] = [:]
         for (path, url) in backups {
             let sidecar = URL(fileURLWithPath: path)
-            let associatedNames = [source.lastPathComponent.lowercased(), source.deletingPathExtension().lastPathComponent.lowercased()]
+            let directory = source.deletingLastPathComponent().standardizedFileURL
             guard ["xmp", "on1", "acr"].contains(sidecar.pathExtension.lowercased()),
-                  associatedNames.contains(sidecar.deletingPathExtension().lastPathComponent.lowercased()),
-                  sidecar.deletingLastPathComponent().standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL,
-                  url.deletingLastPathComponent().standardizedFileURL == source.deletingLastPathComponent().standardizedFileURL,
+                  names.contains(SidecarIndex.key(sidecar.deletingPathExtension().lastPathComponent)),
+                  sidecar.deletingLastPathComponent().standardizedFileURL == directory,
+                  url.deletingLastPathComponent().standardizedFileURL == directory,
                   let pinned = record.sidecarBackupIdentities?[path] else {
-                throw PhotoError("Sidecar 備份資料不完整或位於其他資料夾；未還原。")
+                throw PhotoError("Sidecar 備份資料不完整或位於其他資料夾，未還原。")
             }
             try pinned.verify(url)
             result[path] = (url, pinned)
         }
-        return result
+        return CanonicalBundle(sidecars: result, legacyGPSOnly: legacyGPSOnly)
     }
 
     private func rememberProvenance(_ record: TransactionManifest) {
         let source = record.source.standardizedFileURL
         guard let backup = record.backup?.standardizedFileURL,
               backup.path == source.path + "_original" else { return }
-        var values = provenanceBySource[source.path] ?? []
-        values.removeAll { $0.id == record.id }
-        values.append(Provenance(
-            id: record.id,
-            backupIdentity: record.canonicalBackupIdentity,
-            sourceIdentity: record.sourceIdentity,
-            phase: record.phase
-        ))
-        provenanceBySource[source.path] = values
+        provenance[source.path, default: [:]][record.id] = record
     }
 
-    func activeCandidatePaths() throws -> Set<String> {
-        var result = Set<String>()
-        for record in try records(in: active) {
-            result.insert(record.candidate.standardizedFileURL.path)
-            for path in record.sidecarCandidateIdentities.map({ Array($0.keys) }) ?? [] {
-                result.insert(URL(fileURLWithPath: path).standardizedFileURL.path)
+    func activeCandidatePaths() -> Set<String> {
+        Set(activeRecords.values.flatMap { record in
+            [record.candidate.standardizedFileURL.path] + (record.sidecarCandidateIdentities ?? [:]).keys.map {
+                URL(fileURLWithPath: $0).standardizedFileURL.path
+            }
+        })
+    }
+
+    func recordedOrphans(from paths: Set<String>) -> [URL: FileIdentity] {
+        guard !paths.isEmpty, !hasUnreadableActive else { return [:] }
+        let eligible = paths.subtracting(activeCandidatePaths())
+        var orphans: [URL: FileIdentity] = [:]
+        for id in archivedIDs {
+            guard let record = try? decode(manifestURL(id, in: history)) else { continue }
+            for (url, identity) in stagingFiles(for: record) where eligible.contains(url.path) {
+                guard ownsCandidate(url, beside: record.target), (try? identity.verify(url)) != nil else { continue }
+                orphans[url] = identity
             }
         }
-        return result
+        return orphans
     }
 
-    private func records(in directory: URL) throws -> [TransactionManifest] {
-        let files = try FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]
-        )
-        return try files.filter { $0.pathExtension == "json" }.map(decode)
+    private func manifestURL(_ id: UUID, in directory: URL) -> URL {
+        directory.appendingPathComponent("\(id.uuidString).json")
     }
 
     private func decode(_ file: URL) throws -> TransactionManifest {
         let identity = try FileIdentity.read(file)
-        guard identity.size <= 1024 * 1024 else {
-            throw PhotoError("Oversized recovery manifest; inspect \(file.path)")
+        guard identity.size <= Self.manifestLimit else { throw PhotoError("Oversized recovery manifest.") }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: Self.manifestLimit + 1) ?? Data()
+        try identity.verify(file)
+        let record = try JSONDecoder().decode(TransactionManifest.self, from: data)
+        guard data.count == identity.size,
+              record.id == UUID(uuidString: file.deletingPathExtension().lastPathComponent) else {
+            throw PhotoError("Recovery manifest does not match its file identity.")
         }
-        return try JSONDecoder().decode(TransactionManifest.self, from: Data(contentsOf: file))
+        let paths = [record.source, record.target, record.candidate] + record.sidecarTargets +
+            record.publishedSidecars + (record.backup.map { [$0] } ?? []) + Array((record.sidecarBackups ?? [:]).values)
+        guard (1...4).contains(record.version), paths.allSatisfy({ $0.isFileURL && $0.path.hasPrefix("/") }) else {
+            throw PhotoError("Recovery manifest format or file paths are unsupported.")
+        }
+        return record
     }
 
-    func unfinished() throws -> [TransactionManifest] {
-        let files = try FileManager.default.contentsOfDirectory(at: active,
-            includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])
+    func unfinished(reconcile: Bool = true) throws -> [TransactionManifest] {
         var pending: [TransactionManifest] = []
-        for file in files where file.pathExtension == "json" {
-            var record = try decode(file)
-            if record.phase == .committed || record.phase == .aborted || record.phase == .reviewed {
-                // Recovery after the final durable record but before archival.
-                let target = history.appendingPathComponent(file.lastPathComponent)
-                if !FileManager.default.fileExists(atPath: target.path) {
-                    try SafeFileTransaction.publishExclusive(file, to: target)
-                }
+        for var record in activeRecords.values.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            if Self.terminalPhases.contains(record.phase) {
+                if reconcile && !hasUnreadableActive { archive(record) }
                 continue
             }
-
-            let staged = try? FileIdentity.read(record.candidate)
-            let visibleBefore = try? FileIdentity.read(record.target)
-            let targetUnchanged = record.targetIdentityBefore.map { $0 == visibleBefore }
-                ?? (!FileManager.default.fileExists(atPath: record.target.path))
-            if let staged, let expected = record.candidateIdentity, staged == expected,
-               targetUnchanged, record.publishedSidecars.isEmpty,
-               record.phase == .prepared || record.phase == .backupDurable {
-                do {
-                    try removeOwnedCandidate(record.candidate, expected: expected,
-                                             prefix: ".photo-timezone-", beside: record.target)
-                    if let sidecars = record.sidecarCandidateIdentities {
-                        for (path, identity) in sidecars {
-                            try removeOwnedCandidate(URL(fileURLWithPath: path), expected: identity,
-                                                     prefix: ".sidecar-", beside: record.target)
+            if reconcile && !hasUnreadableActive {
+                let visible = try? FileIdentity.read(record.target)
+                let targetUnchanged = record.targetIdentityBefore.map { $0 == visible }
+                    ?? (!FileManager.default.fileExists(atPath: record.target.path))
+                let staging = stagingFiles(for: record)
+                if record.candidateIdentity != nil, targetUnchanged, record.publishedSidecars.isEmpty,
+                   [.prepared, .backupDurable].contains(record.phase),
+                   staging.allSatisfy({ ownsCandidate($0.0, beside: record.target) && (try? $0.1.verify($0.0)) != nil }) {
+                    do {
+                        for (url, identity) in staging {
+                            try identity.verify(url)
+                            try FileManager.default.removeItem(at: url)
                         }
+                        try SafeFileTransaction.syncDirectory(record.target.deletingLastPathComponent())
+                        record.phase = .aborted
+                        record.detail = "Recovered before publication. Disposable candidates removed and backups retained."
+                        try finish(record)
+                        continue
+                    } catch {
+                        record.phase = .publicationUnconfirmed
+                        record.detail = "Staging cleanup needs review: \(error.localizedDescription)"
+                        try save(record)
                     }
-                    record.phase = .aborted
-                    record.detail = "Recovered before publication: disposable photo/sidecar candidates were removed; destination unchanged and backups retained."
-                    try finish(record)
-                    continue
-                } catch {
-                    record.detail = "Publication did not occur, but safe staging cleanup needs review: \(error.localizedDescription)"
+                } else if let visible, let candidate = record.candidateIdentity,
+                          visible.device == candidate.device, visible.inode == candidate.inode,
+                          record.phase != .publicationUnconfirmed {
+                    // A rename can precede the last journal update.
+                    record.phase = .publicationUnconfirmed
+                    record.detail = "Candidate is visible at target. Backups retained; review required."
                     try save(record)
-                    pending.append(record)
-                    continue
                 }
-            }
-
-            // Never infer 'not published' solely from an old phase: the process
-            // may have stopped immediately after rename, before updating it.
-            let visible = try? FileIdentity.read(record.target)
-            if let visible, let candidate = record.candidateIdentity,
-               visible.device == candidate.device && visible.inode == candidate.inode {
-                record.phase = .publicationUnconfirmed
-                record.detail = "Candidate is visible at target; review required before retry. Backups retained."
-                try save(record)
             }
             pending.append(record)
         }
         return pending
     }
 
-    private func removeOwnedCandidate(_ url: URL, expected: FileIdentity,
-                                      prefix: String, beside target: URL) throws {
-        guard url.deletingLastPathComponent().standardizedFileURL.path ==
-                target.deletingLastPathComponent().standardizedFileURL.path else {
-            throw PhotoError("Staging candidate is outside the transaction directory; not removed.")
+    private func stagingFiles(for record: TransactionManifest) -> [(URL, FileIdentity)] {
+        var staging = (record.sidecarCandidateIdentities ?? [:]).map { (URL(fileURLWithPath: $0.key).standardizedFileURL, $0.value) }
+        if let identity = record.candidateIdentity { staging.append((record.candidate.standardizedFileURL, identity)) }
+        return staging
+    }
+
+    private func ownsCandidate(_ url: URL, beside target: URL) -> Bool {
+        guard url.deletingLastPathComponent().standardizedFileURL == target.deletingLastPathComponent().standardizedFileURL else {
+            return false
         }
-        let baseName = url.deletingPathExtension().lastPathComponent
-        guard baseName.hasPrefix(prefix) else {
-            throw PhotoError("Staging candidate name is not app-owned; not removed.")
+        let name = url.deletingPathExtension().lastPathComponent
+        for prefix in [".photo-timezone-", ".sidecar-"] where name.hasPrefix(prefix) {
+            return UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
         }
-        let token = String(baseName.dropFirst(prefix.count))
-        guard UUID(uuidString: token) != nil else {
-            throw PhotoError("Staging candidate UUID is invalid; not removed.")
-        }
-        try expected.verify(url)
-        try FileManager.default.removeItem(at: url)
-        try SafeFileTransaction.syncDirectory(url.deletingLastPathComponent())
+        return false
     }
 }

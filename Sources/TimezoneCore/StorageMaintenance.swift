@@ -23,9 +23,15 @@ public struct StorageCleanupResult: Sendable {
     public let message: String
 }
 
+public struct StorageCandidate: Sendable, Identifiable {
+    public let url: URL
+    fileprivate let identity: FileIdentity
+    public var id: URL { url }
+}
+
 /// Explicit storage maintenance. Photo backups are measured but never deleted
 /// here. Cleanup is limited to app logs, non-provenance archived manifests and
-/// UUID-named staging files that no active transaction references.
+/// staging files whose identity is proved by an archived transaction.
 public enum StorageMaintenance {
     public static func snapshot(photoURLs: [URL]) throws -> StorageUsage {
         try snapshot(photoURLs: photoURLs, support: supportDirectory())
@@ -37,13 +43,14 @@ public enum StorageMaintenance {
                                             extensions: ["jsonl"])
         let history = try measureFlatDirectory(store.history, extensions: ["json"])
         let active = try measureFlatDirectory(store.active, extensions: ["json"])
-        let photo = try measurePhotoDirectories(photoURLs: photoURLs, activeCandidates: store.activeCandidatePaths())
+        let photo = try measurePhotoDirectories(photoURLs: photoURLs)
+        let candidates = store.recordedOrphans(from: photo.candidates)
         return StorageUsage(
             logBytes: logs.bytes, logFiles: logs.count,
             historyBytes: history.bytes, historyFiles: history.count,
             activeTransactionBytes: active.bytes, activeTransactions: active.count,
             photoBackupBytes: photo.backupBytes, photoBackups: photo.backups,
-            orphanCandidateBytes: photo.candidateBytes, orphanCandidates: photo.candidates
+            orphanCandidateBytes: candidates.values.reduce(0) { saturatedAdd($0, $1.size) }, orphanCandidates: candidates.count
         )
     }
 
@@ -56,10 +63,10 @@ public enum StorageMaintenance {
         let lock = try JobLock(url: support.appendingPathComponent("job.lock"))
         defer { lock.release() }
         let store = try TransactionStore(directory: support.appendingPathComponent("Transactions", isDirectory: true))
-        guard try store.unfinished().isEmpty else {
+        guard !store.hasUnreadableActive, try store.unfinished().isEmpty else {
             throw PhotoError("仍有待人工確認的交易；請先完成交易復原檢查，再清理歷史記錄。")
         }
-        let protectedIDs = try store.canonicalProvenanceRecordIDs()
+        let protectedIDs = store.canonicalProvenanceRecordIDs()
         var removed = 0
         var bytes: Int64 = 0
         let fm = FileManager.default
@@ -80,7 +87,7 @@ public enum StorageMaintenance {
         for file in try fm.contentsOfDirectory(at: store.history, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             where file.pathExtension.lowercased() == "json" {
             guard let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent),
-                  !protectedIDs.contains(id) else { continue }
+                  store.isKnownHistory(id), !protectedIDs.contains(id) else { continue }
             let identity = try FileIdentity.read(file)
             try fm.removeItem(at: file)
             historyRemoved = true
@@ -94,38 +101,47 @@ public enum StorageMaintenance {
         )
     }
 
-    public static func cleanOrphanCandidates(photoURLs: [URL]) throws -> StorageCleanupResult {
-        try cleanOrphanCandidates(photoURLs: photoURLs, support: supportDirectory())
+    public static func orphanCandidates(photoURLs: [URL]) throws -> [StorageCandidate] {
+        try orphanCandidates(photoURLs: photoURLs, support: supportDirectory())
     }
 
-    static func cleanOrphanCandidates(photoURLs: [URL], support: URL) throws -> StorageCleanupResult {
+    static func orphanCandidates(photoURLs: [URL], support: URL) throws -> [StorageCandidate] {
+        let store = try TransactionStore(directory: support.appendingPathComponent("Transactions", isDirectory: true))
+        return store.recordedOrphans(from: try measurePhotoDirectories(photoURLs: photoURLs).candidates)
+            .map { StorageCandidate(url: $0.key, identity: $0.value) }
+            .sorted { $0.url.path < $1.url.path }
+    }
+
+    public static func cleanOrphanCandidates(photoURLs: [URL], approved: [StorageCandidate]? = nil) throws -> StorageCleanupResult {
+        try cleanOrphanCandidates(photoURLs: photoURLs, support: supportDirectory(), approved: approved)
+    }
+
+    static func cleanOrphanCandidates(photoURLs: [URL], support: URL,
+                                      approved: [StorageCandidate]? = nil) throws -> StorageCleanupResult {
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let lock = try JobLock(url: support.appendingPathComponent("job.lock"))
         defer { lock.release() }
         let store = try TransactionStore(directory: support.appendingPathComponent("Transactions", isDirectory: true))
-        _ = try store.unfinished()
-        let active = try store.activeCandidatePaths()
-        let directories = uniquePhotoDirectories(photoURLs)
+        guard !store.hasUnreadableActive else {
+            throw PhotoError("有無法讀取的未完交易。請先檢查交易復原，再清理暫存檔。")
+        }
+        let owned = store.recordedOrphans(from: try measurePhotoDirectories(photoURLs: photoURLs).candidates)
+        let selection = approved ?? owned.map { StorageCandidate(url: $0.key, identity: $0.value) }
         let fm = FileManager.default
         var removed = 0
         var bytes: Int64 = 0
-        for directory in directories {
-            var changed = false
-            for file in try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: []) {
-                let path = file.standardizedFileURL.path
-                guard !active.contains(path), isOwnedCandidateName(file.lastPathComponent) else { continue }
-                let identity = try FileIdentity.read(file)
-                try identity.verify(file)
-                try fm.removeItem(at: file)
-                changed = true
-                removed += 1
-                bytes = saturatedAdd(bytes, identity.size)
-            }
-            if changed { try SafeFileTransaction.syncDirectory(directory) }
+        var directories: Set<URL> = []
+        for item in selection {
+            guard owned[item.url] == item.identity, (try? item.identity.verify(item.url)) != nil else { continue }
+            try fm.removeItem(at: item.url)
+            directories.insert(item.url.deletingLastPathComponent())
+            removed += 1
+            bytes = saturatedAdd(bytes, item.identity.size)
         }
+        for directory in directories { try SafeFileTransaction.syncDirectory(directory) }
         return StorageCleanupResult(
             removedFiles: removed, removedBytes: bytes,
-            message: "已清除目前相片資料夾中未被 active transaction 引用的 PhotoTimezone UUID 暫存候選；照片、_original 與歷史備份未刪除。"
+            message: "已清理身分與既有交易紀錄一致的暫存檔。缺少證明或預覽後變動的檔案已保留。"
         )
     }
 
@@ -154,42 +170,31 @@ public enum StorageMaintenance {
         return (bytes, count)
     }
 
-    private static func measurePhotoDirectories(photoURLs: [URL], activeCandidates: Set<String>)
-        throws -> (backupBytes: Int64, backups: Int, candidateBytes: Int64, candidates: Int) {
+    private static func measurePhotoDirectories(photoURLs: [URL])
+        throws -> (backupBytes: Int64, backups: Int, candidates: Set<String>) {
         let fm = FileManager.default
         let grouped = Dictionary(grouping: photoURLs.map(\.standardizedFileURL)) {
             $0.deletingLastPathComponent().path
         }
-        var backupBytes: Int64 = 0, candidateBytes: Int64 = 0
-        var backups = 0, candidates = 0, seen = Set<String>()
+        var backupBytes: Int64 = 0
+        var backups = 0
+        var candidates: Set<String> = []
         for (directoryPath, photos) in grouped {
             let directory = URL(fileURLWithPath: directoryPath, isDirectory: true)
             let names = Set(photos.map(\.lastPathComponent))
             for file in try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil, options: []) {
                 let path = file.standardizedFileURL.path
-                guard seen.insert(path).inserted else { continue }
                 let name = file.lastPathComponent
                 if isPhotoBackupName(name, photoNames: names) {
                     let identity = try FileIdentity.read(file)
                     backupBytes = saturatedAdd(backupBytes, identity.size)
                     backups += 1
-                } else if !activeCandidates.contains(path), isOwnedCandidateName(name) {
-                    let identity = try FileIdentity.read(file)
-                    candidateBytes = saturatedAdd(candidateBytes, identity.size)
-                    candidates += 1
+                } else if isCandidateName(name) {
+                    candidates.insert(path)
                 }
             }
         }
-        return (backupBytes, backups, candidateBytes, candidates)
-    }
-
-    private static func uniquePhotoDirectories(_ photoURLs: [URL]) -> [URL] {
-        var seen = Set<String>(), result: [URL] = []
-        for photo in photoURLs {
-            let directory = photo.standardizedFileURL.deletingLastPathComponent()
-            if seen.insert(directory.path).inserted { result.append(directory) }
-        }
-        return result
+        return (backupBytes, backups, candidates)
     }
 
     private static func isPhotoBackupName(_ name: String, photoNames: Set<String>) -> Bool {
@@ -206,7 +211,7 @@ public enum StorageMaintenance {
         return false
     }
 
-    private static func isOwnedCandidateName(_ name: String) -> Bool {
+    private static func isCandidateName(_ name: String) -> Bool {
         if name.hasPrefix(".sidecar-") {
             let remainder = String(name.dropFirst(".sidecar-".count))
             // Older copy jobs used an extensionless sidecar candidate. The

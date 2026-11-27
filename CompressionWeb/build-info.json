@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "appVersion": "3.2.1",
   "releaseGeneration": "3.2.1",
-  "buildId": "nexpress-3.2.1-g3.2.1-220a55367898-0145a2727dd39e3d",
-  "revision": "220a55367898",
-  "builtAt": "2026-10-04T21:44:07.975Z",
+  "buildId": "nexpress-3.2.1-g3.2.1-e2d71b121000-6bb0d8adca0500dd",
+  "revision": "e2d71b121000",
+  "builtAt": "2026-10-27T09:10:11.000Z",
   "channel": "development",
-  "contentHash": "sha256:0145a2727dd39e3d304662cef626b4691bb6e59f930d67897d95d256fff8b093",
-  "assetCount": 22
+  "contentHash": "sha256:6bb0d8adca0500dd80af5f1269f9ebede268d42c9a75dd702e0d7d7d4724cdc0",
+  "assetCount": 11
 }

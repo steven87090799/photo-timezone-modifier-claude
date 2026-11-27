@@ -59,8 +59,12 @@ enum CompressionRAW {
                 filter.orientation = value
             }
             let size = filter.nativeSize
-            guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0,
-                  size.width <= 20000, size.height <= 20000 else { throw PhotoError("RAW 尺寸無效或超出上限。") }
+            let bufferDepth = sixteenBit && maxPixel == 0 ? 16 : 8
+            guard size.width.isFinite, size.height.isFinite,
+                  (1...20000).contains(size.width), (1...20000).contains(size.height),
+                  CompressionImages.fitsRaster(width: Int(size.width), height: Int(size.height), depth: bufferDepth) else {
+                throw PhotoError("RAW 尺寸無效或像素緩衝區超過上限。")
+            }
             filter.scaleFactor = maxPixel > 0 ? Float(min(1, Double(maxPixel) / max(size.width, size.height))) : 1
             let state = ResourceDownload()
             let download = filter.downloadResources(timeout: 60) { error in state.finish(error) }

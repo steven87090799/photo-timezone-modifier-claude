@@ -1,43 +1,14 @@
 NEXPRESS THIRD-PARTY NOTICES
 ============================
 
-This inventory records the provenance declared by the packages and upstream
-projects used to build the distributed browser assets. It is not a substitute
-for the full license texts supplied by those projects and is not a legal
-conclusion. The embedded runtime content hash and build identity are checked by
-scripts/check-build-info.mjs.
+The invisible engine is derived from NEXPRESS commit
+d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a.
 
-Component                              Version     Declared license / source
--------------------------------------  ----------  --------------------------------
-@jsquash/png                           3.0.1       Apache-2.0; github.com/jamsinclair/jSquash
-  OxiPNG codec                                      MIT upstream
-@jsquash/webp                          1.3.0       Apache-2.0; github.com/jamsinclair/jSquash
-  libwebp codec                                     BSD-3-Clause upstream
-@jsquash/avif                          1.1.2       Apache-2.0; github.com/jamsinclair/jSquash
-  libavif / libaom codecs                           BSD-family upstream licenses
-piexifjs                               1.0.6       MIT; github.com/hMatoba/piexifjs
-  note: bundled API reports 1.0.4 internally
+@jsquash/oxipng 2.3.0 provides single-threaded PNG encoding.
+Source https://registry.npmjs.org/@jsquash/oxipng/-/oxipng-2.3.0.tgz
+Package SHA-512 (base64)
+aQ8wiEp6ztlTMXc+RMt/CG8crU3mEHDU+h+JYkIi6ctMhlh8+Ltj5XwQFfBuyzKYrp8NxaFW80Dp824bqjr+zA==
 
-Build provenance
-----------------
-
-- Runtime assets were copied from NEXPRESS commit
-  d321ad44f90829d7e54dfd4fa8afcfb3ef5e751a and adapted for the macOS App.
-- HEIF encoding and decoding use macOS ImageIO. The elheif and heic-to
-  browser assets are not included.
-- scripts/build-metadata-lib.mjs hashes the embedded runtime assets for
-  the invisible engine build identity.
-
-- The NEXPRESS web UI, fonts, icons, Service Worker and JSZip are not bundled.
-  The macOS UI is native SwiftUI; ZIP output uses system ditto.
-- JPEG XL encoding uses the app's native libjxl 0.12.0 bridge, not WebAssembly.
-  Its runtime libraries and license texts are bundled in the app's JXL folder.
-
-@jsquash/oxipng 2.3.0 added for effective PNG effort control (single-thread WASM).
-Source: https://registry.npmjs.org/@jsquash/oxipng/-/oxipng-2.3.0.tgz
-Package SHA-512: aQ8wiEp6ztlTMXc+RMt/CG8crU3mEHDU+h+JYkIi6ctMhlh8+Ltj5XwQFfBuyzKYrp8NxaFW80Dp824bqjr+zA==
-Apache-2.0 wrapper, MIT OxiPNG codec; licenses in vendor/OXIPNG_LICENSE and vendor/OXIPNG_MIT_LICENSE.
-
-JPEG encoding was replaced by statically linked native Jpegli. The MozJPEG
-JavaScript/WASM assets are removed. See the App JpegliLicenses directory and
-NativeJpegli/dependencies.json for pinned source revisions and license texts.
+The wrapper is under Apache-2.0 and the OxiPNG codec is under MIT.
+Full licenses are in vendor/OXIPNG_LICENSE and vendor/OXIPNG_MIT_LICENSE.
+The packaged runtime files are verified against scripts/oxipng-lock.json.

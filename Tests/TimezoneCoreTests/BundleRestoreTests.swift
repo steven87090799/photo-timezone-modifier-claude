@@ -76,7 +76,7 @@ final class BundleRestoreTests: TemporaryDirectoryTestCase {
         let files = try fixture()
         try write(files.photo)
         let store = try TransactionStore(directory: records)
-        let backups = try store.canonicalSidecarBackups(originalBackup(for: files.photo), source: files.photo)
+        let backups = try store.canonicalBundle(originalBackup(for: files.photo), source: files.photo).sidecars
         let backup = try requireValue(backups[files.sidecar.path]?.url)
         try Data("replaced backup".utf8).write(to: backup, options: .atomic)
         let photoBefore = try Data(contentsOf: files.photo)
@@ -97,6 +97,26 @@ final class BundleRestoreTests: TemporaryDirectoryTestCase {
         let before = try Data(contentsOf: files.photo)
         #expect(throws: PhotoError.self) { try restore(files.photo) }
         #expect(try Data(contentsOf: files.photo) == before)
+    }
+
+    @Test func legacyGPSOnlyRecordCanRestorePhotoWithoutChangingSidecar() throws {
+        let files = try fixture()
+        let original = try Data(contentsOf: files.photo), companion = try Data(contentsOf: files.sidecar)
+        let backup = originalBackup(for: files.photo)
+        let identity = try FileIdentity.read(files.photo)
+        try SafeFileTransaction.copyAndSync(files.photo, to: backup)
+        let record = TransactionManifest(version: 2, id: UUID(), source: files.photo, target: files.photo,
+            candidate: SafeFileTransaction.temporaryPhoto(beside: files.photo), backup: backup,
+            sourceIdentity: identity, candidateIdentity: nil, originalDates: [:], oldOffsets: [:], newOffsets: [:],
+            sidecarTargets: [], publishedSidecars: [], phase: .committed, detail: "GPS-only metadata addition verified")
+        try TransactionStore(directory: records).finish(record)
+        let edited = try tool.execute(["-overwrite_original", "-GPSLatitude=25", "-GPSLatitudeRef=N",
+            "-GPSLongitude=121", "-GPSLongitudeRef=E", files.photo.path])
+        #expect(edited.status == 0)
+        #expect(try Data(contentsOf: files.photo) != original)
+        #expect(try restore(files.photo).status == .success)
+        #expect(try Data(contentsOf: files.photo) == original)
+        #expect(try Data(contentsOf: files.sidecar) == companion)
     }
 
     @Test func sidecarAddedAfterOriginalBackupBlocksRestore() throws {

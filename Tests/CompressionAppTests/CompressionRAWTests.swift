@@ -103,7 +103,7 @@ struct CompressionRAWTests {
                     quality: format == .jxl ? 100 : 82, preview: false, rawDecoder: decoder)
                 #expect(result.rawDecoder == decoder)
                 let developed = try #require(result.developedSource)
-                let depth = CompressionImages.sourceDepth(developed)
+                let depth = try CompressionImages.sourceDepth(developed)
                 #expect(depth == (format == .png || format == .jxl ? 16 : 8))
                 #expect(result.width > 1000 && result.height > 1000)
                 let after = try tool.snapshot(result.url, strictOffsets: false, forCompression: true)
@@ -173,6 +173,29 @@ struct CompressionRAWTests {
                 try FileManager.default.removeItem(at: result.url.deletingLastPathComponent())
             }
         }
+    }
+
+    @Test func rawProjectionWithNoAllowedTagsLeavesPrivateTagsOnSource() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("RAWEmptyMetadata-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("source.tiff"), developed = folder.appendingPathComponent("developed.tiff")
+        let image = CIImage(color: .green).cropped(to: CGRect(x: 0, y: 0, width: 32, height: 16))
+        try CIContext().writeTIFFRepresentation(of: image, to: developed, format: .RGBX8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, options: [:])
+        try FileManager.default.copyItem(at: developed, to: source)
+        let tool = ExifTool(url: toolURL)
+        #expect(try tool.execute(["-overwrite_original", "-IFD0:Software=private-workspace-label", source.path]).status == 0)
+        let before = try tool.snapshot(source, strictOffsets: false, forCompression: true)
+        #expect(try tool.execute(["-s3", "-IFD0:Software", source.path]).text
+            .trimmingCharacters(in: .whitespacesAndNewlines) == "private-workspace-label")
+        #expect(!before.embeddedTags.keys.contains(where: RAWMetadataTransfer.includes))
+        let identity = try FileIdentity.read(source)
+        try RAWMetadataTransfer.prepare(source: source, developed: developed, width: 32, height: 16,
+            exiftoolURL: toolURL, cancellation: CancellationToken())
+        #expect(try tool.execute(["-s3", "-IFD0:Software", developed.path]).text
+            .trimmingCharacters(in: .whitespacesAndNewlines) != "private-workspace-label")
+        try identity.verify(source)
     }
 
     @Test func projectedTIFFKeepsExactPhotographicValuesInPNGAndAVIF() async throws {

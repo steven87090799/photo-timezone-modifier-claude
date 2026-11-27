@@ -193,11 +193,11 @@ struct ReviewFindingsTests {
         _ = NSApplication.shared
         let host = CompressionHost(); defer { host.shutdown() }
         host.idleDelayNanoseconds = 200_000_000
-        try await host.prepare(.webp)
+        try await host.prepare(.png)
         #expect(host.webView != nil)
         try await Task.sleep(nanoseconds: 450_000_000)
         #expect(host.webView == nil)
-        try await host.prepare(.webp)
+        try await host.prepare(.png)
         #expect(host.webView != nil && host.isReady)
     }
 

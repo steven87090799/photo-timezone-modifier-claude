@@ -9,11 +9,16 @@ public enum FileExport {
 
     /// Archive exports always create a new name. A private staging directory
     /// gives cleanup ownership without trusting a randomly named existing file.
-    public static func copyExclusive(_ source: URL, to destination: URL) throws {
+    @discardableResult
+    public static func copyExclusive(_ source: URL, to destination: URL,
+                                     expectedSource: FileIdentity? = nil) throws -> FileIdentity {
         guard source.standardizedFileURL != destination.standardizedFileURL else {
             throw PhotoError("輸出位置不可與來源相同；請選擇新的檔案名稱或資料夾。")
         }
         let identity = try FileIdentity.read(source)
+        if let expectedSource, expectedSource != identity {
+            throw PhotoError("壓縮結果在匯出前已變動，請重新壓縮。")
+        }
         let parent = destination.deletingLastPathComponent()
         let parentIdentity = try DirectoryIdentity.read(parent)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
@@ -32,12 +37,17 @@ public enum FileExport {
         }
         try identity.verify(source)
         try parentIdentity.verify(parent)
+        let candidate = try FileIdentity.read(temporary)
         try SafeFileTransaction.publishExclusive(temporary, to: destination)
-        guard try SafeFileTransaction.contentsAreIdentical(source, destination) else {
+        let published = try FileIdentity.read(destination)
+        guard published.device == candidate.device, published.inode == candidate.inode,
+              try SafeFileTransaction.contentsAreIdentical(source, destination),
+              try FileIdentity.read(destination) == published else {
             throw PublicationError(destination: destination,
                 message: "輸出已建立，但讀回位元組驗證失敗；請保留來源並檢查 \(destination.path)。")
         }
         try identity.verify(source)
+        return published
     }
 
     /// Caller obtains explicit overwrite approval, e.g. through NSSavePanel.

@@ -31,6 +31,14 @@ struct CompressionValidationTests {
         #expect(CGImageDestinationFinalize(destination))
     }
 
+    @Test func rasterBudgetAccountsForTwoByteSamplesWithoutMultiplicationOverflow() {
+        #expect(CompressionImages.fitsRaster(width: 6000, height: 4000, depth: 16))
+        #expect(CompressionImages.fitsRaster(width: 10000, height: 6000, depth: 8))
+        #expect(!CompressionImages.fitsRaster(width: 10000, height: 6000, depth: 16))
+        #expect(!CompressionImages.fitsRaster(width: Int.max, height: Int.max, depth: 8))
+        #expect(!CompressionImages.fitsRaster(width: 64, height: 64, depth: 8, budget: 1024))
+    }
+
     @Test func sixteenBitSourceCannotBeSilentlyReducedToEightBits() throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("high-depth.png")

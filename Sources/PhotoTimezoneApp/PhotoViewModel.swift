@@ -131,7 +131,10 @@ final class PhotoViewModel: ObservableObject {
     }
     private var allInspectedPhotoItems: [PhotoItem] {
         let paths = Set(previewFileURLs.map(\.path))
-        return items.filter { paths.contains($0.url.path) && !$0.publicationUnconfirmed }
+        return items.filter {
+            paths.contains($0.url.path) && $0.status == .ready &&
+            $0.sourceIdentity != nil && !$0.publicationUnconfirmed
+        }
     }
     private var writableItems: [PhotoItem] {
         scopedItems.filter { $0.status == .ready && $0.sourceIdentity != nil && !$0.publicationUnconfirmed }
@@ -436,7 +439,7 @@ final class PhotoViewModel: ObservableObject {
             catch { notice = .error("無法使用這個輸出資料夾", error.localizedDescription); return }
         }
         var placement = replaceOriginals ? "替換來源照片；每張先保留可復原備份" : "輸出副本至：\(outputDirectory?.path ?? "未選擇")；來源照片不更動"
-        placement += "\n時區依處理範圍；GPS 固定涵蓋本次掃描的所有相片，搜尋、篩選與選取不縮小 GPS 對象。既有 XMP 將同步更新。"
+        placement += "\n時區依處理範圍。GPS 涵蓋本次成功掃描的相片，搜尋、篩選與選取不縮小 GPS 對象。既有 XMP 將同步更新。"
         if gpsEnabled { placement += "\nGPS：\(gpsOverwrite ? "明確覆蓋所有相片既有位置" : "只補完全沒有位置的相片")。" }
         if sonyCompatibility {
             placement += "\nSony 相容模式已開啟：僅放行明列的位置指標重排，但無法保證 MakerNotes 私有位元組完全不變。"

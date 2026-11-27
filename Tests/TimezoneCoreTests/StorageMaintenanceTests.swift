@@ -13,15 +13,30 @@ final class StorageMaintenanceTests: TemporaryDirectoryTestCase {
         let retainedNames = [
             "photo.xmp", "photo.xmp.before-write-\(UUID().uuidString).backup",
             ".sidecar-not-a-uuid.xmp", ".sidecar-\(UUID().uuidString).xmp.backup",
-            ".sidecar-\(UUID().uuidString).txt", ".sidecar-\(UUID().uuidString)."
+            ".sidecar-\(UUID().uuidString).txt", ".sidecar-\(UUID().uuidString).",
+            ".sidecar-\(UUID().uuidString).xmp", ".photo-timezone-\(UUID().uuidString).jpg"
         ]
         let retained = try retainedNames.map { try makeFile($0) }
+        let store = try TransactionStore(directory: support.appendingPathComponent("Transactions"))
+        let manifest = TransactionManifest(
+            version: 4, id: UUID(), source: photo, target: photo,
+            candidate: SafeFileTransaction.temporaryPhoto(beside: photo), backup: nil,
+            sourceIdentity: try FileIdentity.read(photo), candidateIdentity: nil,
+            sidecarCandidateIdentities: Dictionary(uniqueKeysWithValues: try orphans.map { ($0.path, try FileIdentity.read($0)) }),
+            originalDates: [:], oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [],
+            phase: .aborted, detail: "Cleanup fixture")
+        try store.finish(manifest)
 
         let usage = try StorageMaintenance.snapshot(photoURLs: [photo], support: support)
         #expect(usage.orphanCandidates == orphans.count)
-        let result = try StorageMaintenance.cleanOrphanCandidates(photoURLs: [photo], support: support)
-        #expect(result.removedFiles == orphans.count)
-        for orphan in orphans { #expect(!FileManager.default.fileExists(atPath: orphan.path)) }
+        let approved = try StorageMaintenance.orphanCandidates(photoURLs: [photo], support: support)
+        #expect(Set(approved.map(\.url)) == Set(orphans))
+        let replaced = try #require(orphans.first)
+        try Data("new file".utf8).write(to: replaced, options: .atomic)
+        let result = try StorageMaintenance.cleanOrphanCandidates(photoURLs: [photo], support: support, approved: approved)
+        #expect(result.removedFiles == orphans.count - 1)
+        for orphan in orphans.dropFirst() { #expect(!FileManager.default.fileExists(atPath: orphan.path)) }
+        #expect(FileManager.default.fileExists(atPath: replaced.path))
         for file in [photo] + retained { #expect(FileManager.default.fileExists(atPath: file.path)) }
     }
 

@@ -617,15 +617,25 @@ struct CompressionTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let log = folder.appendingPathComponent("requests.jsonl")
         let serverSource = #"""
-import base64, http.server, json, sys
+import base64, http.server, json, sys, time
+seen=set()
 class Handler(http.server.BaseHTTPRequestHandler):
  def do_POST(self):
   body=self.rfile.read(int(self.headers.get('Content-Length','0')))
-  row={'path':self.path,'authorization':self.headers.get('Authorization',''),'batch':self.headers.get('X-Nexpress-Batch',''),'contentType':self.headers.get('Content-Type',''),'body':base64.b64encode(body).decode()}
+  key=self.headers.get('Idempotency-Key','')
+  accepted=self.path=='/retry' and key not in seen
+  if accepted: seen.add(key)
+  row={'path':self.path,'key':key,'accepted':str(accepted),'authorization':self.headers.get('Authorization',''),'batch':self.headers.get('X-Nexpress-Batch',''),'contentType':self.headers.get('Content-Type',''),'body':base64.b64encode(body).decode()}
   with open(sys.argv[1],'a') as f: f.write(json.dumps(row)+'\n')
-  self.send_response(200); self.send_header('Content-Length','2'); self.end_headers(); self.wfile.write(b'ok')
+  if self.path=='/cancel': time.sleep(2)
+  status = 503 if accepted else 403 if self.path=='/permanent' else 200
+  reply=b'x'*65537 if self.path=='/oversized' else b'ok'
+  self.send_response(status); self.send_header('Content-Length',str(len(reply)))
+  self.end_headers()
+  try: self.wfile.write(reply)
+  except (ConnectionResetError, BrokenPipeError): pass
  def log_message(self,*args): pass
-server=http.server.HTTPServer(('127.0.0.1',0),Handler)
+server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
 print(server.server_port,flush=True)
 server.serve_forever()
 """#
@@ -662,17 +672,40 @@ server.serve_forever()
         item.result = CompressionEngineResult(url: output, bytes: Int64(payload.count), width: 128,
             height: 96, metadataStatus: "metadata verified", frames: 1)
         try await webhook.send(item: item, configuration: config, batchID: "batch-123")
-        try await webhook.summary(configuration: config, batchID: "batch-123", items: [item])
+        var failed = CompressionItem(id: UUID(), source: folder.appendingPathComponent("failed.jpg"),
+                                     originalBytes: 100, width: 8, height: 8)
+        failed.state = .failed
+        failed.error = "Private failure in \(folder.path)"
+        try await webhook.summary(configuration: config, batchID: "batch-123", items: [item, failed])
 
-        for _ in 0..<100 {
-            if let contents = try? String(contentsOf: log, encoding: .utf8),
-               contents.split(whereSeparator: \.isNewline).count == 3 { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
+        func endpoint(_ route: String) throws -> CompressionWebhook.Configuration {
+            try CompressionWebhook.Configuration(url: "http://127.0.0.1:\(portText)/" + route, token: "test-token")
         }
+        try await webhook.send(item: item, configuration: endpoint("retry"), batchID: "batch-123")
+        await #expect(throws: (any Error).self) {
+            try await webhook.send(item: item, configuration: endpoint("permanent"), batchID: "batch-123")
+        }
+        do {
+            try await webhook.test(configuration: endpoint("oversized"))
+            Issue.record("Oversized response should be refused")
+        } catch { #expect(error.localizedDescription.contains("64 KiB"), "\(error.localizedDescription)") }
+        let cancelConfig = try endpoint("cancel")
+        let cancelled = Task { try await webhook.test(configuration: cancelConfig) }
+        for _ in 0..<100 {
+            if (try? String(contentsOf: log, encoding: .utf8).contains("/cancel")) == true { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
         let records = try String(contentsOf: log, encoding: .utf8).split(whereSeparator: \.isNewline).map { line in
             try #require(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: String])
         }
-        #expect(records.count == 3)
+        #expect(records.filter { $0["path"] == "/hook" }.count == 3)
+        let retries = records.filter { $0["path"] == "/retry" }
+        #expect(retries.count == 2)
+        #expect(Set(retries.compactMap { $0["key"] }) == ["batch-123/\(item.id.uuidString)"])
+        #expect(retries.filter { $0["accepted"] == "True" }.count == 1)
+        #expect(records.filter { $0["path"] == "/permanent" }.count == 1)
         #expect(records.allSatisfy { $0["authorization"] == "Bearer test-token" })
         #expect(records.allSatisfy { $0["batch"] == "batch-123" || $0["batch"] == "test" })
         let testPayload = Data(base64Encoded: try #require(records.first?["body"]))!
@@ -682,10 +715,12 @@ server.serve_forever()
         #expect(multipart.contains("filename=\"\(item.outputName)\""))
         #expect(multipart.contains("compressed-test-image"))
         #expect(multipart.contains("\"timezone\":null"))
-        let summary = Data(base64Encoded: try #require(records.last?["body"]))!
+        let summary = Data(base64Encoded: try #require(records.filter { $0["path"] == "/hook" }.last?["body"]))!
         let summaryObject = try #require(JSONSerialization.jsonObject(with: summary) as? [String: Any])
         let totals = try #require(summaryObject["totals"] as? [String: Int])
         #expect(totals["sent"] == 1 && totals["failed"] == 0)
+        #expect(!String(decoding: summary, as: UTF8.self).contains(folder.path))
+        #expect(summaryObject["deadLetters"] as? [[String: String]] == [["fileName": "failed.jpg", "reason": "compression_failed"]])
         #expect(throws: (any Error).self) {
             try CompressionWebhook.Configuration(url: "http://example.com/hook", token: "")
         }
@@ -701,7 +736,7 @@ server.serve_forever()
         try Data("test".utf8).write(to: folder.appendingPathComponent("engine.html"))
         var server: CompressionLocalServer? = try CompressionLocalServer(root: folder, preferredPort: 0)
         weak var released = server
-        let endpoint = URL(string: "http://127.0.0.1:\(server!.port)/native/health")!
+        let endpoint = URL(string: "\(server!.origin)/engine.html")!
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
         let (_, response) = try await session.data(from: endpoint)

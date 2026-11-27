@@ -18,6 +18,7 @@ enum CompressionValidation {
         guard CGImageSourceGetCount(source) == 1 else {
             throw PhotoError("來源包含動畫或多頁影像，目前無法完整保存所有影格，已停止輸出。")
         }
+        _ = try CompressionImages.header(source)
         let auxiliaryTypes = [kCGImageAuxiliaryDataTypeDepth, kCGImageAuxiliaryDataTypeDisparity,
             kCGImageAuxiliaryDataTypePortraitEffectsMatte, kCGImageAuxiliaryDataTypeSemanticSegmentationSkinMatte,
             kCGImageAuxiliaryDataTypeSemanticSegmentationHairMatte, kCGImageAuxiliaryDataTypeSemanticSegmentationTeethMatte,
@@ -28,6 +29,7 @@ enum CompressionValidation {
         }
         guard let image = CGImageSourceCreateImageAtIndex(source, 0,
             [kCGImageSourceShouldCache: false] as CFDictionary),
+              CompressionImages.fitsRaster(width: image.width, height: image.height, depth: image.bitsPerComponent),
               CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else {
             throw PhotoError("來源影像無法完整解碼，已停止輸出。")
         }
@@ -44,18 +46,17 @@ enum CompressionValidation {
     }
 
     static func verifyOutput(_ url: URL, width: Int, height: Int) throws {
-        guard width > 0, height > 0, width <= 20000, height <= 20000,
-              width <= 256 * 1024 * 1024 / 4 / height,
+        guard CompressionImages.fitsRaster(width: width, height: height, depth: 8),
+              let identity = try? FileIdentity.read(url), identity.size <= CompressionImages.maximumFileBytes,
               let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               CGImageSourceGetStatus(source) == .statusComplete,
               CGImageSourceGetCount(source) == 1,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              properties[kCGImagePropertyPixelWidth] as? Int == width,
-              properties[kCGImagePropertyPixelHeight] as? Int == height,
-              let image = CGImageSourceCreateImageAtIndex(source, 0,
-                [kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+              let header = try? CompressionImages.header(source), header.width == width, header.height == height,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
               image.width == width, image.height == height,
-              width <= 256 * 1024 * 1024 / (4 * max(1, image.bitsPerComponent / 8)) / height,
+              CompressionImages.fitsRaster(width: width, height: height, depth: image.bitsPerComponent),
+              image.bytesPerRow <= CompressionImages.maximumRasterBytes / height,
+              let pixels = image.dataProvider?.data, CFDataGetLength(pixels) >= image.bytesPerRow * height,
               CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else {
             throw PhotoError("中繼資料寫入後的影像未通過完整解碼與尺寸驗證，未接受此輸出。")
         }

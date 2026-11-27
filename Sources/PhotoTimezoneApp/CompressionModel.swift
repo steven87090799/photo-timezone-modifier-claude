@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -50,6 +51,8 @@ struct CompressionItem: Identifiable {
     var elapsed = 0.0
     var error: String?
     var webhookStatus: String?
+    var reprocessingFailed = false
+    var canRetry: Bool { state == .failed || reprocessingFailed }
     var outputName: String {
         guard let format else { return source.lastPathComponent }
         let ext = source.pathExtension.lowercased()
@@ -157,7 +160,7 @@ final class CompressionModel: ObservableObject {
         let elapsed: TimeInterval
     }
     private var previewCache: PreviewCache?
-    private var exportTask: Task<Void, Never>?
+    private var exportReceipts: [URL: CompressionExports.Receipt] = [:]
     private var batchTask: Task<Void, Never>?
     private let webhook = CompressionWebhook()
     private var batchID = ""
@@ -185,7 +188,8 @@ final class CompressionModel: ObservableObject {
         defaults.set(Self.jpegEncoderPreferenceVersion, forKey: "nativeCompressionJPEGEncoder")
         let savedParallelism = defaults.integer(forKey: "nativeCompressionParallelism")
         parallelism = savedParallelism > 0 ? min(Self.maximumParallelism, savedParallelism) : 2
-        webhookURL = defaults.string(forKey: "nativeCompressionWebhookURL") ?? ""
+        webhookURL = ""
+        defaults.removeObject(forKey: "nativeCompressionWebhookURL")
         host.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
     }
 
@@ -253,7 +257,7 @@ final class CompressionModel: ObservableObject {
     var batchSavings: Double? { Self.savings(source: completedSourceBytes, output: resultBytes) }
     var resultBytes: Int64 { completed.reduce(0) { $0 + ($1.result?.bytes ?? 0) } }
     var progress: Double { items.isEmpty ? 0 : items.reduce(0) { $0 + ($1.state == .running ? $1.progress / 100 : [.success, .failed, .cancelled].contains($1.state) ? 1 : 0) } / Double(items.count) }
-    var canStart: Bool { (format != .heif || CompressionHost.supportsHEIF) && !items.isEmpty && !isRunning && !isImporting && !isExporting }
+    var canStart: Bool { (format == .png || host.isAvailable(format)) && !items.isEmpty && !isRunning && !isImporting && !isExporting }
     static func bytes(_ count: Int64) -> String { ByteCountFormatter.string(fromByteCount: count, countStyle: .file) }
 
     func chooseInputs() {
@@ -283,11 +287,15 @@ final class CompressionModel: ObservableObject {
                           let values = try? source.resourceValues(forKeys: Set(keys + [.fileSizeKey])),
                           values.isRegularFile == true, values.isSymbolicLink != true else { return }
                     let size = Int64(values.fileSize ?? 0)
-                    let properties = CGImageSourceCreateWithURL(source as CFURL, nil).flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
+                    let sourceImage = size <= CompressionImages.maximumFileBytes
+                        ? CGImageSourceCreateWithURL(source as CFURL, nil) : nil
+                    let header = sourceImage.flatMap { try? CompressionImages.header($0) }
                     var item = CompressionItem(id: UUID(), source: source, originalBytes: size,
-                        width: properties?[kCGImagePropertyPixelWidth] as? Int ?? 0,
-                        height: properties?[kCGImagePropertyPixelHeight] as? Int ?? 0)
-                    if size > 256 * 1024 * 1024 { item.state = .failed; item.error = "來源檔案超過 256 MiB 上限" }
+                        width: header?.width ?? 0, height: header?.height ?? 0)
+                    if size > CompressionImages.maximumFileBytes { item.state = .failed; item.error = "來源檔案超過 256 MiB 上限" }
+                    else if header == nil && !CompressionRAW.accepts(source) {
+                        item.state = .failed; item.error = "無法確認影像尺寸，或像素緩衝區超過 256 MiB。"
+                    }
                     else {
                         do {
                             guard let reader else { throw PhotoError("無法啟動中繼資料讀取工具。") }
@@ -347,6 +355,7 @@ final class CompressionModel: ObservableObject {
     func clear() {
         guard !isRunning, !isExporting, !isImporting else { return }
         previewTask?.cancel(); host.cancelAll()
+        exportReceipts.removeAll()
         discardPreviewCache()
         let results = items.compactMap { $0.result?.url.deletingLastPathComponent() }
         exportStatus = ""; webhookStatus = ""
@@ -486,12 +495,11 @@ final class CompressionModel: ObservableObject {
 
     private func start(retryingFailures: Bool) {
         guard canStart else { return }
-        let targetIDs = Set(items.filter { !retryingFailures || $0.state == .failed }.map(\.id))
+        let targetIDs = Set(items.filter { !retryingFailures || $0.canRetry }.map(\.id))
         guard !targetIDs.isEmpty else { return }
         let config: CompressionWebhook.Configuration?
         do { config = webhookEnabled ? try CompressionWebhook.Configuration(url: webhookURL, token: webhookToken) : nil }
         catch { notice = error.localizedDescription; return }
-        preferences.set(webhookURL, forKey: "nativeCompressionWebhookURL")
         previewTask?.cancel(); host.cancelAll()
         let chosenFormat = format, chosenQuality = Int(quality.rounded()), chosenDecoder = rawDecoder
         let largestPixels = items.filter { targetIDs.contains($0.id) }.map { max(1, min(20000, $0.width)) * max(1, min(20000, $0.height)) }.max() ?? 1
@@ -500,12 +508,10 @@ final class CompressionModel: ObservableObject {
             pixelCount: largestPixels, physicalMemory: ProcessInfo.processInfo.physicalMemory)
         let reusablePreview = selected.flatMap { targetIDs.contains($0.id) ? matchingPreviewCache(for: $0, format: chosenFormat, quality: chosenQuality) : nil }
         if previewCache != nil && reusablePreview == nil { discardPreviewCache() }
+        let previousResults = completed.filter { targetIDs.contains($0.id) }
         for index in items.indices where targetIDs.contains(items[index].id) {
             let reusesPreview = reusablePreview?.source.path == items[index].source.path
-            if let result = items[index].result,
-               !reusesPreview || result.url != reusablePreview?.result.url {
-                try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent())
-            }
+            items[index].reprocessingFailed = false
             items[index].result = reusesPreview ? reusablePreview?.result : nil
             items[index].state = reusesPreview ? .success : .pending
             items[index].progress = reusesPreview ? 100 : 0
@@ -547,8 +553,32 @@ final class CompressionModel: ObservableObject {
                 do { try await webhook.summary(configuration: config, batchID: batchID, items: items.filter { targetIDs.contains($0.id) }); webhookStatus = "批次摘要已送出" }
                 catch { webhookStatus = "摘要傳送失敗：\(error.localizedDescription)" }
             }
+            var retainedCount = 0
+            let indices = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($1.id, $0) })
+            for previous in previousResults {
+                guard let index = indices[previous.id], let old = previous.result else { continue }
+                if let replacement = items[index].result {
+                    if replacement.url != old.url {
+                        exportReceipts = exportReceipts.filter { $0.value.source != old.url }
+                        try? FileManager.default.removeItem(at: old.url.deletingLastPathComponent())
+                    }
+                } else {
+                    let failed = items[index].state == .failed
+                    let reason = items[index].error
+                    items[index] = previous
+                    items[index].reprocessingFailed = failed
+                    items[index].error = failed
+                        ? "重新壓縮失敗，已保留上次成品。 \(reason ?? "")"
+                        : "重新壓縮已取消，已保留上次成品。"
+                    retainedCount += 1
+                }
+            }
             isRunning = false; isCancelling = false
-            exportStatus = completed.isEmpty ? "沒有可儲存的壓縮結果" : "壓縮完成，尚未儲存"
+            if retainedCount > 0 {
+                exportStatus = "已保留 \(retainedCount) 張上次壓縮的成品"
+            } else {
+                exportStatus = completed.isEmpty ? "沒有可儲存的壓縮結果" : "壓縮完成，可儲存成品"
+            }
             batchTask = nil
             if !isActive { host.releaseRuntime() }
             updatePreview()
@@ -638,8 +668,8 @@ final class CompressionModel: ObservableObject {
                 guard let self else { return }
                 guard self.safeDestination(url) else { return }
                 self.export {
-                    try result.outputIdentity?.verify(result.url)
-                    try CompressionExports.saveFile(result.url, to: url)
+                    try CompressionExports.saveFile(result.url, to: url, expected: result.outputIdentity)
+                    return [:]
                 }
             }
         }
@@ -648,10 +678,12 @@ final class CompressionModel: ObservableObject {
     func saveAll() {
         guard !completed.isEmpty else { return }
         if let outputDirectory {
-            let outputs = completed.map { ($0.result!, $0.outputName) }
+            let outputs = completed.compactMap { item in item.result.map {
+                CompressionExports.Output(source: $0.url, name: item.outputName, identity: $0.outputIdentity)
+            } }
+            let receipts = exportReceipts
             export {
-                for (result, _) in outputs { try result.outputIdentity?.verify(result.url) }
-                try CompressionExports.saveAll(outputs.map { ($0.0.url, $0.1) }, in: outputDirectory)
+                try CompressionExports.saveAll(outputs, in: outputDirectory, resuming: receipts)
             }
         } else {
             let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
@@ -672,20 +704,32 @@ final class CompressionModel: ObservableObject {
                 guard let self, self.safeDestination(target) else { return }
                 self.export {
                     for (result, _) in outputs { try result.outputIdentity?.verify(result.url) }
-                    try CompressionExports.zip(outputs.map { ($0.0.url, $0.1) }, to: target)
+                    try CompressionExports.zip(outputs.map {
+                        CompressionExports.Output(source: $0.0.url, name: $0.1, identity: $0.0.outputIdentity)
+                    }, to: target)
+                    return [:]
                 }
             }
         }
     }
 
-    private func export(successMessage: String = "已儲存輸出", _ operation: @escaping () throws -> Void) {
+    private func export(_ operation: @escaping () throws -> [URL: CompressionExports.Receipt]) {
         guard !isExporting, !isRunning else { return }
         isExporting = true
-        exportTask = Task {
-            do { try await Task.detached(priority: .userInitiated) { try operation() }.value }
-            catch { notice = error.localizedDescription; exportStatus = "儲存失敗，壓縮結果仍可重新儲存"; isExporting = false; return }
-            exportStatus = successMessage
-            isExporting = false
+        Task {
+            defer { isExporting = false }
+            do {
+                let saved = try await Task.detached(priority: .userInitiated) { try operation() }.value
+                exportReceipts.merge(saved) { _, new in new }
+                exportStatus = "已儲存輸出"
+            } catch let partial as CompressionExports.PartialSave {
+                exportReceipts.merge(partial.receipts) { _, new in new }
+                notice = partial.localizedDescription
+                exportStatus = "已儲存 \(partial.receipts.count) 張，尚有 \(partial.remaining.count) 張"
+            } catch {
+                notice = error.localizedDescription
+                exportStatus = "儲存失敗，壓縮結果仍可重新儲存"
+            }
         }
     }
 
@@ -703,54 +747,137 @@ final class CompressionModel: ObservableObject {
             do {
                 let config = try CompressionWebhook.Configuration(url: webhookURL, token: webhookToken)
                 try await webhook.test(configuration: config); webhookStatus = "連線成功"
-                preferences.set(webhookURL, forKey: "nativeCompressionWebhookURL")
             } catch { webhookStatus = "連線失敗：\(error.localizedDescription)" }
         }
     }
 }
 
 enum CompressionExports {
-    static func saveFile(_ source: URL, to target: URL) throws {
-        try FileExport.copyExclusive(source, to: target)
+    struct Output {
+        let source: URL
+        let name: String
+        var identity: FileIdentity? = nil
     }
-    static func saveAll(_ files: [(URL, String)], in folder: URL) throws {
+
+    struct Receipt {
+        let source: URL
+        let sourceIdentity: FileIdentity
+        let destinationIdentity: FileIdentity
+    }
+
+    struct PartialSave: LocalizedError {
+        let receipts: [URL: Receipt]
+        let remaining: [String]
+        let cause: Error
+
+        var errorDescription: String? {
+            let first = remaining.first ?? ""
+            return "已儲存 \(receipts.count) 張，尚有 \(remaining.count) 張。停在 \(first)。\(cause.localizedDescription) 可在修正後對同一資料夾再次儲存。"
+        }
+    }
+
+    @discardableResult
+    static func saveFile(_ source: URL, to target: URL, expected: FileIdentity? = nil) throws -> FileIdentity {
+        try FileExport.copyExclusive(source, to: target, expectedSource: expected)
+    }
+
+    @discardableResult
+    static func saveAll(_ files: [Output], in folder: URL, resuming previous: [URL: Receipt] = [:],
+                        publish: (URL, URL, FileIdentity?) throws -> FileIdentity = saveFile) throws -> [URL: Receipt] {
         var names = Set<String>()
-        for (source, name) in files {
-            _ = try FileIdentity.read(source)
-            guard name == URL(fileURLWithPath: name).lastPathComponent, name != ".", name != ".." else { throw PhotoError("輸出檔名無效：\(name)") }
+        var receipts: [URL: Receipt] = [:]
+        let directory = folder.resolvingSymlinksInPath().standardizedFileURL
+        let plan = try files.map { file in
+            let name = file.name
+            guard !name.isEmpty, !name.contains("/"), !name.contains("\u{0}"), name != ".", name != ".." else {
+                throw PhotoError("輸出檔名無效。")
+            }
             let key = name.precomposedStringWithCanonicalMapping.lowercased()
-            guard names.insert(key).inserted else { throw PhotoError("有重複檔名：\(name)。為保留原檔名，請分批輸出至不同資料夾。") }
-            guard !FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path) else { throw PhotoError("輸出位置已有同名檔案：\(name)。請選擇空資料夾；不會自動改名或覆蓋。") }
+            guard names.insert(key).inserted else {
+                throw PhotoError("有重複檔名：\(name)。為保留原檔名，請分批輸出至不同資料夾。")
+            }
+            let destination = directory.appendingPathComponent(name)
+            let identity = try FileIdentity.read(file.source)
+            if let expected = file.identity { try expected.verify(file.source) }
+            if FileManager.default.fileExists(atPath: destination.path) {
+                guard let receipt = previous[destination], receipt.source == file.source,
+                      receipt.sourceIdentity == identity,
+                      (try? FileIdentity.read(destination)) == receipt.destinationIdentity else {
+                    throw PhotoError("輸出位置已有同名檔案：\(name)。請選擇新的輸出位置。")
+                }
+                receipts[destination] = receipt
+            }
+            return (file, destination, identity)
         }
-        for (source, name) in files {
-            try saveFile(source, to: folder.appendingPathComponent(name))
+        let pending = plan.filter { receipts[$0.1] == nil }
+        for (index, entry) in pending.enumerated() {
+            let (file, destination, identity) = entry
+            do {
+                let saved = try publish(file.source, destination, identity)
+                receipts[destination] = Receipt(source: file.source, sourceIdentity: identity, destinationIdentity: saved)
+            } catch {
+                throw PartialSave(receipts: receipts, remaining: pending[index...].map { $0.0.name }, cause: error)
+            }
         }
+        return receipts
     }
+
+    static func saveAll(_ files: [(URL, String)], in folder: URL) throws {
+        try saveAll(files.map { Output(source: $0.0, name: $0.1) }, in: folder)
+    }
+
     static func zip(_ files: [(URL, String)], to target: URL) throws {
-        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("PhotoTimezoneZIP-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+        try zip(files.map { Output(source: $0.0, name: $0.1) }, to: target)
+    }
+
+    static func zip(_ files: [Output], to target: URL) throws {
+        let temporary = FileManager.default.temporaryDirectory
+        let bytes = try files.reduce(Int64(0)) { total, file -> Int64 in
+            let size = try FileIdentity.read(file.source).size
+            let (sum, overflow) = total.addingReportingOverflow(size)
+            guard !overflow else { throw PhotoError("ZIP 輸入大小超過上限。") }
+            return sum
+        }
+        try CompressionImages.requireTemporaryCapacity(temporary, bytes: bytes, copies: 2)
+        let staging = temporary.appendingPathComponent("PhotoTimezoneZIP-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: staging) }
         let images = staging.appendingPathComponent("images")
         try FileManager.default.createDirectory(at: images, withIntermediateDirectories: false)
         try saveAll(files, in: images)
         let archive = staging.appendingPathComponent("output.zip")
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-c", "-k", "--rsrc", "--extattr", "--sequesterRsrc", images.path, archive.path]
         var environment = ProcessInfo.processInfo.environment
         environment.removeValue(forKey: "DITTONORSRC")
         process.environment = environment
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try runZIPProcess(process, failure: "ZIP 打包失敗。")
+
+        let verify = Process()
+        verify.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        verify.arguments = ["-tq", archive.path]
+        try runZIPProcess(verify, failure: "ZIP 完整性驗證失敗。")
+        try saveFile(archive, to: target)
+    }
+
+    static func runZIPProcess(_ process: Process, timeout: TimeInterval = 180, failure: String) throws {
+        let exited = DispatchSemaphore(value: 0)
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in exited.signal() }
         try ChildProcessRegistry.shared.launch(process)
         defer { ChildProcessRegistry.shared.finished(process) }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw NSError(domain: "Compression", code: 1, userInfo: [NSLocalizedDescriptionKey: "ZIP 打包失敗。"]) }
-        let verify = Process(); verify.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        verify.arguments = ["-tq", archive.path]
-        verify.standardOutput = FileHandle.nullDevice; verify.standardError = FileHandle.nullDevice
-        try ChildProcessRegistry.shared.launch(verify)
-        defer { ChildProcessRegistry.shared.finished(verify) }
-        verify.waitUntilExit()
-        guard verify.terminationStatus == 0 else { throw PhotoError("ZIP 完整性驗證失敗；未建立輸出。") }
-        try saveFile(archive, to: target)
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            if process.isRunning { process.terminate() }
+            if exited.wait(timeout: .now() + .milliseconds(500)) == .timedOut, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            throw PhotoError("ZIP 處理逾時，請分批輸出。")
+        }
+        guard process.terminationStatus == 0 else { throw PhotoError(failure) }
     }
 }

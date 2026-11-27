@@ -10,11 +10,14 @@ on:
         description: Run the 1000-photo write and backup integrity test
         type: boolean
         default: false
+      publish:
+        description: Request a signed candidate and separate publication approval
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# Cancel stale PR runs; each main push keeps its own build and release.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
@@ -24,18 +27,26 @@ jobs:
     uses: ./.github/workflows/jpegli-windows.yml
 
   test-and-build-macos:
-    # Shipping/test baseline is Apple Silicon running macOS 27+.
     runs-on: xcode-27
-    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Ensure native codec build tool
+      - name: Ensure build tools
         run: |
           command -v cmake >/dev/null || brew install cmake
           command -v node >/dev/null || brew install node
           command -v pkg-config >/dev/null || brew install pkg-config
-          brew list highway brotli little-cms2 >/dev/null || brew install highway brotli little-cms2
+          python3 -c 'import sys; assert sys.version_info >= (3, 12)'
+
+      - name: Check development engine assets and regressions
+        run: |
+          npm --prefix CompressionWeb run check:syntax
+          npm --prefix CompressionWeb run check:build-info
+          python3 scripts/dependency-manifest.py check-web .
+          node --test Tests/CompressionWebTests/*.mjs
 
       - name: Fetch pinned real Sony A7 IV ARW fixture
         shell: bash
@@ -44,73 +55,106 @@ jobs:
           echo "PHOTO_TIMEZONE_REAL_ARW_FIXTURE=$fixture" >> "$GITHUB_ENV"
 
       - name: Full native regression suite
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           PHOTO_TIMEZONE_STRESS: '0'
         run: ./scripts/test.sh
 
-      - name: Optional thousand-photo stability test
-        if: github.event_name == 'workflow_dispatch' && inputs.stress
+      - name: Thousand-photo stability test
+        if: github.event_name == 'workflow_dispatch' && (inputs.stress || inputs.publish)
         timeout-minutes: 15
         env:
           PHOTO_TIMEZONE_STRESS: '1'
         run: ./scripts/test.sh --filter testThousand
 
-      - name: Identify automatic build
+      - name: Build Apple Silicon app
+        timeout-minutes: 15
+        env:
+          NEXPRESS_BUILD_REVISION: ${{ github.sha }}
+          NEXPRESS_RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish && 'production' || 'development' }}
         run: |
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" app/Info.plist
-
-      - name: Build Apple Silicon app
-        timeout-minutes: 12
-        run: ./build.sh
-
-      - name: Check verified build archive
-        run: unzip -tq dist/PhotoTimezone-macOS.zip
+          ./build.sh
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: PhotoTimezone-macOS
+          name: PhotoTimezone-local-${{ github.run_attempt }}
           path: dist/PhotoTimezone-macOS.zip
           if-no-files-found: error
 
-  publish-app:
-    # PRs get downloadable Actions artifacts; only main can publish Releases.
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+  sign-candidate:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish
     needs: [test-and-build-macos, windows-jpegli]
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    environment: macos-signing
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: PhotoTimezone-local-${{ github.run_attempt }}
+          path: unsigned
+      - name: Sign, notarize and verify the candidate
+        env:
+          NEXPRESS_BUILD_REVISION: ${{ github.sha }}
+          NEXPRESS_RELEASE_CHANNEL: production
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_API_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER: ${{ secrets.NOTARY_API_ISSUER }}
+        run: |
+          mkdir signed
+          bash scripts/sign-release.sh unsigned/PhotoTimezone-macOS.zip signed/PhotoTimezone-macOS.zip
+          cd signed
+          shasum -a 256 PhotoTimezone-macOS.zip > SHA256SUMS
+          cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: PhotoTimezone-signed-${{ github.run_attempt }}
+          path: signed/
+          if-no-files-found: error
+
+  publish-app:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: sign-candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    environment: macos-publication
+    concurrency:
+      group: macos-publication
+      cancel-in-progress: false
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: PhotoTimezone-macOS
-          path: dist
-      - name: Publish downloadable main build
+          name: PhotoTimezone-signed-${{ github.run_attempt }}
+          path: signed
+      - name: Publish the approved immutable candidate
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="build-$GITHUB_SHA"
-          notes="$RUNNER_TEMP/app-release-notes.md"
-          cat > "$notes" <<EOF
-          自動建置的 macOS 27+ Apple Silicon App，適用 M 系列晶片。
-          下載 PhotoTimezone-macOS.zip，解壓縮後將 App 放到「應用程式」。
-
-          提交：$GITHUB_SHA
-          建置編號：$GITHUB_RUN_NUMBER
-          測試與建置：https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
-
-          此版本使用 ad-hoc 簽章，尚未取得 Apple Developer ID 簽章／公證。
-          EOF
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "macOS App · build $GITHUB_RUN_NUMBER" --notes-file "$notes"
-          fi
-          gh release upload "$tag" dist/PhotoTimezone-macOS.zip --clobber
-          # A slower old build is archived without replacing the newest download.
+          cd signed
+          sha256sum -c SHA256SUMS
+          tag="build-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           main_head="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')"
-          latest=false
-          if [[ "$main_head" == "$GITHUB_SHA" ]]; then latest=true; fi
-          gh release edit "$tag" --draft=false --latest="$latest" --notes-file "$notes"
+          [[ "$main_head" == "$GITHUB_SHA" ]] || { echo "main moved; request a fresh candidate."; exit 1; }
+          notes="$RUNNER_TEMP/mac-release-notes.md"
+          cat > "$notes" <<EOF
+          已使用 Apple Developer ID 簽章並附加公證票證的 macOS 27+ Apple Silicon App。
+          提交 $GITHUB_SHA
+          測試、簽章與候選包 https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID
+          EOF
+          cat SHA256SUMS >> "$notes"
+          gh release create "$tag" --target "$GITHUB_SHA" --draft --title "macOS App · build $GITHUB_RUN_NUMBER" \
+            --notes-file "$notes" PhotoTimezone-macOS.zip SHA256SUMS
+          main_head="$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')"
+          [[ "$main_head" == "$GITHUB_SHA" ]] || { echo "main moved; candidate remains a draft."; exit 1; }
+          gh release edit "$tag" --draft=false --latest

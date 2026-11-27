@@ -27,12 +27,15 @@ final class ExifToolSession {
     init(url: URL) { self.url = url }
     deinit { stop() }
 
-    func execute(_ arguments: [String], timeout: TimeInterval,
+    func execute(_ command: ExifToolArguments, deadline: DispatchTime,
                  cancellation: CancellationToken?) throws -> ProcessOutput {
-        lock.lock(); defer { lock.unlock() }
-        if cancellation?.isCancelled == true { throw CancellationError() }
-        // Line-based native argfiles cannot represent these characters safely.
-        guard !arguments.contains(where: { $0.contains("\n") || $0.contains("\r") || $0.contains("\0") }) else {
+        while !lock.try() {
+            try checkDeadline(deadline, cancellation: cancellation)
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        defer { lock.unlock() }
+        try checkDeadline(deadline, cancellation: cancellation)
+        guard command.supportsStayOpen else {
             throw PhotoError("This path requires the direct argv transport.")
         }
         if sequence >= 128 || outputOffset + errorOffset > 64 * 1024 * 1024 { stop() }
@@ -41,12 +44,12 @@ final class ExifToolSession {
         sequence += 1
         let ready = Data("{ready\(sequence)}\n".utf8)
         let statusToken = "PTZ-\(UUID().uuidString)-STATUS-"
-        let request = arguments + ["-echo4", statusToken + "${status}", "-execute\(sequence)"]
+        let request = command.values + ["-echo4", statusToken + "${status}", "-execute\(sequence)"]
         do {
-            try input.write(contentsOf: Data((request.joined(separator: "\n") + "\n").utf8))
-            let started = ProcessInfo.processInfo.systemUptime
+            try send(Data((request.joined(separator: "\n") + "\n").utf8), to: input.fileDescriptor,
+                     deadline: deadline, cancellation: cancellation)
             while true {
-                if cancellation?.isCancelled == true { throw CancellationError() }
+                try checkDeadline(deadline, cancellation: cancellation)
                 let outputEnd = try outReader.seekToEnd(), errorEnd = try errReader.seekToEnd()
                 guard outputEnd >= outputOffset, errorEnd >= errorOffset,
                       outputEnd - outputOffset <= UInt64(ExifTool.outputLimit),
@@ -73,9 +76,6 @@ final class ExifToolSession {
                         stderr: String(allErrors[..<marker.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
                 }
                 guard process.isRunning else { throw PhotoError("ExifTool worker exited before completing its response.") }
-                guard ProcessInfo.processInfo.systemUptime - started < timeout else {
-                    throw PhotoError("ExifTool timed out; only a disposable candidate may have been changed.")
-                }
                 Thread.sleep(forTimeInterval: 0.01)
             }
         } catch {
@@ -83,6 +83,72 @@ final class ExifToolSession {
             stop()
             throw error
         }
+    }
+
+    private func checkDeadline(_ deadline: DispatchTime, cancellation: CancellationToken?) throws {
+        if cancellation?.isCancelled == true { throw CancellationError() }
+        guard DispatchTime.now() < deadline else {
+            throw PhotoError("ExifTool timed out; only a disposable candidate may have been changed.")
+        }
+    }
+
+    private func send(_ data: Data, to fd: Int32, deadline: DispatchTime, cancellation: CancellationToken?) throws {
+        #if canImport(Darwin)
+        let sendFlags: Int32 = 0
+        #else
+        let sendFlags = Int32(MSG_NOSIGNAL)
+        #endif
+        try data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress else { return }
+            var sent = 0
+            while sent < bytes.count {
+                try checkDeadline(deadline, cancellation: cancellation)
+                let count = writeSocket(fd, base.advanced(by: sent), bytes.count - sent, flags: sendFlags)
+                if count > 0 { sent += count; continue }
+                if count < 0 && errno == EINTR { continue }
+                guard count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) else {
+                    throw PhotoError("Could not send a complete request to the ExifTool worker.")
+                }
+                var writable = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                _ = poll(&writable, 1, 10)
+            }
+        }
+    }
+
+    private func writeSocket(_ fd: Int32, _ bytes: UnsafeRawPointer, _ count: Int, flags: Int32) -> Int {
+        #if canImport(Darwin)
+        Darwin.send(fd, bytes, count, flags)
+        #else
+        Glibc.send(fd, bytes, count, flags)
+        #endif
+    }
+
+    private func commandChannel() throws -> (reader: FileHandle, writer: FileHandle) {
+        #if canImport(Darwin)
+        let stream = SOCK_STREAM
+        #else
+        let stream = Int32(SOCK_STREAM.rawValue) | Int32(SOCK_CLOEXEC.rawValue)
+        #endif
+        var descriptors: [Int32] = [-1, -1]
+        guard socketpair(AF_UNIX, stream, 0, &descriptors) == 0 else {
+            throw PhotoError("Cannot create an ExifTool command channel.")
+        }
+        let reader = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: true)
+        let writer = FileHandle(fileDescriptor: descriptors[1], closeOnDealloc: true)
+        let flags = fcntl(writer.fileDescriptor, F_GETFL, 0)
+        guard flags >= 0, fcntl(writer.fileDescriptor, F_SETFL, flags | O_NONBLOCK) == 0,
+              fcntl(reader.fileDescriptor, F_SETFD, FD_CLOEXEC) == 0,
+              fcntl(writer.fileDescriptor, F_SETFD, FD_CLOEXEC) == 0 else {
+            throw PhotoError("Cannot configure the ExifTool command channel.")
+        }
+        #if canImport(Darwin)
+        var noSignal: Int32 = 1
+        guard setsockopt(writer.fileDescriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                         socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            throw PhotoError("Cannot configure the ExifTool command channel.")
+        }
+        #endif
+        return (reader, writer)
     }
 
     private func tail(_ file: FileHandle, start: UInt64, end: UInt64) throws -> Data {
@@ -104,23 +170,24 @@ final class ExifToolSession {
             }
             outWriter = try FileHandle(forWritingTo: out); errWriter = try FileHandle(forWritingTo: err)
             outReader = try FileHandle(forReadingFrom: out); errReader = try FileHandle(forReadingFrom: err)
-            let child = Process(), pipe = Pipe(), done = DispatchSemaphore(value: 0)
+            let child = Process(), done = DispatchSemaphore(value: 0)
+            let channel = try commandChannel()
+            defer { try? channel.reader.close() }
             child.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
             child.arguments = [url.path, "-config", "", "-stay_open", "True", "-@", "-"]
             child.environment = ["PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"]
-            child.standardInput = pipe; child.standardOutput = outWriter; child.standardError = errWriter
+            child.standardInput = channel.reader; child.standardOutput = outWriter; child.standardError = errWriter
             child.terminationHandler = { _ in done.signal() }
             try ChildProcessRegistry.shared.launch(child)
-            process = child; completed = done; input = pipe.fileHandleForWriting
-            try? pipe.fileHandleForReading.close()
+            process = child; completed = done; input = channel.writer
             outputOffset = 0; errorOffset = 0; sequence = 0
         } catch { stop(); throw error }
     }
 
     private func stop() {
+        // EOF ends the pinned stdin worker. Teardown never writes to a stalled reader.
+        try? input?.close()
         if let process, process.isRunning {
-            try? input?.write(contentsOf: Data("-stay_open\nFalse\n".utf8))
-            try? input?.close()
             if completed?.wait(timeout: .now() + 0.5) == .timedOut {
                 process.terminate()
                 if completed?.wait(timeout: .now() + 0.5) == .timedOut, process.isRunning {
@@ -130,7 +197,7 @@ final class ExifToolSession {
             process.waitUntilExit()
         }
         if let process { ChildProcessRegistry.shared.finished(process) }
-        try? input?.close(); try? outWriter?.close(); try? errWriter?.close()
+        try? outWriter?.close(); try? errWriter?.close()
         try? outReader?.close(); try? errReader?.close()
         if let directory { try? FileManager.default.removeItem(at: directory) }
         process = nil; input = nil; outWriter = nil; errWriter = nil

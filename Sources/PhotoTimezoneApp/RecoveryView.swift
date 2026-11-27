@@ -36,7 +36,9 @@ struct RecoveryView: View {
                             }
                             HStack {
                                 Button("在 Finder 顯示") { NSWorkspace.shared.activateFileViewerSelecting([entry.target]) }
-                                Button("已人工檢查…") { state.selected = entry; state.confirm = true }.disabled(state.busy)
+                                if entry.canAcknowledge {
+                                    Button("已人工檢查…") { state.selected = entry; state.confirm = true }.disabled(state.busy)
+                                }
                             }
                         }
                         Divider()

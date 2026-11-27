@@ -55,9 +55,13 @@ public enum RAWMetadataTransfer {
         let pinned = try FileIdentity.read(source)
         let tool = ExifTool(url: exiftoolURL, persistent: true)
         let before = try tool.snapshot(source, cancellation: cancellation, strictOffsets: false, forCompression: true)
+        let beforeDeveloped = try tool.snapshot(developed, cancellation: cancellation, strictOffsets: false, forCompression: true)
         let selected = before.embeddedTags.filter { includes($0.key) }
         let tags = Set(selected.keys.map(MetadataVerifier.canonicalCopyKey)).sorted()
-        let arguments = ["-overwrite_original", "-n", "-TagsFromFile", source.path] + tags.map { "-\($0)" } + [
+        var arguments = ["-overwrite_original", "-n"]
+        // With no explicit tags ExifTool would copy every writable tag.
+        if !tags.isEmpty { arguments += ["-TagsFromFile", source.path] + tags.map { "-\($0)" } }
+        arguments += [
             "-IFD0:Orientation#=1", "-ExifIFD:ColorSpace#=1", "-ExifIFD:ExifImageWidth=\(width)",
             "-ExifIFD:ExifImageHeight=\(height)", developed.path]
         let write = try tool.execute(arguments, timeout: 120, cancellation: cancellation)
@@ -71,6 +75,20 @@ public enum RAWMetadataTransfer {
             !CompressionMetadataTransfer.metadataValuesMatch(key: $0, expected[$0]!.map(\.value), actual[$0]?.map(\.value) ?? [])
         }
         guard missing.isEmpty else { throw PhotoError("RAW 拍攝資訊、時區或 GPS 核對失敗：\(missing.joined(separator: "、"))") }
+        let original = Dictionary(grouping: beforeDeveloped.embeddedTags, by: { CompressionMetadataTransfer.comparisonKey($0.key) })
+        // ExifTool can create required EXIF bookkeeping fields or move TIFF offsets.
+        let generated: Set<String> = ["EXIF:Orientation", "ExifIFD:ColorSpace", "ExifIFD:ExifImageWidth",
+            "ExifIFD:ExifImageHeight", "ExifIFD:ExifVersion", "ExifIFD:FlashpixVersion",
+            "ExifIFD:ComponentsConfiguration", "IFD0:ExifOffset", "IFD0:GPSInfo", "IFD0:StripOffsets",
+            "GPS:GPSVersionID", "XMP-x:XMPToolkit"]
+        let unchanged = Set(original.keys).union(actual.keys).subtracting(expected.keys).subtracting(generated)
+        let unexpected = unchanged.sorted().filter {
+            !CompressionMetadataTransfer.metadataValuesMatch(key: $0, original[$0]?.map(\.value) ?? [],
+                                                              actual[$0]?.map(\.value) ?? [])
+        }
+        guard unexpected.isEmpty else {
+            throw PhotoError("RAW 顯影檔出現未核准的中繼資料變更：\(unexpected.joined(separator: "、"))")
+        }
         try pinned.verify(source)
     }
 }

@@ -1,0 +1,7 @@
+[
+  {"name":"highway","version":"1.4.0","repository":"google/highway","revision":"2607d3b5b0113992fe84d3848859eae13b3b52c1","sha256":"741d705781e0b3e406beda8f1f994fbae01321237ce8023a1ad90fbaf7940c25","license":["LICENSE"]},
+  {"name":"brotli","version":"1.2.1","repository":"google/brotli","revision":"db24a98aed38a16de78cc05ca15cdd8dc2a0d92d","sha256":"113b9685dfc14dd2f3360d077283266eec2fbdfb0fe3e5600f11be151da0d68e","license":["LICENSE"]},
+  {"name":"little-cms2","version":"2.20","repository":"mm2/Little-CMS","revision":"7717fce0d85447ef3b2df0cca2e99207c15eeecd","sha256":"0bb5e2468da857d06218554effb99bb7cef66e85eeda658218283fae99ab99d1","license":["LICENSE"]},
+  {"name":"webp","version":"1.6.0","repository":"webmproject/libwebp","revision":"4fa21912338357f89e4fd51cf2368325b59e9bd9","sha256":"923f3382a47a2af185c3240c954cf004428b237bd7317413a95146d01eb4b94b","license":["COPYING","PATENTS"]},
+  {"name":"libjxl","version":"0.13.0","repository":"libjxl/libjxl","revision":"5a7da83447212fe4900fc29ce97430b881caa67e","sha256":"a914d80c4da5ad453e3c8232486298bec0442bf8a16ff855a2d3c7936125c0ea","license":["LICENSE","PATENTS"]}
+]

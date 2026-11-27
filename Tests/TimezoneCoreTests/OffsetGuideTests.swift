@@ -17,4 +17,9 @@ import Testing
         #expect(OffsetGuide.examples(for: UTCOffset(minutes: 765)).contains("查塔姆"))
         #expect(OffsetGuide.examples(for: UTCOffset(minutes: 15)).contains("沒有常見"))
     }
+
+    @Test func britishColumbiaExampleReflectsItsNewOffset() {
+        #expect(!OffsetGuide.examples(for: UTCOffset(minutes: -480)).contains("卑詩省"))
+        #expect(OffsetGuide.examples(for: UTCOffset(minutes: -420)).contains("卑詩省大部分地區（2026-03-08 起）"))
+    }
 }

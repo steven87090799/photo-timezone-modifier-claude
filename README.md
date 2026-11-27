@@ -54,7 +54,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 ## 影像壓縮與中繼資料
 
-介面採用 macOS 原生 Liquid Glass、靠右的分頁工具列，以及一致的設定、預覽和結果區；系統開啟「降低透明度」時使用實色背景。壓縮頁保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存及選用 Webhook。下方直接顯示成功／失敗和容量變化，可只查看失敗項目、重試失敗或隱藏預覽以放大清單；不再提供 CSV 匯出。切換分頁會保留工作狀態；離開壓縮頁且無工作時會釋放引擎。HEIF／HEIC 由 macOS ImageIO 原生編解碼。JPEG／HEIF 優先完整複製原始 EXIF 區塊並逐位元組驗證，避免光圈與快門的精度換算造成誤判；無可擷取 EXIF 區塊的來源僅容許指定拍攝數值的極小換算誤差，時區、日期、GPS、XMP 仍嚴格核對。
+介面採用 macOS 原生 Liquid Glass、靠右的分頁工具列，以及一致的設定、預覽和結果區；系統開啟「降低透明度」時使用實色背景。壓縮頁保留 JPEG、PNG、WebP、AVIF、HEIF、JPEG XL 六種格式、品質與並行設定、拖放與資料夾匯入、預覽估算、放大比較、單張／整批／ZIP 儲存及選用 Webhook。下方直接顯示成功／失敗和容量變化，可只查看失敗項目、重試失敗或隱藏預覽以放大清單；不再提供 CSV 匯出。切換分頁會保留工作狀態；離開壓縮頁且無工作時會釋放引擎。HEIF／HEIC 與 AVIF 由 macOS ImageIO 編碼，WebP 使用原生 libwebp；8 位元 PNG 使用 OxiPNG。JPEG／HEIF 優先完整複製原始 EXIF 區塊並逐位元組驗證，避免光圈與快門的精度換算造成誤判；無可擷取 EXIF 區塊的來源僅容許指定拍攝數值的極小換算誤差，時區、日期、GPS、XMP 仍嚴格核對。
 
 輸出時透過內建 ExifTool 複製並核對一般 EXIF、XMP、IPTC 與 ICC，包括原有時區及 GPS；本頁沒有修改時區或 GPS 的控制。JPEG、PNG、WebP、HEIF 優先保留來源 RGB ICC；AVIF 使用 sRGB 像素並逐張明示色彩轉換；JPEG XL 內嵌來源 ICC，並驗證轉換後色彩特性。容器不支援或無法核對的欄位會列在結果中，不能視為完整保留；ICC 不符而可能造成錯色時拒絕該張輸出。高位元及動畫輸入仍有限制，詳見 [影像壓縮整合說明](docs/COMPRESSION_INTEGRATION.md)。
 
@@ -64,7 +64,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 六種輸出與 PNG／HEIF／TIFF 等輸入使用獨立的中繼資料讀取政策，不再受到時區寫入格式限制。XMP 以完整封包複製，保留 ON1 等未知私有欄位；EXIF 合法位置重排與容器的 Copy 編號改變不再誤報遺失，仍比對每個重複值。PNG 努力度已接上 OxiPNG。3.5.1 使用 MozJPEG；本分支的替換見下方。
 
-相片處理頁與 JPEG／JPEG XL／HEIF 原生壓縮不啟動 WebKit；8 位元 PNG／WebP／AVIF 工作才按需載入 WebKit。工作結束閒置 5 秒釋放整個引擎及本機服務；離開分頁時也會在工作結束後釋放。縮圖按需載入並設快取上限，並行數依尺寸、格式及記憶體調低。估算不等於整個程式的硬記憶體上限。
+8 位元 PNG 工作會按需載入 WebKit。工作結束閒置 5 秒釋放整個引擎及本機服務；離開分頁時也會在工作結束後釋放。縮圖按需載入並設快取上限，並行數依尺寸、格式及記憶體調低。估算不等於整個程式的硬記憶體上限。
 
 ### 3.6.0 原生 Jpegli
 
@@ -72,7 +72,7 @@ ExifTool 在單次工作中重用，定期回收；進度事件有界線，清�
 
 Jpegli 編碼器可在 macOS 和 Windows 建置，普通 JPEG 可由兩平台的一般解碼器開啟；**這個 SwiftUI App 目前仍只支援 macOS**。因此直接替換，不增加依平台選擇的兩套 JPEG 模式。來源 RGB ICC、EXIF、XMP、IPTC 與原時區／GPS 沿用既有保留及驗證。固定來源版本、相容性證據與本機驗證見 [Jpegli 整合紀錄](docs/NATIVE_JPEGLI.md)；原方案比較保留在 [JPEG 方案比較](docs/JPEG_OPTIONS.md)。已透過 PR #12 合併至 main。
 
-「開始壓縮」產生暫存結果，**不會因為選了輸出資料夾就自動儲存**；請按「儲存單張」或下方「儲存全部」。介面會提示儲存狀態。JPEG XL 品質 100 失敗時明確報錯，不會自動降為品質 99。關閉最後一個視窗會退出程式；仍在寫入時需先停止或等待完成。
+「開始壓縮」產生暫存結果，**不會因為選了輸出資料夾就自動儲存**；請按「儲存單張」或下方「儲存全部」。批次部分儲存時，修正問題後可在同一資料夾續存。重新壓縮失敗或取消時，上一份成品仍可儲存。JPEG XL 品質 100 失敗時明確報錯，不會自動降為品質 99。關閉最後一個視窗會退出程式；仍在寫入時需先停止或等待完成。
 
 ### 3.6.1 修復與實拍校準
 
@@ -110,13 +110,13 @@ Jpegli 編碼器可在 macOS 和 Windows 建置，普通 JPEG 可由兩平台的
 
 [下載最新版 macOS App](https://github.com/steven87090799/photo-timezone-modifier-claude/releases/latest/download/PhotoTimezone-macOS.zip) · [所有建置版本](https://github.com/steven87090799/photo-timezone-modifier-claude/releases)
 
-每次推送或合併到 `main`，GitHub Actions 會在 Apple Silicon macOS 27 runner 執行完整測試、下載並驗證固定 SHA-256 的 Sony ILCE-7M4 真實 ARW fixture、建置 M 系列 App，成功後自動發布到 Releases。ZIP 解壓縮後，將「相片時區修改器.app」放到「應用程式」即可。固定下載連結提供最新成功發布的版本；測試或建置失敗時保留上一個成功版本。
+推送或合併到 `main` 後，GitHub Actions 會跑回歸並上傳測試用 ZIP 至 Actions。正式發行由 `main` 的手動工作流程請求，經 `macos-signing` 核准後產生 Developer ID、hardened runtime 及 Apple 公證的候選包。CI 固定使用 Xcode 27.2（27B52）。先核對候選 ZIP 的 SHA-256，在乾淨的 macOS 27.0 裝置下載驗證、啟動並抽驗時區、還原及壓縮，再核准 `macos-publication`。兩個 GitHub 環境都應只允許 `main` 並設定必要審核者。簽章與公證憑證只放在 `macos-signing` 的 Secrets。
 
-每個 Release 記錄提交與建置編號，舊版本可保留下載。PR 的建置成品只放在 Actions 的 `PhotoTimezone-macOS` artifact。也可在 Actions 手動執行 `macOS native app`，選擇 `main` 重新建置發布。App 目前使用 ad-hoc 簽章，尚未取得 Apple Developer ID 簽章／公證。
+發布使用包含提交、執行和重跑編號的標籤，並提供 `SHA256SUMS`。發布政策應啟用 GitHub immutable releases；回退時下載上一份已核對 SHA-256 的公證 ZIP。替換 App 前，先備份照片、伴隨檔及該 App 的 Application Support。待確認交易先由現版檢視，歷史紀錄保留供還原判定。
 
 ## 建置與測試
 
-Apple Silicon（M 系列）macOS 27+，需 Swift 6.4 工具鏈、CMake 3.20+（`brew install cmake`）與系統 `/usr/bin/perl`。
+Apple Silicon（M 系列）macOS 27+，需 Swift 6.4、Python 3.12+、CMake、pkg-config、Node.js 與系統 `/usr/bin/perl`。
 
 ```bash
 ./scripts/test.sh
@@ -128,6 +128,6 @@ PHOTO_TIMEZONE_STRESS=1 ./scripts/test.sh --filter testThousand
 
 建置時仍驗證 ExifTool 原始套件的 SHA-256；這是供應鏈檢查，不是照片 HASH。內附套件只移除非執行期資源，完整 `lib` 與授權文件保留。
 
-修改 Swift 後要快速檢查能否編譯，先執行 `python3 scripts/prepare-jpegli.py` 與 `./scripts/prepare-jxl.sh` 準備原生編碼器，再執行 `swift build --scratch-path /private/tmp/PhotoTimezone-debug-$UID -c debug --arch arm64`；它不會重新打包或安裝 App。JPEG XL 由腳本下載與核對固定來源版本 0.12.0 後建置；需 Homebrew 依賴 `brew install cmake pkg-config highway brotli little-cms2` 及 Node.js，安裝版內含執行期函式庫。要自己產生可安裝版再執行 `./build.sh`，解壓 `dist/PhotoTimezone-macOS.zip` 後將 App 放進「應用程式」。這樣可把日常修改與完整打包分開，減少不必要的重複建置與等待。推送到 `main` 後 CI 會自行執行完整測試與正式打包；尚未完成的 CI 不代表新版本已可下載。
+可先用 `python3 scripts/prepare-jpegli.py` 與 `./scripts/prepare-jxl.sh` 準備固定來源的編碼器，再執行 `swift build --scratch-path /private/tmp/PhotoTimezone-debug-$UID -c debug --arch arm64`。`./build.sh` 會檢查最終 ZIP、整包簽章、所有內嵌 Mach-O 的 macOS 27.0 相容宣告、資產來源識別及依賴雜湊。開發中變更 Web 引擎後，執行 `npm --prefix CompressionWeb run generate:build-info` 更新資產識別。
 
 實作與驗證界線見 [REPAIR_NOTES_3.5.md](REPAIR_NOTES_3.5.md)。舊版資料見 [歷史文件](docs/README-3.4.1-historical.md)，其 HASH 政策不適用於 3.5.0。

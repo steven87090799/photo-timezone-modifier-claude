@@ -1319,6 +1319,63 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("sidecars/shared.jpg").path))
         expectFalse(FileManager.default.fileExists(atPath: output.appendingPathComponent("sidecars/shared.tiff").path))
         expectTrue(rows.allSatisfy { $0.detail.contains("共用同一個 XMP sidecar") })
+        _ = try assertJob(await run([first], operation: .write(offset: UTCOffset(minutes: 480), mode: .replaceAll)), failed: 1)
+        for (url, bytes) in zip([first, second, xmp, on1], originals) { expectEqual(try Data(contentsOf: url), bytes) }
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: first).path))
+    }
+
+    @Test func testFailedPreviewCannotAuthorizeGPSWhenFileArrivesLater() async throws {
+        let incomplete = try makeFile("still-downloading.jpg", contents: Data("incomplete JPEG".utf8))
+        let preview = try assertJob(await run([incomplete], operation: .inspect), failed: 1)
+        expectTrue(preview[0].sourceIdentity == nil)
+        let fixture = try makeSeededPhoto("download-fixture.jpg")
+        let bytes = try Data(contentsOf: fixture)
+        try bytes.write(to: incomplete, options: .atomic)
+        let gps = GPSWriteRequest(coordinate: try GPSCoordinate(latitude: 1, longitude: 2), overwrite: false)
+        let collector = JobEventCollector()
+        await PhotoEngine(exiftoolURL: tool.url, logDirectory: logDirectory).run(
+            inputs: [incomplete], recursive: false,
+            operation: .write(offset: UTCOffset(minutes: 480), mode: .fillMissing,
+                              options: WriteOptions(gps: gps, timezonePaths: [])),
+            cancellation: CancellationToken(), inspectedFilesOnly: true) { collector.record($0) }
+        _ = try assertJob(collector.snapshot(), failed: 1)
+        expectEqual(try Data(contentsOf: incomplete), bytes)
+        expectFalse(FileManager.default.fileExists(atPath: originalBackup(for: incomplete).path))
+    }
+
+    @Test func testCorruptHistoryDoesNotBlockUnrelatedWorkButUnreadableActiveDoes() async throws {
+        let photo = try makeSeededPhoto("independent.jpg")
+        let store = try TransactionStore(directory: logDirectory.appendingPathComponent("Transactions"))
+        let damagedHistory = store.history.appendingPathComponent("\(UUID().uuidString).json")
+        let damagedActive = store.active.appendingPathComponent("\(UUID().uuidString).json")
+        let truncated = Data("{".utf8)
+        try truncated.write(to: damagedHistory)
+        _ = try assertJob(await run([photo], operation: .inspect), succeeded: 1)
+        _ = try assertJob(await run([photo], operation: .write(offset: UTCOffset(minutes: 480), mode: .replaceAll)), succeeded: 1)
+        expectEqual(try Data(contentsOf: damagedHistory), truncated)
+        let written = try Data(contentsOf: photo)
+        try truncated.write(to: damagedActive)
+        let rows = try assertJob(await run([photo], operation: .inspect), succeeded: 1)
+        expectTrue(rows[0].publicationUnconfirmed)
+        let blocked = await run([photo], operation: .restore)
+        expectEqual(blocked.summaries.first?.failed, 1)
+        expectTrue(blocked.summaries.first?.message.contains("無法讀取的未完交易") == true)
+        expectEqual(try Data(contentsOf: photo), written)
+        expectEqual(try Data(contentsOf: damagedActive), truncated)
+    }
+
+    @Test func testGPSOnlyWriteAndRestoreKeepSidecarInTheBundle() async throws {
+        let jpg = try makeSeededPhoto("gps-bundle.jpg")
+        let sidecar = try makeFile("gps-bundle.xmp", contents: Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" dc:description="Fixture"/></rdf:RDF></x:xmpmeta>
+        """.utf8))
+        let original = try Data(contentsOf: jpg)
+        let originalSidecar = try Data(contentsOf: sidecar)
+        _ = try assertJob(await run([jpg], operation: .addGPS(location: GPSCoordinate(latitude: 1, longitude: 2))), succeeded: 1)
+        expectTrue(try tool.readSidecar(sidecar).hasGPS)
+        _ = try assertJob(await run([jpg], operation: .restore), succeeded: 1)
+        expectEqual(try Data(contentsOf: jpg), original)
+        expectEqual(try Data(contentsOf: sidecar), originalSidecar)
     }
 
     @Test func testSidecarCollisionDoesNotPublishThePhoto() async throws {
@@ -1432,12 +1489,21 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         let orphan = photo.deletingLastPathComponent()
             .appendingPathComponent(".photo-timezone-\(UUID().uuidString).jpg")
         try SafeFileTransaction.copyCandidate(photo, to: orphan)
+        let orphanRecord = TransactionManifest(
+            version: 4, id: UUID(), source: photo, target: photo, candidate: orphan, backup: nil,
+            sourceIdentity: sourceIdentity, candidateIdentity: try FileIdentity.read(orphan),
+            originalDates: [:], oldOffsets: [:], newOffsets: [:], sidecarTargets: [], publishedSidecars: [],
+            phase: .aborted, detail: "Cleanup fixture")
+        try store.finish(orphanRecord)
 
         let before = try StorageMaintenance.snapshot(photoURLs: [photo], support: support)
         expectTrue(before.photoBackups >= 1)
         expectTrue(before.orphanCandidates >= 1)
         expectTrue(before.historyFiles >= 2)
         expectTrue(before.logFiles >= 1)
+        let candidates = try StorageMaintenance.cleanOrphanCandidates(photoURLs: [photo], support: support)
+        expectTrue(candidates.removedFiles >= 1)
+        expectFalse(FileManager.default.fileExists(atPath: orphan.path))
 
         let admin = try StorageMaintenance.cleanAdministrativeHistory(support: support)
         expectTrue(admin.removedFiles >= 2)
@@ -1446,9 +1512,6 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
             atPath: store.history.appendingPathComponent("\(provenanceID.uuidString).json").path
         ))
 
-        let candidates = try StorageMaintenance.cleanOrphanCandidates(photoURLs: [photo], support: support)
-        expectTrue(candidates.removedFiles >= 1)
-        expectFalse(FileManager.default.fileExists(atPath: orphan.path))
         expectTrue(FileManager.default.fileExists(atPath: backup.path))
     }
 
@@ -1531,7 +1594,46 @@ final class PhotoEngineTests: TemporaryDirectoryTestCase {
         expectEqual(try persistent.execute(["-ver"], timeout: 5).status, 0)
         let unusual = try makeSeededPhoto("new\nline.jpg")
         expectEqual(try persistent.inspect(unusual).0.dateTimeOriginal, originalDate)
+        let windowsNewline = try makeSeededPhoto("測試\r\n合成照片.jpg")
+        expectEqual(try persistent.inspect(windowsNewline).0.dateTimeOriginal, originalDate)
         expectEqual(try persistent.execute(["-ver"], timeout: 5).status, 0)
+    }
+
+    @Test func testExifToolArgumentTransportPreservesByteBoundaries() throws {
+        let ordinary = ["-j", "-XMP-dc:Title=午後 光線", "/tmp/合 成.jpg"]
+        expectTrue(try ExifToolArguments(ordinary).supportsStayOpen)
+        for value in ["\n", "\r", "\r\n", "", "  合成", "#說明", "-XMP-dc:Title= 合成"] {
+            let command = try ExifToolArguments([value])
+            expectFalse(command.supportsStayOpen)
+            expectEqual(command.values, [value])
+        }
+        #expect(throws: PhotoError.self) { try ExifToolArguments(["\r\n", "內嵌\0字元"]) }
+        #expect(throws: PhotoError.self) { try ExifTool(url: tool.url).execute(["內嵌\0字元"]) }
+    }
+
+    @Test func testSessionSendDeadlineAndCancellationWhenChildDoesNotRead() throws {
+        let idle = try makeFile("non-reading-worker.pl", contents: Data("""
+        open my $pid_file, '>', "$0.pid" or die $!;
+        print {$pid_file} $$;
+        close $pid_file;
+        sleep 30;
+        """.utf8))
+        let pidFile = URL(fileURLWithPath: idle.path + ".pid")
+        let command = [String(repeating: "a", count: 4 * 1024 * 1024)]
+        let worker = ExifTool(url: idle, persistent: true)
+        let start = ProcessInfo.processInfo.systemUptime
+        #expect(throws: PhotoError.self) { try worker.execute(command, timeout: 0.25) }
+        expectTrue(ProcessInfo.processInfo.systemUptime - start < 4)
+        let firstPID = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8)))
+        #expect(kill(firstPID, 0) == -1 && errno == ESRCH)
+
+        let cancel = CancellationToken()
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(250)) { cancel.cancel() }
+        #expect(throws: CancellationError.self) { try worker.execute(command, timeout: 8, cancellation: cancel) }
+        expectTrue(ProcessInfo.processInfo.systemUptime - start < 5)
+        let secondPID = try #require(Int32(String(contentsOf: pidFile, encoding: .utf8)))
+        #expect(secondPID != firstPID)
+        #expect(kill(secondPID, 0) == -1 && errno == ESRCH)
     }
 
     @Test func testSessionTimeoutAndOversizedOutputFailClosed() throws {

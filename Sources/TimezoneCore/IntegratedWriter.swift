@@ -17,21 +17,32 @@ enum IntegratedWriter {
 
     static func write(item: inout PhotoItem, tool: ExifTool, offset: UTCOffset, mode: WriteMode,
                       options: WriteOptions, plan: DestinationPlan?, store: TransactionStore,
-                      sidecarIndex: SidecarIndex, cancellation: CancellationToken) throws {
+                      sidecarIndex: SidecarIndex, expectedIdentity: FileIdentity? = nil,
+                      onlyIfGPSAbsent: Bool = false, cancellation: CancellationToken) throws {
         let fm = FileManager.default
         let source = item.url
-        let originalIdentity = try FileIdentity.read(source)
+        let originalIdentity = try expectedIdentity ?? FileIdentity.read(source)
+        try originalIdentity.verify(source)
         if plan == nil && originalIdentity.links > 1 {
             throw PhotoError("原檔有硬連結；請使用副本模式。")
         }
         let original = try tool.snapshot(source, cancellation: cancellation)
         var before = original.metadata
         let sidecars = try SidecarSupport.find(beside: source, index: sidecarIndex)
+        try sidecarIndex.requireExclusiveXMP(sidecars, beside: source)
         let xmpReads = try sidecars.filter { $0.pathExtension.lowercased() == "xmp" }
             .map { try tool.readSidecar($0, cancellation: cancellation) }
         before.sidecarGPSDetected = xmpReads.contains { $0.hasGPS }
         before.gpsSafetyUncertain = xmpReads.contains { !$0.gpsCheckReliable }
         item.metadata = before
+        if onlyIfGPSAbsent && !before.canSafelyAddGPS {
+            try originalIdentity.verify(source)
+            item.status = .skipped
+            item.detail = before.gpsSafetyUncertain
+                ? "無法可靠確認 XMP sidecar 是否含 GPS。這張照片已略過。"
+                : "已偵測到既有或部分 GPS。這張照片已略過。"
+            return
+        }
 
         let changeTimezone = options.timezonePaths?.contains(source.path) ?? true
         if changeTimezone { try TimeValidation.validateForWrite(before, mode: mode) }
@@ -143,8 +154,8 @@ enum IntegratedWriter {
         for sidecar in sidecars {
             let output = target.deletingLastPathComponent().appendingPathComponent(sidecar.lastPathComponent)
             let read = sidecarPlans.first { $0.read.url.path == sidecar.path }
-            if plan != nil && !options.copySidecars { continue }
             if let plan, try plan.hasCopied(sidecar: sidecar, to: output) {
+                if read == nil { continue }
                 throw PhotoError("多張照片共用同一個 XMP sidecar；無法保證同步：\(sidecar.lastPathComponent)")
             }
             if plan != nil && fm.fileExists(atPath: output.path) {
@@ -153,11 +164,12 @@ enum IntegratedWriter {
             let identity: FileIdentity
             if let read { identity = read.read.identity }
             else { identity = try FileIdentity.read(sidecar) }
-            if plan == nil && identity.links > 1 {
+            let willReplace = read?.changes.isEmpty == false
+            if plan == nil && willReplace && identity.links > 1 {
                 throw PhotoError("伴隨檔有硬連結；請使用副本模式，以免其他連結保留不同版本的 XMP。")
             }
             try FileSafety.ensureWriteCapacity(output, fileSize: identity.size,
-                copies: plan == nil ? 3 : 2, sourceMustBeWritable: plan == nil)
+                copies: plan == nil ? 3 : 2, sourceMustBeWritable: plan == nil && willReplace)
             let temporary = output.deletingLastPathComponent()
                 .appendingPathComponent(".sidecar-\(UUID().uuidString).\(sidecar.pathExtension)")
             // Register first so a failed copy is cleaned up as well.
@@ -241,8 +253,9 @@ enum IntegratedWriter {
             try parentIdentity.verify(parent)
             try plan?.verify()
             try SidecarSupport.verifyUnchanged(sidecars, beside: source, index: sidecarIndex)
+            try sidecarIndex.requireExclusiveXMP(sidecars, beside: source)
             for candidate in candidates { try candidate.identity.verify(candidate.source) }
-            for candidate in candidates {
+            for candidate in candidates where plan != nil || !candidate.allowedChanges.isEmpty {
                 // Publish sidecars first so the photo is the last visible change.
                 do {
                     if plan == nil { try SafeFileTransaction.replace(candidate.stage, at: candidate.target) }
@@ -291,6 +304,16 @@ enum IntegratedWriter {
             manifest.detail = "時區：\(timezoneResult)；GPS：\(gpsResult)；照片與 XMP 已讀回驗證。"
             try store.finish(manifest)
         } catch {
+            if manifest.phase == .committed {
+                // The output was read back successfully. A journal I/O error
+                // leaves publication uncertain and the verified output in place.
+                manifest.phase = .publicationUnconfirmed
+                manifest.detail = "成品已讀回驗證，交易紀錄尚未確認：\(error.localizedDescription)"
+                item.publicationUnconfirmed = true
+                item.outputURL = manifest.target
+                try? store.save(manifest)
+                throw PhotoError("\(manifest.detail) 請保留備份並檢查交易 \(manifest.id)。")
+            }
             if !published.isEmpty {
                 let expectedPublished = Dictionary(uniqueKeysWithValues:
                     [(target.path, manifest.candidateIdentity!)] + candidates.compactMap { candidate in
@@ -346,10 +369,11 @@ enum IntegratedWriter {
                     throw PhotoError("XMP 日期欄位無法安全讀取：\(key)。這張照片保持原狀。")
                 }
                 let desired = resultingOffset(field)
-                let parsed = try parseXMPDate(value, key: key)
+                guard let parsed = TimeValidation.parseXMPDate(value) else {
+                    throw PhotoError("XMP 日期或時區格式無法安全更新：\(key)。這張照片保持原狀。")
+                }
                 if let existing = parsed.offset, mode == .fillMissing {
-                    let normalized = existing == "Z" ? "+00:00" : existing
-                    guard normalized == desired else {
+                    guard TimeValidation.comparableOffset(existing) == TimeValidation.comparableOffset(desired) else {
                         throw PhotoError("時區衝突：\(key) 為 \(existing)，對應 EXIF 為 \(desired)；\(mode == .fillMissing ? "請逐張檢查或明確選擇覆寫。" : "")")
                     }
                 } else {
@@ -393,22 +417,6 @@ enum IntegratedWriter {
             }
         }
         return result
-    }
-
-    private static func parseXMPDate(_ value: String, key: String) throws -> (local: String, offset: String?) {
-        // XMP Date permits minute precision. Preserve its original precision;
-        // appending an offset must not invent seconds or move the local clock.
-        let pattern = #"^([0-9]{4}[-:][0-9]{2}[-:][0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?)(Z|[+-][0-9]{2}:[0-9]{2})?$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
-              let localRange = Range(match.range(at: 1), in: value) else {
-            throw PhotoError("XMP 日期格式無法安全更新：\(key)=\(value)。這張照片保持原狀。")
-        }
-        let offset = Range(match.range(at: 2), in: value).map { String(value[$0]) }
-        if let offset, offset != "Z" && !TimeValidation.isOffset(offset) {
-            throw PhotoError("XMP 時區超出安全範圍：\(key)=\(value)。")
-        }
-        return (String(value[localRange]), offset)
     }
 
     private static func jsonString(_ raw: String) -> String? {
@@ -478,7 +486,8 @@ enum IntegratedWriter {
                                           expected: [String: FileIdentity],
                                           backupIdentities: [String: FileIdentity]) -> (detail: String, complete: Bool) {
         var errors: [String] = []
-        for file in published.reversed() where FileManager.default.fileExists(atPath: file.path) {
+        for file in published.reversed() {
+            if plan != nil && !FileManager.default.fileExists(atPath: file.path) { continue }
             do {
                 guard let pinned = expected[file.path] else { throw PhotoError("缺少發佈身分紀錄") }
                 try verifyPublished(pinned, at: file)

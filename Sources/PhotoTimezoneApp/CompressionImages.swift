@@ -1,9 +1,39 @@
 import AppKit
 import Foundation
 import ImageIO
+import TimezoneCore
 import UniformTypeIdentifiers
 
 enum CompressionImages {
+    static let maximumFileBytes: Int64 = 256 * 1024 * 1024
+    static let maximumRasterBytes = 256 * 1024 * 1024
+
+    static func fitsRaster(width: Int, height: Int, depth: Int,
+                           budget: Int = maximumRasterBytes) -> Bool {
+        guard (1...20000).contains(width), (1...20000).contains(height),
+              (1...16).contains(depth), budget > 0 else { return false }
+        return width <= budget / (depth > 8 ? 8 : 4) / height
+    }
+
+    static func header(_ source: CGImageSource) throws -> (width: Int, height: Int, orientation: Int) {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              fitsRaster(width: width, height: height, depth: properties[kCGImagePropertyDepth] as? Int ?? 8) else {
+            throw PhotoError("無法確認影像尺寸，或像素緩衝區超過 256 MiB。")
+        }
+        return (width, height, properties[kCGImagePropertyOrientation] as? Int ?? 1)
+    }
+
+    static func requireTemporaryCapacity(_ parent: URL, bytes: Int64, copies: Int64) throws {
+        let (required, overflow) = bytes.multipliedReportingOverflow(by: copies)
+        guard !overflow, (0...8 * 1024 * 1024 * 1024).contains(required),
+              let free = try parent.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity,
+              Int64(free) >= required + 32 * 1024 * 1024 else {
+            throw PhotoError("此工作超過暫存空間上限或可用磁碟空間不足。")
+        }
+    }
+
     struct Raster {
         let bytes: Data
         let width: Int
@@ -14,7 +44,9 @@ enum CompressionImages {
     }
 
     static func thumbnail(_ url: URL, size: Int = 1200, profile: CGColorSpace? = nil) -> NSImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        guard let identity = try? FileIdentity.read(url), identity.size <= maximumFileBytes,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              (try? header(source)) != nil else { return nil }
         let isRAW = (CGImageSourceGetType(source) as String?).flatMap(UTType.init)?.conforms(to: .rawImage) == true
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: !isRAW,
@@ -27,9 +59,15 @@ enum CompressionImages {
         return NSImage(cgImage: display, size: NSSize(width: display.width, height: display.height))
     }
 
-    static func sourceDepth(_ url: URL) -> Int {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary) else { return 8 }
+    static func sourceDepth(_ url: URL) throws -> Int {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw PhotoError("無法讀取影像。")
+        }
+        _ = try header(source)
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
+              fitsRaster(width: image.width, height: image.height, depth: image.bitsPerComponent) else {
+            throw PhotoError("無法確認影像位元深度，或像素超出上限。")
+        }
         return image.bitsPerComponent
     }
 
@@ -73,16 +111,13 @@ enum CompressionImages {
     /// per-image decode allowance (8 bytes/pixel), and reject larger sources
     /// rather than silently downsampling a quality comparison.
     static func comparisonImage(_ url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = props[kCGImagePropertyPixelWidth] as? Int,
-              let height = props[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0, width <= 20000, height <= 20000,
-              width <= 256 * 1024 * 1024 / 8 / height else { return nil }
+        guard let identity = try? FileIdentity.read(url), identity.size <= maximumFileBytes,
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil), let info = try? header(source),
+              fitsRaster(width: info.width, height: info.height, depth: 16) else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(source, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: max(width, height),
+            kCGImageSourceThumbnailMaxPixelSize: max(info.width, info.height),
             kCGImageSourceShouldCacheImmediately: true
         ] as CFDictionary)
     }
@@ -106,7 +141,7 @@ enum CompressionImages {
 
     static func colorSpace(_ url: URL, preserveOriginal: Bool) -> CGColorSpace {
         if preserveOriginal, let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-           let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
+           (try? header(source)) != nil, let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
            let space = image.colorSpace, space.model == .rgb {
             return space
         }
@@ -116,33 +151,26 @@ enum CompressionImages {
     /// Decode with ImageIO and keep RGB samples in the output's declared profile.
     /// WebKit canvas color conversion is deliberately bypassed for full outputs.
     static func raster(_ url: URL, maxPixel: Int, preserveOriginal: Bool, preserveDepth: Bool = false) throws -> Raster {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              width > 0, height > 0, width <= 20000, height <= 20000 else {
-            throw NSError(domain: "Compression", code: 1, userInfo: [NSLocalizedDescriptionKey: "macOS 無法解碼這張影像，或尺寸超出上限。"])
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw PhotoError("macOS 無法解碼這張影像。")
         }
-        let decoded = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary)
-        let depth = preserveDepth && (decoded?.bitsPerComponent ?? 8) > 8 ? 16 : 8
-        if preserveDepth, let decoded, decoded.bitsPerComponent > 16 || decoded.bitmapInfo.contains(.floatComponents) {
-            throw NSError(domain: "Compression", code: 4, userInfo: [NSLocalizedDescriptionKey: "此浮點或超過 16 位元來源無法保證無損，已停止輸出。請先轉為 8／16 位元整數影像。"])
+        let info = try header(source)
+        if preserveDepth && maxPixel == 0 {
+            guard let decoded = CGImageSourceCreateImageAtIndex(source, 0,
+                    [kCGImageSourceShouldCache: false] as CFDictionary) else {
+                throw PhotoError("無法完整解碼 8／16 位元整數影像。")
+            }
+            return try integerRaster(decoded, orientation: info.orientation, frames: CGImageSourceGetCount(source))
         }
-        if preserveDepth && maxPixel == 0, let decoded {
-            return try integerRaster(decoded, orientation: properties[kCGImagePropertyOrientation] as? Int ?? 1,
-                                     frames: CGImageSourceGetCount(source))
-        }
-        let sampleBytes = depth / 8
-        let limit = maxPixel > 0 ? maxPixel : max(width, height)
-        guard maxPixel > 0 || width <= 256 * 1024 * 1024 / (4 * sampleBytes) / height else {
-            throw NSError(domain: "Compression", code: 2, userInfo: [NSLocalizedDescriptionKey: "解碼後像素超過 256 MiB；請先縮小影像。"])
-        }
+        let depth = 8
+        let sampleBytes = 1
+        let limit = maxPixel > 0 ? maxPixel : max(info.width, info.height)
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: limit,
             kCGImageSourceShouldCacheImmediately: true
-        ] as CFDictionary), image.width <= 256 * 1024 * 1024 / (4 * sampleBytes) / image.height else {
+        ] as CFDictionary), fitsRaster(width: image.width, height: image.height, depth: image.bitsPerComponent) else {
             throw NSError(domain: "Compression", code: 2, userInfo: [NSLocalizedDescriptionKey: "解碼後像素超過 256 MiB；請先縮小影像。"])
         }
         let original = preserveOriginal && image.colorSpace?.model == .rgb
@@ -152,20 +180,9 @@ enum CompressionImages {
         let ok = pixels.withUnsafeMutableBytes { raw -> Bool in
             guard let context = CGContext(data: raw.baseAddress, width: image.width, height: image.height,
                 bitsPerComponent: depth, bytesPerRow: image.width * 4 * sampleBytes, space: space,
-                bitmapInfo: (depth == 16 ? CGBitmapInfo.byteOrder16Little : CGBitmapInfo.byteOrder32Big).rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
             context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
             // WASM encoders consume straight alpha, while CoreGraphics draws premultiplied alpha.
-            if depth == 16 {
-                let words = raw.bindMemory(to: UInt16.self)
-                for index in stride(from: 0, to: words.count, by: 4) {
-                    if [.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo) { words[index + 3] = 65535 }
-                    let alpha = UInt64(words[index + 3])
-                    if alpha > 0 && alpha < 65535 {
-                        for channel in 0..<3 { words[index + channel] = UInt16(min(65535, (UInt64(words[index + channel]) * 65535 + alpha / 2) / alpha)) }
-                    }
-                }
-                return true
-            }
             let bytes = raw.bindMemory(to: UInt8.self)
             if [.none, .noneSkipFirst, .noneSkipLast].contains(image.alphaInfo) {
                 for index in stride(from: 0, to: count, by: 4) { bytes[index + 3] = 255 }
@@ -186,17 +203,18 @@ enum CompressionImages {
     /// Copy integer RGB samples directly, without a premultiply/unpremultiply
     /// rendering round trip. Orientation is an integer permutation of pixels.
     private static func integerRaster(_ image: CGImage, orientation: Int, frames: Int) throws -> Raster {
-        let bits = image.bitsPerComponent, bytes = bits / 8
-        let components = image.bitsPerPixel / bits
-        guard [8, 16].contains(bits), [3, 4].contains(components),
+        let bits = image.bitsPerComponent
+        guard [8, 16].contains(bits), fitsRaster(width: image.width, height: image.height, depth: bits),
+              image.bytesPerRow <= maximumRasterBytes / image.height,
+              [bits * 3, bits * 4].contains(image.bitsPerPixel),
               image.colorSpace?.model == .rgb, !image.bitmapInfo.contains(.floatComponents),
-              let input = image.dataProvider?.data as Data?,
-              image.width <= 256 * 1024 * 1024 / (4 * bytes) / image.height,
-              input.count >= image.bytesPerRow * image.height,
+              let input = image.dataProvider?.data as Data?, input.count >= image.bytesPerRow * image.height,
               (1...8).contains(orientation) else {
             throw NSError(domain: "Compression", code: 6, userInfo: [NSLocalizedDescriptionKey:
                 "此來源的像素／色彩排列無法保證逐像素無損，已停止輸出。請先轉為標準 8／16 位元 RGB 影像。"])
         }
+        let bytes = bits / 8
+        let components = image.bitsPerPixel / bits
         let alpha = image.alphaInfo
         guard [.none, .noneSkipFirst, .noneSkipLast, .first, .last].contains(alpha) else {
             throw NSError(domain: "Compression", code: 6, userInfo: [NSLocalizedDescriptionKey:

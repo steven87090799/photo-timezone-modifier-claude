@@ -14,6 +14,18 @@ if (( OS_MAJOR < 27 )); then
   exit 1
 fi
 export MACOSX_DEPLOYMENT_TARGET=27.0
+NEXPRESS_BUILD_REVISION="${NEXPRESS_BUILD_REVISION:-$(git rev-parse HEAD)}"
+export NEXPRESS_BUILD_REVISION
+export NEXPRESS_RELEASE_CHANNEL="${NEXPRESS_RELEASE_CHANNEL:-development}"
+if [[ "$NEXPRESS_RELEASE_CHANNEL" == production ]]; then
+  xcode_build="$(xcodebuild -version | awk '/^Build version / {print $3}')"
+  if [[ "$xcode_build" != "27B52" ]]; then
+    echo "正式候選包需使用已驗證的 Xcode 27.2（27B52）。" >&2
+    exit 1
+  fi
+fi
+env -u NEXPRESS_BUILD_REVISION -u NEXPRESS_RELEASE_CHANNEL node CompressionWeb/scripts/check-build-info.mjs
+
 
 if [[ $# != 0 ]]; then
   echo "用法：./build.sh（僅建置 Apple Silicon／M 系列 App）" >&2
@@ -30,8 +42,8 @@ APP_STAGE="$(mktemp -d /tmp/phototimezone-native-build.XXXXXX)"
 APP_PATH="$APP_STAGE/相片時區修改器.app"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
-swift build --scratch-path "/private/tmp/PhotoTimezone-build-$UID" -c release --arch arm64 -Xswiftc -Osize
-APP_BIN="$(swift build --scratch-path "/private/tmp/PhotoTimezone-build-$UID" -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
+swift build --scratch-path "${PHOTO_TIMEZONE_BUILD_SCRATCH:-/private/tmp/PhotoTimezone-build-$UID}" -c release --arch arm64 -Xswiftc -Osize
+APP_BIN="$(swift build --scratch-path "${PHOTO_TIMEZONE_BUILD_SCRATCH:-/private/tmp/PhotoTimezone-build-$UID}" -c release --arch arm64 --show-bin-path)/PhotoTimezoneApp"
 /bin/cp "$APP_BIN" "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
 python3 ./scripts/bundle-jxl-libraries.py "$APP_PATH/Contents/MacOS/PhotoTimezoneApp" "$APP_PATH/Contents/Frameworks/JXL"
 APP_ARCHS="$(/usr/bin/lipo -archs "$APP_PATH/Contents/MacOS/PhotoTimezoneApp")"
@@ -47,7 +59,8 @@ fi
 /bin/cp -R "$PROJECT_DIR/.build/vendor-jpegli/licenses" "$APP_PATH/Contents/Resources/JpegliLicenses"
 /bin/cp -R "$PROJECT_DIR/.build/vendor-jxl/licenses" "$APP_PATH/Contents/Resources/JXLLicenses"
 /bin/cp -R CompressionWeb "$APP_PATH/Contents/Resources/"
-NEXPRESS_ROOT="$APP_PATH/Contents/Resources/CompressionWeb" NEXPRESS_BUILD_REVISION="$(git rev-parse HEAD)" node CompressionWeb/scripts/generate-build-info.mjs
+NEXPRESS_ROOT="$APP_PATH/Contents/Resources/CompressionWeb" node CompressionWeb/scripts/generate-build-info.mjs
+python3 scripts/dependency-manifest.py write "$APP_PATH/Contents/Resources"
 python3 scripts/write-build-identity.py "$APP_PATH/Contents/Resources/BuildIdentity.json"
 /bin/cp "$PROJECT_DIR/.build/AppIcon.icns" "$APP_PATH/Contents/Resources/"
 /usr/bin/strip -x "$APP_PATH/Contents/MacOS/PhotoTimezoneApp"
@@ -64,14 +77,7 @@ done
 /usr/bin/codesign --verify --strict "$APP_PATH"
 ZIP_STAGE="$APP_STAGE/PhotoTimezone-macOS-local.zip"
 /usr/bin/ditto -c -k --norsrc --keepParent "$APP_PATH" "$ZIP_STAGE"
-ZIP_VERIFY="$(mktemp -d /tmp/phototimezone-zip-verify.XXXXXX)"
-/usr/bin/ditto -x -k "$ZIP_STAGE" "$ZIP_VERIFY"
-/usr/bin/codesign --verify --deep --strict "$ZIP_VERIFY/相片時區修改器.app"
-if [[ "$(/usr/bin/lipo -archs "$ZIP_VERIFY/相片時區修改器.app/Contents/MacOS/PhotoTimezoneApp")" != "arm64" ]]; then
-  echo "ZIP 內 App 架構不是 arm64。" >&2
-  exit 1
-fi
-/bin/rm -rf "$ZIP_VERIFY"
+bash ./scripts/verify-release-archive.sh "$ZIP_STAGE"
 FINAL_APP="$PROJECT_DIR/dist/相片時區修改器.app"
 FINAL_ZIP="$PROJECT_DIR/dist/PhotoTimezone-macOS.zip"
 if [[ -e "$FINAL_ZIP" ]]; then

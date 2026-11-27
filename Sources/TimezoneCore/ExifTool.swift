@@ -15,6 +15,39 @@ struct ProcessOutput {
     }
 }
 
+struct ExifToolArguments {
+    let values: [String]
+    let supportsStayOpen: Bool
+
+    init(_ values: [String]) throws {
+        self.values = values
+        var supportsStayOpen = true
+        for value in values {
+            let bytes = value.utf8
+            guard !bytes.contains(0) else { throw PhotoError("ExifTool 參數含無法傳遞的 NUL 字元。") }
+            guard supportsStayOpen else { continue }
+
+            // ExifTool splits argfiles on LF and filters each line before parsing it.
+            // Use argv for arguments that this transport cannot preserve byte for byte.
+            guard let first = bytes.first, first != 0x23, !Self.isSpace(first),
+                  !bytes.contains(0x0a), !bytes.contains(0x0d) else {
+                supportsStayOpen = false
+                continue
+            }
+            if first == 0x2d, let equals = bytes.firstIndex(of: 0x3d) {
+                let after = bytes.index(after: equals)
+                supportsStayOpen = !bytes[..<equals].contains(where: Self.isSpace)
+                    && (after == bytes.endIndex || bytes[after] != 0x20)
+            }
+        }
+        self.supportsStayOpen = supportsStayOpen
+    }
+
+    private static func isSpace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || (0x09...0x0d).contains(byte)
+    }
+}
+
 /// A bounded command handles one photo. Outputs go to separate temporary files,
 /// so neither a full pipe nor an argument-list size limit can deadlock a job.
 final class ExifTool {
@@ -33,8 +66,10 @@ final class ExifTool {
         let embeddedTags: [String: String]
     }
     func execute(_ arguments: [String], timeout: TimeInterval? = nil, cancellation: CancellationToken? = nil) throws -> ProcessOutput {
-        if let session, !arguments.contains(where: { $0.contains("\n") || $0.contains("\r") || $0.contains("\0") }) {
-            return try session.execute(arguments, timeout: timeout ?? 120, cancellation: cancellation)
+        let command = try ExifToolArguments(arguments)
+        let deadline = DispatchTime.now() + (timeout ?? 120)
+        if let session, command.supportsStayOpen {
+            return try session.execute(command, deadline: deadline, cancellation: cancellation)
         }
         let fm = FileManager.default
         guard fm.isExecutableFile(atPath: "/usr/bin/perl") else {
@@ -56,7 +91,7 @@ final class ExifTool {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         // -config must be first. Disable external user config and Perl injection
         // environment variables to keep the bundled engine reproducible.
-        process.arguments = [url.path, "-config", ""] + arguments
+        process.arguments = [url.path, "-config", ""] + command.values
         process.environment = ["PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = out
@@ -75,25 +110,17 @@ final class ExifTool {
                 process.waitUntilExit()
             }
         }
-        let started = ProcessInfo.processInfo.systemUptime
-        while finished.wait(timeout: .now() + 0.05) == .timedOut {
-            let expired = timeout.map { ProcessInfo.processInfo.systemUptime - started >= $0 } ?? false
+        while finished.wait(timeout: min(.now() + .milliseconds(50), deadline)) == .timedOut {
+            if cancellation?.isCancelled == true { throw CancellationError() }
             let outputBytes = try out.offset(), errorBytes = try err.offset()
-            let tooLarge = outputBytes > UInt64(Self.outputLimit) || errorBytes > UInt64(Self.errorLimit)
-            if expired || tooLarge || cancellation?.isCancelled == true {
-                // A timeout/cancellation is safe only for read-only commands
-                // or writes to disposable candidates, never an original.
-                process.terminate()
-                if finished.wait(timeout: .now() + 1) == .timedOut, process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
-                    _ = finished.wait(timeout: .now() + 1)
-                }
-                process.waitUntilExit()
-                if cancellation?.isCancelled == true { throw CancellationError() }
-                if tooLarge { throw PhotoError("ExifTool output exceeds the metadata budget; no result was accepted.") }
+            guard outputBytes <= UInt64(Self.outputLimit), errorBytes <= UInt64(Self.errorLimit) else {
+                throw PhotoError("ExifTool output exceeds the metadata budget; no result was accepted.")
+            }
+            if DispatchTime.now() >= deadline {
                 throw PhotoError("ExifTool 執行逾時，已停止這張照片的候選處理；原檔未更動。")
             }
         }
+        if cancellation?.isCancelled == true { throw CancellationError() }
         let stdoutSize = try out.offset()
         let stderrSize = try err.offset()
         guard stdoutSize <= UInt64(Self.outputLimit), stderrSize <= UInt64(Self.errorLimit) else {

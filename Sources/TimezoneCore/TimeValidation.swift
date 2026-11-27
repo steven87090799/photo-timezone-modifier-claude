@@ -1,6 +1,33 @@
 import Foundation
 
 public enum TimeValidation {
+    struct XMPDate {
+        let local: String
+        let offset: String?
+        let comparisonClock: String
+    }
+
+    private static let xmpDatePattern = try? NSRegularExpression(pattern:
+        #"^([0-9]{4}[-:][0-9]{2}[-:][0-9]{2}[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.[0-9]+)?)?)(Z|[+-][0-9]{2}:[0-9]{2})?$"#)
+
+    static func parseXMPDate(_ value: String) -> XMPDate? {
+        let range = NSRange(value.startIndex..., in: value)
+        guard let match = xmpDatePattern?.firstMatch(in: value, range: range), match.range == range,
+              let localRange = Range(match.range(at: 1), in: value) else { return nil }
+        let local = String(value[localRange])
+        let clock = String(local.prefix(19)).replacingOccurrences(of: "T", with: " ")
+            .replacingOccurrences(of: "-", with: ":")
+        guard isCaptureDate(clock.count == 16 ? clock + ":00" : clock) else { return nil }
+        let offset = Range(match.range(at: 2), in: value).map { String(value[$0]) }
+        guard offset == nil || offset == "Z" || isOffset(offset) else { return nil }
+        return XMPDate(local: local, offset: offset, comparisonClock: clock)
+    }
+
+    static func comparableOffset(_ value: String) -> String {
+        // The zero spellings compare as the same UTC offset. Keep their original text.
+        value == "Z" || value == "-00:00" ? "+00:00" : value
+    }
+
     /// Existing metadata may use minute offsets outside the GUI's 15-minute grid,
     /// but the EXIF/UI safety range is fixed to UTC-12:00 ... UTC+14:00.
     public static func isOffset(_ value: String?) -> Bool {
@@ -54,7 +81,7 @@ public enum TimeValidation {
             ("OffsetTimeDigitized", metadata.offsetDigitized),
             ("OffsetTime", metadata.offsetTime)
         ].compactMap { name, value in value.map { (name, $0) } }
-        if Set(populatedOffsets.map(\.1)).count > 1 {
+        if Set(populatedOffsets.map { comparableOffset($0.1) }).count > 1 {
             result.append("EXIF 時區欄位不一致：" +
                 populatedOffsets.map { "\($0.0)=\($0.1)" }.joined(separator: ", ") +
                 "；已保留原值，未自動統一時區。")
@@ -68,23 +95,20 @@ public enum TimeValidation {
         for (name, date, offset) in pairs {
             guard let date else { continue }
             for (key, value) in dates where key.hasPrefix("XMP") && key.split(separator: ":").last == Substring(name) {
-                let suffix = String(value.suffix(6))
-                guard let offset else {
-                    if value.hasSuffix("Z") || isOffset(suffix) {
-                        result.append("\(key) 已記錄時區，但對應的 EXIF 時區缺漏；XMP 保持原值。")
-                    }
+                guard let xmp = parseXMPDate(value) else {
+                    result.append("\(key) 的日期或時區格式無法與 EXIF 核對。")
                     continue
                 }
-                if value.hasSuffix("Z") {
-                    if offset != "+00:00" && offset != "-00:00" {
-                        result.append("\(key) 記錄為 UTC，但 EXIF 時區偏移為 \(offset)；XMP 保持原值。")
+                if let xmpOffset = xmp.offset {
+                    if let offset {
+                        if comparableOffset(xmpOffset) != comparableOffset(offset) {
+                            result.append("\(key) 的時區偏移 \(xmpOffset) 與 EXIF 時區 \(offset) 不一致。")
+                        }
+                    } else {
+                        result.append("\(key) 已記錄時區，但對應的 EXIF 時區缺漏；XMP 保持原值。")
                     }
-                } else if isOffset(suffix), suffix != offset {
-                    result.append("\(key) 的時區偏移 \(suffix) 與 EXIF 時區 \(offset) 不一致；XMP 保持原值。")
                 }
-                let local = String(value.prefix(19)).replacingOccurrences(of: "T", with: " ")
-                    .replacingOccurrences(of: "-", with: ":")
-                if local != date {
+                if xmp.comparisonClock != String(date.prefix(xmp.comparisonClock.count)) {
                     result.append("\(key) 的日期與鐘點和 EXIF \(name) 不一致；兩者的日期與時間均未調整。")
                 }
             }

@@ -1,46 +1,28 @@
 # Third-party notices
 
-The source project vendors the original ExifTool 13.59 archive by Phil Harvey
-and contributors, pinned and verified by scripts/prepare-exiftool.sh.
-ExifTool is redistributable under the same terms as Perl itself (the Perl
-Artistic License or GPL); retain the upstream LICENSE and README.
+ExifTool 13.64 by Phil Harvey and contributors is redistributed under the
+same terms as Perl itself (the Perl Artistic License or GPL). The checkout
+includes a verified upstream source archive. The App packages the command,
+complete module directory, license and README. The command uses system
+`/usr/bin/perl». [ExifTool source](https://github.com/exiftool/exiftool/tree/3d7a0538324e9b04aa8930201b007009491321d2)
 
-The built app includes the ExifTool command-line program, the complete lib
-module directory, LICENSE and README. Development tests, HTML documentation,
-and packaging examples are not installed into the app.
+JPEG uses statically linked Jpegli and Highway. Its source and build-only
+skcms and libjpeg-turbo headers are pinned in `NativeJpegli/dependencies.json».
+The `JpegliLicenses» resources retain their BSD-3-Clause, Apache 2.0,
+IJG and related upstream notices. [Jpegli source](https://github.com/google/jpegli/tree/031a0077f5799a6041004267fc12b956c1f52a20)
 
-One explicitly documented local transport patch is applied to the command-line
-program by scripts/patch-worker-eof.pl. When its native stay-open input is stdin,
-EOF closes the worker instead of repeatedly waiting for bytes from a dead
-parent. Growing disk argument-file behavior is unchanged. This patch changes
-no metadata parser/writer or tag definition. The original archive is untouched.
+JPEG XL uses libjxl 0.13.0 with pinned Highway, Brotli and LittleCMS.
+WebP uses the libwebp 1.6.0 native encoder and SharpYUV. The exact source
+revisions and archive checksums are in `scripts/native-codecs.json».
+`JXLLicenses» retains the corresponding license and patent texts. The three
+JPEG XL dylibs are staged in `Contents/Frameworks/JXL» and signed inside the App.
+[libjxl source](https://github.com/libjxl/libjxl/tree/5a7da83447212fe4900fc29ce97430b881caa67e)
+[libwebp source](https://github.com/webmproject/libwebp/tree/4fa21912338357f89e4fd51cf2368325b59e9bd9)
 
-Upstream: https://github.com/exiftool/exiftool/tree/2200871d9cef988051d2a99d67df3bda6cbb30a8
+The invisible NEXPRESS-derived runtime uses OxiPNG single-threaded WASM for
+8-bit PNG. Its source, runtime hashes and licenses are recorded in
+`CompressionWeb/THIRD_PARTY_NOTICES» and `scripts/oxipng-lock.json». AVIF and HEIF
+use macOS ImageIO. RAW development uses Apple Core Image.
 
-ExifTool runs as a separate process using macOS /usr/bin/perl. No Perl binary
-or additional runtime dependency is redistributed by this project.
-
-The native image compression tab uses an invisible runtime derived from
-NEXPRESS with third-party image codecs. Their component inventory and provenance are in
-`CompressionWeb/THIRD_PARTY_NOTICES`, also included in the App resources. HEIF
-encoding and decoding use macOS ImageIO; no third-party HEIF converter is
-bundled.
-
-JPEG encoding uses Google's Jpegli, statically linked with Highway. These
-sources and the libjpeg-compatible public headers are pinned by revision and
-archive SHA-256 in `NativeJpegli/dependencies.json`. The build also fetches the
-pinned skcms source required by upstream's CMake configuration; its CMS library
-is not linked into the App. JPEG uses conventional 8-bit YCbCr, not XYB.
-
-The App's `JpegliLicenses` resource directory contains the upstream Jpegli,
-Highway, skcms and libjpeg-turbo notices and source manifest. Jpegli is BSD-3-Clause;
-Highway's license offers Apache-2.0 or BSD-3-Clause. libjpeg-turbo's header notices
-and IJG license are retained.
-
-Upstream: https://github.com/google/jpegli/tree/031a0077f5799a6041004267fc12b956c1f52a20
-
-JPEG XL uses upstream libjxl 0.12.0 through a small native C++ bridge. Its
-runtime dylibs are copied into `Contents/Frameworks/JXL` and signed with the
-App; its build-time Homebrew installation is not needed by the installed App.
-`JXLLicenses` in App resources contains the libjxl, Highway, Brotli and LittleCMS
-license texts. The full-resolution encoder and ICC profile verifier are included.
+The App includes `DependencyManifest.json». It records source pins, build
+tool versions, pre-packaging native artifacts and the packaged resource hashes.

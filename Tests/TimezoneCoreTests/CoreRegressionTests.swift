@@ -203,6 +203,12 @@ struct CoreRegressionTests {
             createDate: "2024:02:29 12:34:56", modifyDate: "2024:02:29 12:34:56", dateTags: [:])
         let same = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:34:56+08:00"])
         #expect(same.isEmpty)
+        let minute = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:34+08:00"])
+        #expect(minute.isEmpty)
+        let otherMinute = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:35+08:00"])
+        #expect(otherMinute.contains { $0.contains("鐘點") })
+        #expect(TimeValidation.parseXMPDate("2023-02-29T12:34+08:00") == nil)
+        #expect(TimeValidation.comparableOffset("Z") == TimeValidation.comparableOffset("-00:00"))
         let different = TimeValidation.issues(metadata, dates: ["XMP-exif:DateTimeOriginal": "2024-02-29T12:34:56+09:00"])
         #expect(different.contains { $0.contains("不一致") })
     }

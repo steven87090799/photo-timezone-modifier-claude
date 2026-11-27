@@ -15,6 +15,7 @@ enum BundleRestore {
     }
 
     static func restore(item: inout PhotoItem, tool: ExifTool, store: TransactionStore,
+                        expectedIdentity: FileIdentity? = nil, mustBeMissing: Bool = false,
                         cancellation: CancellationToken) throws {
         let fm = FileManager.default
         let photo = item.url
@@ -27,10 +28,14 @@ enum BundleRestore {
         try store.verifyCanonicalOriginalBackup(backup, source: photo)
         let photoBackupIdentity = try FileIdentity.read(backup)
         let original = try tool.snapshot(backup, cancellation: cancellation, strictOffsets: false)
-        let sidecarBackups = try store.canonicalSidecarBackups(backup, source: photo)
-        let currentSidecars = try SidecarSupport.find(beside: photo)
+        let bundle = try store.canonicalBundle(backup, source: photo)
+        let sidecarBackups = bundle.sidecars
+        let index = SidecarIndex(capacity: 1)
+        let currentSidecars = try SidecarSupport.find(beside: photo, index: index)
+        let originalSidecars = sidecarBackups.keys.map { URL(fileURLWithPath: $0) }
+        try index.requireExclusiveXMP(currentSidecars + originalSidecars, beside: photo)
         let originalPaths = Set(sidecarBackups.keys)
-        guard Set(currentSidecars.map(\.path)).isSubset(of: originalPaths) else {
+        guard bundle.legacyGPSOnly || Set(currentSidecars.map(\.path)).isSubset(of: originalPaths) else {
             throw PhotoError("目前有不屬於原始備份組的伴隨檔；無法保證照片與 XMP 完整還原。請保留備份並人工檢查，尚未修改照片。")
         }
         let parent = photo.deletingLastPathComponent().resolvingSymlinksInPath()
@@ -44,6 +49,9 @@ enum BundleRestore {
         for (source, target, pinned) in sources {
             try pinned.verify(source)
             let current = fm.fileExists(atPath: target.path) ? try FileIdentity.read(target) : nil
+            if target == photo, (expectedIdentity != nil && current != expectedIdentity) || (mustBeMissing && current != nil) {
+                throw PhotoError("照片身分與預覽不符，請重新掃描後再還原。")
+            }
             if let current, current.links > 1 {
                 throw PhotoError("還原會破壞照片或伴隨檔的硬連結；請先建立獨立副本。")
             }
@@ -63,7 +71,7 @@ enum BundleRestore {
         // Also decode the staged photo before the publication boundary.
         let restored = try tool.snapshot(candidates.last!.stage, cancellation: cancellation, strictOffsets: false)
         try verifySourcesAndTargets(candidates)
-        try SidecarSupport.verifyUnchanged(currentSidecars, beside: photo)
+        try SidecarSupport.verifyUnchanged(currentSidecars, beside: photo, index: index)
         try parentIdentity.verify(parent)
         if cancellation.isCancelled { throw CancellationError() }
         let photoCandidate = candidates.last!
@@ -104,7 +112,8 @@ enum BundleRestore {
             manifest.phase = .backupDurable
             try store.save(manifest)
             try verifySourcesAndTargets(candidates)
-            try SidecarSupport.verifyUnchanged(currentSidecars, beside: photo)
+            try SidecarSupport.verifyUnchanged(currentSidecars, beside: photo, index: index)
+            try index.requireExclusiveXMP(currentSidecars + originalSidecars, beside: photo)
             try parentIdentity.verify(parent)
             // Finish the bundle even if cancellation arrives after this point.
             for candidate in candidates {
@@ -134,6 +143,16 @@ enum BundleRestore {
             manifest.phase = .committed
             try store.finish(manifest)
         } catch {
+            if manifest.phase == .committed {
+                // The output was read back successfully. A journal I/O error
+                // leaves publication uncertain and the verified output in place.
+                manifest.phase = .publicationUnconfirmed
+                manifest.detail = "成品已讀回驗證，交易紀錄尚未確認：\(error.localizedDescription)"
+                item.publicationUnconfirmed = true
+                item.outputURL = manifest.target
+                try? store.save(manifest)
+                throw PhotoError("\(manifest.detail) 請保留備份並檢查交易 \(manifest.id)。")
+            }
             if !published.isEmpty {
                 let rollback = rollbackPublished(published)
                 manifest.phase = .publicationUnconfirmed

@@ -50,6 +50,7 @@ struct CompressionCalibrationTests {
             let sourceBytes = Int64(try source.resourceValues(forKeys: [.fileSizeKey]).fileSize!)
             let before = try tool.snapshot(source, strictOffsets: false, forCompression: true)
             let icc = try tool.execute(["-b", "-ICC_Profile", source.path]).stdout
+            let inferredICC = CompressionImages.colorSpace(source, preserveOriginal: true).copyICCData() as Data?
             let referenceCrops = env["PHOTO_COMPRESSION_CALIBRATION_SKIP_SCORES"] == "1" ? [] : try makeCrops(source, in: local, prefix: "reference")
             for format in [CompressionFormat.jpeg, .heif] {
                 for quality in format == .jpeg ? jpegQualities : heifQualities {
@@ -62,16 +63,24 @@ struct CompressionCalibrationTests {
                     let saved = folder.appendingPathComponent(item.outputName)
                     try CompressionExports.saveFile(result.url, to: saved)
                     let actual = Int64(try saved.resourceValues(forKeys: [.fileSizeKey]).fileSize!)
-                    #expect(actual == result.bytes && result.sourceBytes == sourceBytes)
+                    let sizeVerified = actual == result.bytes && result.sourceBytes == sourceBytes
+                    #expect(sizeVerified)
                     let encoded = try #require(CGImageSourceCreateWithURL(saved as CFURL, nil))
                     #expect(CGImageSourceGetType(encoded) as String? == (format == .jpeg ? "public.jpeg" : "public.heic"))
                     let after = try tool.snapshot(saved, strictOffsets: false, forCompression: true)
-                    #expect(after.metadata.dateTimeOriginal == before.metadata.dateTimeOriginal)
-                    #expect(after.metadata.offsetOriginal == before.metadata.offsetOriginal)
-                    #expect(after.metadata.gpsLatitude == before.metadata.gpsLatitude)
-                    #expect(after.metadata.gpsLongitude == before.metadata.gpsLongitude)
-                    #expect(after.metadata.orientation == before.metadata.orientation)
-                    #expect(try tool.execute(["-b", "-ICC_Profile", saved.path]).stdout == icc)
+                    let old = before.metadata, new = after.metadata
+                    let datesVerified = new.dateTimeOriginal == old.dateTimeOriginal && new.createDate == old.createDate
+                        && new.modifyDate == old.modifyDate
+                    let offsetsVerified = new.offsetOriginal == old.offsetOriginal && new.offsetDigitized == old.offsetDigitized
+                        && new.offsetTime == old.offsetTime
+                    let gpsVerified = new.gpsLatitude == old.gpsLatitude && new.gpsLongitude == old.gpsLongitude
+                    let encodedICC = try tool.execute(["-b", "-ICC_Profile", saved.path]).stdout
+                    let iccVerified = Self.verifiesICC(icc, inferred: inferredICC, encoded: encodedICC)
+                    #expect(datesVerified)
+                    #expect(offsetsVerified)
+                    #expect(gpsVerified)
+                    #expect(new.orientation == old.orientation)
+                    #expect(iccVerified)
                     var scores: [Double] = []
                     if env["PHOTO_COMPRESSION_CALIBRATION_SKIP_SCORES"] != "1" {
                         let outputCrops = try makeCrops(saved, in: local, prefix: "output")
@@ -81,7 +90,9 @@ struct CompressionCalibrationTests {
                         "sourceBytes": sourceBytes, "outputBytes": actual, "savingsPercent": (1 - Double(actual) / Double(sourceBytes)) * 100,
                         "ratio": Double(sourceBytes) / Double(actual), "scores": scores,
                         "metadataStatus": result.metadataStatus, "chroma": String(decoding: try tool.execute(["-s3", "-YCbCrSubSampling", saved.path]).stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), "seconds": Date().timeIntervalSince(started),
-                        "sizeVerified": true, "dateTimezoneGPSICCVerified": true, "output": saved.path])
+                        "sizeVerified": sizeVerified,
+                        "dateTimezoneGPSICCVerified": datesVerified && offsetsVerified && gpsVerified && iccVerified,
+                        "output": saved.path])
                     try persist()
                     print("CALIBRATION \(original.lastPathComponent) \(format.rawValue) q\(quality): \(actual) bytes; scores \(scores)")
                     try? FileManager.default.removeItem(at: result.url.deletingLastPathComponent())
@@ -91,6 +102,19 @@ struct CompressionCalibrationTests {
         for source in sources { #expect(try digest(source) == hashes[source.lastPathComponent], "Original source was changed") }
         #expect(host.webView == nil, "JPEG and HEIF must use native encoders only")
         try persist()
+    }
+
+    private static func verifiesICC(_ original: Data, inferred: Data?, encoded: Data) -> Bool {
+        guard let expected = original.isEmpty ? inferred : original, !expected.isEmpty else { return false }
+        return expected == encoded
+    }
+
+    @Test func calibrationRequiresTheEmbeddedOrInferredProfile() {
+        let original = Data([1, 2]), inferred = Data([3, 4])
+        #expect(Self.verifiesICC(original, inferred: inferred, encoded: original))
+        #expect(!Self.verifiesICC(original, inferred: inferred, encoded: inferred))
+        #expect(Self.verifiesICC(Data(), inferred: inferred, encoded: inferred))
+        #expect(!Self.verifiesICC(Data(), inferred: inferred, encoded: Data()))
     }
 
     private func makeCrops(_ url: URL, in folder: URL, prefix: String) throws -> [URL] {

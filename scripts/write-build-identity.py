@@ -11,7 +11,12 @@ root = pathlib.Path(__file__).resolve().parent.parent
 revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
 changed = subprocess.check_output(["git", "diff", "HEAD", "--name-only"], cwd=root, text=True).splitlines()
 # CI intentionally stamps the release build number into Info.plist.
-dirty = any(path != "app/Info.plist" or not os.environ.get("GITHUB_RUN_ID") for path in changed)
+untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"],
+                                    cwd=root, text=True).splitlines()
+dirty = bool(untracked) or any(path != "app/Info.plist" or not os.environ.get("GITHUB_RUN_ID") for path in changed)
+if expected := os.environ.get("NEXPRESS_BUILD_REVISION"):
+    if expected != revision:
+        raise SystemExit("Checkout does not match the expected source revision.")
 identity = {"revision": revision, "dirty": dirty, "run": os.environ.get("GITHUB_RUN_ID", "local"),
             "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 pathlib.Path(sys.argv[1]).write_text(json.dumps(identity, ensure_ascii=False, indent=2) + "\n")
